@@ -18,6 +18,13 @@ export async function playwrightDriver(
 ): Promise<UIDriver> {
   const browser = await { chromium, firefox, webkit }[browserName].launch({
     headless,
+    // On HiDPI displays a headed Chromium window renders at the display's
+    // pixel ratio while the page is emulated at 1, so every screenshot briefly
+    // re-renders the window at a different scale (a visible flicker per step).
+    // Pin the window to the emulated ratio; pages and screenshots are unchanged.
+    ...(browserName === 'chromium' && !headless
+      ? { args: ['--force-device-scale-factor=1'] }
+      : {}),
   });
   return {
     async openSession({
