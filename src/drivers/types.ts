@@ -19,6 +19,9 @@ export type SessionOptions = {
 
 export interface UISession {
   readonly browserErrors: string[];
+  // Non-navigation requests to the suite's own origins that the request policy
+  // blocked, as "METHOD origin/path".
+  readonly policyBlocks?: string[];
   readonly unauthorized: boolean;
   start(timeoutMs: number): Promise<void>;
   setTimeout(timeoutMs: number): void;

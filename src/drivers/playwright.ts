@@ -68,6 +68,8 @@ export async function playwrightDriver(
       });
       const page = await context.newPage();
       const browserErrors: string[] = [];
+      const policyBlocks: string[] = [];
+      const suiteHosts = new Set(suiteOrigins(suite));
       let unauthorized = false;
       await context.route('**/*', async (route) => {
         const request = route.request();
@@ -81,11 +83,18 @@ export async function playwrightDriver(
               suite.allowedOrigins,
             ));
         if (blocked) {
+          const url = new URL(request.url());
           await log('policy_block', {
             method: request.method(),
-            origin: new URL(request.url()).origin,
-            path: new URL(request.url()).pathname,
+            origin: url.origin,
+            path: url.pathname,
           });
+          // Blocked requests to the suite's own origins can degrade the page
+          // under test; surface them so failures are not blamed on the app.
+          if (!request.isNavigationRequest() && suiteHosts.has(url.origin))
+            policyBlocks.push(
+              `${request.method()} ${url.origin}${url.pathname}`,
+            );
           await route.abort('blockedbyclient');
         } else await route.continue();
       });
@@ -130,6 +139,7 @@ export async function playwrightDriver(
       });
       return {
         browserErrors,
+        policyBlocks,
         get unauthorized() {
           return unauthorized;
         },

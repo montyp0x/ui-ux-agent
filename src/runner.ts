@@ -494,6 +494,14 @@ async function runJourney(
       session.setTimeout(5000);
       const screenshot = join(directory, 'final.png');
       await session.screenshot(screenshot);
+      for (const block of new Set(session.policyBlocks ?? []))
+        result.findings.push({
+          kind: 'observed',
+          category: 'policy-block',
+          description: `Test request policy blocked ${block}. The page may show errors caused by the test harness, not the application; if this is a read, add it to readOnlyPosts.`,
+          step: result.steps,
+          screenshot,
+        });
       for (const error of new Set(session.browserErrors))
         result.findings.push({
           kind: 'observed',

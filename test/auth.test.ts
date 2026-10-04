@@ -193,3 +193,79 @@ test('runs load the scoped session and report the cookies they dropped', async (
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('blocked requests to the suite origins are reported as harness findings, foreign ones are not', async () => {
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      `<h1>Policy fixture</h1><script>
+        fetch('/api/search', { method: 'POST', body: '{}' }).catch(() => {});
+        fetch('https://foreign.example/collect', { method: 'POST' }).catch(() => {});
+      </script>`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const baseURL = `http://127.0.0.1:${address.port}`;
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-policy-'));
+  const models: Models = {
+    async plan() {
+      return { objective: 'Wait', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      return {
+        type: 'choice',
+        choice: 'no_match',
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, 0]),
+          ['no_match', 1],
+        ]),
+      };
+    },
+  };
+  const suite = (readOnlyPosts: { origin: string; path: string }[]) =>
+    suiteSchema.parse({
+      name: 'Policy',
+      baseURL,
+      readOnlyPosts,
+      viewports: [{ name: 'desktop', width: 800, height: 600 }],
+      journeys: [
+        {
+          id: 'policy',
+          goal: 'g',
+          persona: 'p',
+          startPath: '/',
+          allowedPaths: ['/'],
+          ready: {
+            kind: 'visible',
+            target: { by: 'role', role: 'heading', name: 'Policy fixture' },
+          },
+          success: [{ kind: 'path', pattern: '^/never$' }],
+          maxSteps: 1,
+        },
+      ],
+    });
+  try {
+    const [blocked] = await runSuite(suite([]), models, {
+      directory: join(directory, 'blocked'),
+    });
+    assert.deepEqual(
+      blocked!.findings
+        .filter((finding) => finding.category === 'policy-block')
+        .map((finding) => finding.description.split('. The page')[0]),
+      [`Test request policy blocked POST ${baseURL}/api/search`],
+    );
+    const [allowed] = await runSuite(
+      suite([{ origin: baseURL, path: '/api/search' }]),
+      models,
+      { directory: join(directory, 'allowed') },
+    );
+    assert.ok(
+      !allowed!.findings.some((finding) => finding.category === 'policy-block'),
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
