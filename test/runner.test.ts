@@ -123,6 +123,7 @@ async function fixture() {
         const plannerInput = JSON.parse(
           content.find((part) => part.type === 'text')!.text!,
         );
+        assert.ok(Array.isArray(plannerInput.refresh.reasons));
         assert.ok(
           plannerInput.availableActions.some(
             (action: { kind: string }) => action.kind === 'link',
@@ -776,6 +777,87 @@ test('a planner completion truncated at the token limit is rejected, not parsed'
       planner.plan(journey, observation, [], 5000),
       /truncated at the token limit/,
     );
+  } finally {
+    await browser.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('the planner sees which visible controls are offered only when the driver reports them', async () => {
+  const bodies: {
+    observation: {
+      visibleViewport: { controls: { name: string; offered?: boolean }[] };
+    };
+    constraint?: string;
+  }[] = [];
+  const server = createServer(async (request, response) => {
+    const payload = (await body(request)) as {
+      messages: { content: { type: string; text?: string }[] | string }[];
+    };
+    const content = payload.messages[1]!.content as {
+      type: string;
+      text?: string;
+    }[];
+    bodies.push(
+      JSON.parse(content.find((part) => part.type === 'text')!.text!),
+    );
+    response.setHeader('Content-Type', 'application/json');
+    response.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: '{"objective": "Open Sessions", "concerns": []}',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-offered-'));
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(
+      '<a href="/sessions">Sessions</a> <a href="/elsewhere">Work Units</a>',
+    );
+    const observation = await observe(page, 0, join(directory, 'step.png'));
+    const planner = models({
+      plannerURL: `http://127.0.0.1:${address.port}/planner`,
+      plannerKey: 'test-only',
+      plannerModel: 'fixture',
+      selectorURL: '',
+      selectorKey: '',
+      selectorModel: '',
+    });
+    await planner.plan(journey, observation, [], 5000, [], {
+      reasons: ['initial'],
+      offeredControls: ['Sessions'],
+    });
+    await planner.plan(journey, observation, [], 5000, [], {
+      reasons: ['initial'],
+    });
+    assert.deepEqual(
+      bodies[0]!.observation.visibleViewport.controls.map((control) => [
+        control.name,
+        control.offered,
+      ]),
+      [
+        ['Sessions', true],
+        ['Work Units', false],
+      ],
+    );
+    assert.match(bodies[0]!.constraint!, /offered: false cannot be used/);
+    assert.ok(
+      bodies[1]!.observation.visibleViewport.controls.every(
+        (control) => !('offered' in control),
+      ),
+    );
+    assert.equal(bodies[1]!.constraint, undefined);
   } finally {
     await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));

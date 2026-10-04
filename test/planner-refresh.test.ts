@@ -248,8 +248,17 @@ test('revisiting a state replans when a toggle reveals nothing the journey can u
     'run',
   );
   const objectives: string[] = [];
+  const refreshes: unknown[] = [];
   const models: Models = {
-    async plan(_journey, _observation, history, _timeoutMs, actions = []) {
+    async plan(
+      _journey,
+      _observation,
+      history,
+      _timeoutMs,
+      actions = [],
+      refresh,
+    ) {
+      refreshes.push(refresh);
       // Like a planner that guessed the wrong group and only learns from history.
       const objective = actions.some(
         (action) => action.description === 'Open Sessions',
@@ -323,6 +332,20 @@ test('revisiting a state replans when a toggle reveals nothing the journey can u
         .map((event) => event.data.refreshReasons),
       [['initial'], ['revisited-state'], ['available-actions']],
     );
+    // The planner is told why it is asked again and which action would repeat.
+    // Out-of-scope Workstreams is visible after expanding Work but never offered.
+    assert.deepEqual(refreshes, [
+      { reasons: ['initial'], offeredControls: ['Work', 'People'] },
+      {
+        reasons: ['revisited-state'],
+        revisitedAction: 'Expand Work',
+        offeredControls: ['Work', 'People'],
+      },
+      {
+        reasons: ['available-actions'],
+        offeredControls: ['Sessions', 'Work', 'People'],
+      },
+    ]);
     // Work opened and closed once each; the revisit was replanned, not dispatched.
     assert.deepEqual(
       events

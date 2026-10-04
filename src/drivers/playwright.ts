@@ -6,6 +6,7 @@ import {
   check,
   execute,
   observe,
+  offeredControls,
   repeatState,
 } from '../browser.js';
 import type { Suite } from '../contracts.js';
@@ -140,6 +141,9 @@ export async function playwrightDriver(
         },
         repeatState(action) {
           return repeatState(page, action, journey);
+        },
+        offeredControls() {
+          return offeredControls(page);
         },
         execute(action, before) {
           return execute(

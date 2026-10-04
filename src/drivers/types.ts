@@ -29,6 +29,9 @@ export interface UISession {
   execute(action: Action, before: Observation): Promise<void>;
   // Stable recipient/progress state for loop detection; null disables detection for this action.
   repeatState?(action: Action): Promise<string | null>;
+  // Observed-control names of the actions offered by the last candidates() call.
+  // Lets the planner see which visible controls the test cannot use.
+  offeredControls?(): string[];
   screenshot(path: string): Promise<void>;
   finish(trace: string): Promise<{ video: string | null }>;
 }

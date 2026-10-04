@@ -136,7 +136,7 @@ async function runJourney(
   const history: History = [];
   const repeats = new Map<string, number>();
   const replanned = new Set<string>();
-  let revisitPending = false;
+  let revisitPending: string | null = null;
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const remaining = (next: string): number => {
@@ -257,8 +257,9 @@ async function runJourney(
           currentPlanState,
           history,
         );
-        if (revisitPending && plan) reasons.push('revisited-state');
-        revisitPending = false;
+        const revisitedAction = plan ? revisitPending : null;
+        if (revisitedAction) reasons.push('revisited-state');
+        revisitPending = null;
         if (reasons.length) {
           plan = await models.plan(
             journey,
@@ -266,6 +267,13 @@ async function runJourney(
             history,
             remaining('plan'),
             actions,
+            {
+              reasons,
+              ...(revisitedAction ? { revisitedAction } : {}),
+              ...(session.offeredControls
+                ? { offeredControls: session.offeredControls() }
+                : {}),
+            },
           );
           planState = currentPlanState;
           await log('plan', {
@@ -373,7 +381,7 @@ async function runJourney(
             !replanned.has(repeatKey)
           ) {
             replanned.add(repeatKey);
-            revisitPending = true;
+            revisitPending = action.description;
             await log('loop_check', { ...loopCheck, outcome: 'replan' });
             continue;
           }

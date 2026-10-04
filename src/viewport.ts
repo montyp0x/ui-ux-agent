@@ -4,7 +4,7 @@ import type { Viewport } from './contracts.js';
 // candidate discovery and independent visibility checks.
 export function projectViewport(
   target: HTMLElement | SVGElement | null,
-): Viewport & { targetVisible: boolean } {
+): Viewport & { targetVisible: boolean; targetName?: string } {
   const width = window.innerWidth;
   const height = window.innerHeight;
   // Object methods avoid transpiler-injected name helpers when serialized.
@@ -25,6 +25,36 @@ export function projectViewport(
       )
         if (node === ancestor) return true;
       return false;
+    },
+    // The accessible-ish name reported for controls; shared with the target so
+    // offered actions can be matched to observed controls exactly.
+    controlName(element: Element): string {
+      const labelled = element
+        .getAttribute('aria-labelledby')
+        ?.split(/\s+/)
+        .map(
+          (id) =>
+            (element.getRootNode() as Document | ShadowRoot).getElementById(id)
+              ?.textContent ?? '',
+        )
+        .join(' ');
+      const input = element as HTMLInputElement;
+      const nativeLabel = input.labels?.length
+        ? Array.from(input.labels)
+            .map((label) => label.textContent ?? '')
+            .join(' ')
+        : undefined;
+      return (
+        element.getAttribute('aria-label') ??
+        labelled ??
+        element.getAttribute('alt') ??
+        nativeLabel ??
+        element.getAttribute('placeholder') ??
+        (element as HTMLElement).innerText ??
+        ''
+      )
+        .trim()
+        .slice(0, 500);
     },
     visible(element: Element, rect: DOMRect): boolean {
       if (modal && !geometry.contains(modal, element)) return false;
@@ -99,7 +129,7 @@ export function projectViewport(
       );
     })
     .at(-1);
-  const output: Viewport & { targetVisible: boolean } = {
+  const output: Viewport & { targetVisible: boolean; targetName?: string } = {
     width,
     height,
     text: '',
@@ -114,6 +144,7 @@ export function projectViewport(
     output.targetVisible = Array.from(target.getClientRects()).some((rect) =>
       geometry.visible(target, rect),
     );
+    output.targetName = geometry.controlName(target);
     return output;
   }
   const roots: ParentNode[] = [document.body];
@@ -172,34 +203,10 @@ export function projectViewport(
         output.textTruncated = true;
         break;
       }
-      const labelled = element
-        .getAttribute('aria-labelledby')
-        ?.split(/\s+/)
-        .map(
-          (id) =>
-            (element.getRootNode() as Document | ShadowRoot).getElementById(id)
-              ?.textContent ?? '',
-        )
-        .join(' ');
       const input = element as HTMLInputElement;
-      const nativeLabel = input.labels?.length
-        ? Array.from(input.labels)
-            .map((label) => label.textContent ?? '')
-            .join(' ')
-        : undefined;
       output.controls.push({
         role: element.getAttribute('role') ?? element.localName,
-        name: (
-          element.getAttribute('aria-label') ??
-          labelled ??
-          element.getAttribute('alt') ??
-          nativeLabel ??
-          element.getAttribute('placeholder') ??
-          (element as HTMLElement).innerText ??
-          ''
-        )
-          .trim()
-          .slice(0, 500),
+        name: geometry.controlName(element),
         value: input.type === 'password' ? undefined : input.value,
         checked:
           input.type === 'checkbox' || input.type === 'radio'

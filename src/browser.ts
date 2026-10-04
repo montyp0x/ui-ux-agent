@@ -277,16 +277,23 @@ export function locate(page: Page, target: Target): Locator {
   }
 }
 
-async function inViewport(
-  page: Page,
-  target: Locator | Element,
-): Promise<boolean> {
-  if (!(await target.isVisible())) return false;
-  const projection =
-    'asElement' in target
-      ? await target.evaluate(projectViewport)
-      : await target.evaluate(projectViewport);
-  return projection.targetVisible;
+async function inViewport(page: Page, locator: Locator): Promise<boolean> {
+  if (!(await locator.isVisible())) return false;
+  return (await locator.evaluate(projectViewport)).targetVisible;
+}
+
+// Viewport visibility plus the name the observation reports for the element,
+// or null when it is not visible in the viewport.
+async function visibleName(element: Element): Promise<string | null> {
+  if (!(await element.isVisible())) return null;
+  const projection = await element.evaluate(projectViewport);
+  return projection.targetVisible ? (projection.targetName ?? '') : null;
+}
+
+// Observed-control names of the actions offered by the last candidates() call.
+const offeredNames = new WeakMap<Page, string[]>();
+export function offeredControls(page: Page): string[] {
+  return offeredNames.get(page) ?? [];
 }
 
 const connected = (element: Element) =>
@@ -498,6 +505,8 @@ export async function candidates(
   // Discovery reads through element handles: a removed element stays the same
   // (detached) object instead of shifting nth() reads onto its neighbour.
   const discovered: Element[] = [];
+  // Observed-control name per discovered action, for planner scope hints.
+  const names = new Map<Action, string>();
   const skip = (skipped: Skip & { role: string; name?: string }) =>
     log?.('candidate_skipped', {
       journey: journey.id,
@@ -507,11 +516,12 @@ export async function candidates(
     });
   try {
     const counts = new Map<string, number>();
-    const observed: { name: string; href: string }[] = [];
+    const observed: { name: string; href: string; control: string }[] = [];
     const links = (await page.getByRole('link').elementHandles()) as Element[];
     discovered.push(...links);
     for (const link of links) {
-      if (!(await inViewport(page, link))) continue;
+      const control = await visibleName(link);
+      if (control === null) continue;
       // One evaluation reads every field from the same element.
       const read = await link.evaluate((element) => {
         const labelledBy = element.getAttribute('aria-labelledby');
@@ -549,21 +559,24 @@ export async function candidates(
       )
         continue;
       counts.set(read.name, (counts.get(read.name) ?? 0) + 1);
-      observed.push({ name: read.name, href: resolved });
+      observed.push({ name: read.name, href: resolved, control });
     }
     for (const link of observed) {
       const target: Target = { by: 'role', role: 'link', name: link.name };
       if (
         counts.get(link.name) === 1 &&
         (await locate(page, target).count()) === 1
-      )
-        out.push({
+      ) {
+        const action: Action = {
           kind: 'link',
           id: `a${out.length}`,
           description: `Open ${link.name}`,
           target,
           href: link.href,
-        });
+        };
+        names.set(action, link.control);
+        out.push(action);
+      }
     }
     for (const interaction of journey.interactions) {
       const target = locate(page, interaction.target);
@@ -585,7 +598,8 @@ export async function candidates(
         continue;
       }
       discovered.push(element);
-      if (!(await inViewport(page, element))) continue;
+      const control = await visibleName(element);
+      if (control === null) continue;
       const usable = await enabled(element);
       if (usable === null)
         await skip({
@@ -593,14 +607,19 @@ export async function candidates(
           name: interaction.description,
           reason: 'detached',
         });
-      if (usable) out.push({ ...interaction, id: `a${out.length}` });
+      if (usable) {
+        const action: Action = { ...interaction, id: `a${out.length}` };
+        names.set(action, control);
+        out.push(action);
+      }
     }
     for (const role of journey.discoverRoles) {
       const all = page.getByRole(role);
       const controls = (await all.elementHandles()) as Element[];
       discovered.push(...controls);
       for (const control of controls) {
-        if (!(await inViewport(page, control))) continue;
+        const controlName = await visibleName(control);
+        if (controlName === null) continue;
         const usable = await enabled(control);
         if (usable === null) await skip({ role, reason: 'detached' });
         if (!usable) continue;
@@ -627,12 +646,14 @@ export async function candidates(
           )
         )
           continue;
-        out.push({
+        const action: Action = {
           kind: 'click',
           id: `a${out.length}`,
           target,
           description: `Click ${role} ${name}`,
-        });
+        };
+        names.set(action, controlName);
+        out.push(action);
       }
     }
   } finally {
@@ -678,6 +699,12 @@ export async function candidates(
   offered.forEach((action, index) => {
     action.id = `a${index}`;
   });
+  offeredNames.set(
+    page,
+    offered.flatMap((action) =>
+      names.has(action) ? [names.get(action)!] : [],
+    ),
+  );
   return offered;
 }
 
