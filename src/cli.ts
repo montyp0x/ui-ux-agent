@@ -86,13 +86,14 @@ if (values.help) {
           selectorURL:
             process.env.SELECTOR_API_URL ??
             'https://api.typesafe.ai/v1/systemone',
-          selectorKey: required('TYPESAFE_API_KEY'),
+          selectorKey: process.env.JEV_API_KEY ?? required('TYPESAFE_API_KEY'),
           selectorModel: process.env.SELECTOR_MODEL ?? 'jev-latest',
         };
         const directory = resolve(
           values.out ??
             `runs/${new Date().toISOString().replace(/[:.]/g, '-')}`,
         );
+        console.log(`Live action log: ${directory}/events.jsonl`);
         const results = await runSuite(
           suite,
           (log) =>

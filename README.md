@@ -36,13 +36,15 @@ npm run run -- --suite suite.json --validate
 npm run run -- --suite suite.json --video
 ```
 
-`PLANNER_API_KEY` (or `OPENROUTER_API_KEY`) authenticates the screenshot-aware planner. `TYPESAFE_API_KEY` authenticates the Jev selector. Defaults are OpenRouter's `openai/gpt-6-astra` planner and TypeSafe's `jev-latest` selector. Override `PLANNER_MODEL`, `PLANNER_API_URL`, `SELECTOR_MODEL` and `SELECTOR_API_URL` as needed. The planner endpoint must support Chat Completions with images; the selector uses TypeSafe's v1 contract. No application-specific cloud secret lookup or protected env file is loaded.
+`PLANNER_API_KEY` (or `OPENROUTER_API_KEY`) authenticates the screenshot-aware planner. `JEV_API_KEY` (or `TYPESAFE_API_KEY`) authenticates the Jev selector. Defaults are OpenRouter's `openai/gpt-6-astra` planner and TypeSafe's `jev-latest` selector. Override `PLANNER_MODEL`, `PLANNER_API_URL`, `SELECTOR_MODEL` and `SELECTOR_API_URL` as needed. The planner endpoint must support Chat Completions with images; the selector uses TypeSafe's v1 contract. No application-specific cloud secret lookup or protected env file is loaded.
 
 Models receive page observations; the planner also receives screenshots. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
 
 ## Suite configuration
 
-Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one optional application example; it is never selected by default and has not been verified on authenticated staging.
+Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one optional application example; it is never selected by default.
+
+On October 4, 2026, three example-app staging journeys were exercised with an approved authenticated session at desktop and narrow widths. Five of six probes passed their independent checks. The narrow session probe failed when Jev selected `no_match` despite an available scroll action. These live runs used Codex in chat for screenshot planning and the real Jev HTTP selector; they do not verify the default OpenRouter planner on example-app. Interactive planning pauses are included in run durations, which are not usability timing measurements. Private evidence stays in ignored local run directories.
 
 | Setting              | Purpose                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
@@ -103,6 +105,8 @@ The planner refreshes on navigation, after no progress and every five steps. Jev
 ## Evidence and outcomes
 
 Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten.
+
+Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
 - `report.html`: task outcomes and evidence links.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
