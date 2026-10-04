@@ -155,11 +155,25 @@ for (const scenario of ['background', 'rebind', 'blocked-scroll'] as const) {
     assert.equal(result.steps, 2);
     assert.ok(result.findings.some((finding) => finding.category === 'loop'));
     const checks = events.filter((event) => event.event === 'loop_check');
+    // The first revisit asks the planner once; the third dispatch is still rejected.
     assert.deepEqual(
-      checks.map((event) => event.data.visits),
-      [1, 2, 3],
+      checks.map((event) => [event.data.visits, event.data.outcome]),
+      [
+        [1, 'dispatch'],
+        [2, 'replan'],
+        [2, 'dispatch'],
+        [3, 'rejected'],
+      ],
     );
     assert.equal(new Set(checks.map((event) => event.data.key)).size, 1);
+    assert.equal(
+      events.filter(
+        (event) =>
+          event.event === 'plan' &&
+          event.data.refreshReasons.includes('revisited-state'),
+      ).length,
+      1,
+    );
     if (scenario !== 'rebind') {
       const fingerprints = events
         .filter((event) => event.event === 'observation')
@@ -203,8 +217,16 @@ test('a reversible cycle is bounded only after repeated visits to the same local
   assert.deepEqual(
     events
       .filter((event) => event.event === 'loop_check')
-      .map((event) => event.data.visits),
-    [1, 1, 2, 2, 3],
+      .map((event) => [event.data.visits, event.data.outcome]),
+    [
+      [1, 'dispatch'],
+      [1, 'dispatch'],
+      [2, 'replan'],
+      [2, 'dispatch'],
+      [2, 'replan'],
+      [2, 'dispatch'],
+      [3, 'rejected'],
+    ],
   );
 });
 

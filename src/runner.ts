@@ -135,6 +135,8 @@ async function runJourney(
   let recoveryScrolls = 0;
   const history: History = [];
   const repeats = new Map<string, number>();
+  const replanned = new Set<string>();
+  let revisitPending = false;
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const remaining = (next: string): number => {
@@ -255,6 +257,8 @@ async function runJourney(
           currentPlanState,
           history,
         );
+        if (revisitPending && plan) reasons.push('revisited-state');
+        revisitPending = false;
         if (reasons.length) {
           plan = await models.plan(
             journey,
@@ -348,18 +352,36 @@ async function runJourney(
               JSON.stringify([state, actionSignature([action]), result.checks]),
             )
             .digest('hex');
-          const repeated = (repeats.get(repeatKey) ?? 0) + 1;
-          repeats.set(repeatKey, repeated);
-          await log('loop_check', {
+          const prior = repeats.get(repeatKey) ?? 0;
+          const loopCheck = {
             journey: journey.id,
             viewport,
             step,
             action: action.description,
             stateSource: session.repeatState ? 'recipient' : 'page-fallback',
             key: repeatKey,
-            visits: repeated,
+            visits: prior + 1,
             limit: 3,
             progressTargets: journey.loopProgressTargets?.length ?? 0,
+          };
+          // A revisit means the current objective led back to a tried state, which
+          // offered actions alone may not reveal. Ask the planner once per state
+          // before dispatching it again; the visit limit below is unchanged.
+          if (
+            prior >= 1 &&
+            source === 'selector' &&
+            !replanned.has(repeatKey)
+          ) {
+            replanned.add(repeatKey);
+            revisitPending = true;
+            await log('loop_check', { ...loopCheck, outcome: 'replan' });
+            continue;
+          }
+          const repeated = prior + 1;
+          repeats.set(repeatKey, repeated);
+          await log('loop_check', {
+            ...loopCheck,
+            outcome: repeated >= 3 ? 'rejected' : 'dispatch',
           });
           if (repeated >= 3) {
             result.status = 'failed';

@@ -226,3 +226,111 @@ test('background content updates alone do not trigger extra planning', async () 
   assert.equal(result.steps, 2);
   assert.equal(planCalls, 1);
 });
+
+test('revisiting a state replans when a toggle reveals nothing the journey can use', async () => {
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      request.url === '/sessions'
+        ? '<h1>Sessions</h1>'
+        : `<h1>Directory</h1>
+      <button aria-expanded="false" onclick="const menu = document.querySelector('#work'); menu.hidden = !menu.hidden; this.setAttribute('aria-expanded', String(!menu.hidden));">Work</button>
+      <nav id="work" hidden><a href="/workstreams">Workstreams</a></nav>
+      <button aria-expanded="false" onclick="const menu = document.querySelector('#people'); menu.hidden = !menu.hidden; this.setAttribute('aria-expanded', String(!menu.hidden));">People</button>
+      <nav id="people" hidden><a href="/sessions">Sessions</a></nav>`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = join(
+    await mkdtemp(join(tmpdir(), 'ui-ux-revisit-')),
+    'run',
+  );
+  const objectives: string[] = [];
+  const models: Models = {
+    async plan(_journey, _observation, history, _timeoutMs, actions = []) {
+      // Like a planner that guessed the wrong group and only learns from history.
+      const objective = actions.some(
+        (action) => action.description === 'Open Sessions',
+      )
+        ? 'Open Sessions'
+        : history.some((entry) => entry.action === 'Expand Work')
+          ? 'Expand People'
+          : 'Expand Work';
+      objectives.push(objective);
+      return { objective, concerns: [] };
+    },
+    async choose(_j, _o, plan, actions) {
+      const choice = actions.find(
+        (action) => action.description === plan.objective,
+      )!.id;
+      return {
+        type: 'choice',
+        choice,
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, action.id === choice ? 1 : 0]),
+          ['no_match', 0],
+        ]),
+      };
+    },
+  };
+  try {
+    const [result] = await runSuite(
+      suiteSchema.parse({
+        name: 'Local revisit regression',
+        baseURL: `http://127.0.0.1:${address.port}`,
+        viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+        journeys: [
+          {
+            id: 'revisit',
+            goal: 'Open Sessions',
+            persona: 'Visitor',
+            startPath: '/',
+            allowedPaths: ['/', '/sessions'],
+            ready: {
+              kind: 'visible',
+              target: { by: 'role', role: 'heading', name: 'Directory' },
+            },
+            success: [{ kind: 'path', pattern: '^/sessions$' }],
+            interactions: ['Work', 'People'].map((name) => ({
+              kind: 'click',
+              target: { by: 'role', role: 'button', name },
+              description: `Expand ${name}`,
+            })),
+            maxSteps: 10,
+            maxDurationMs: 15000,
+          },
+        ],
+      }),
+      models,
+      { directory },
+    );
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(result!.status, 'passed');
+    assert.deepEqual(objectives, [
+      'Expand Work',
+      'Expand People',
+      'Open Sessions',
+    ]);
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'plan')
+        .map((event) => event.data.refreshReasons),
+      [['initial'], ['revisited-state'], ['available-actions']],
+    );
+    // Work opened and closed once each; the revisit was replanned, not dispatched.
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'action_result')
+        .map((event) => event.data.action.description),
+      ['Expand Work', 'Expand Work', 'Expand People', 'Open Sessions'],
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

@@ -35,7 +35,8 @@ export type RefreshReason =
   | 'available-actions'
   | 'periodic'
   | 'action-error'
-  | 'no-progress';
+  | 'no-progress'
+  | 'revisited-state';
 
 export function refreshReasons(
   hasPlan: boolean,
