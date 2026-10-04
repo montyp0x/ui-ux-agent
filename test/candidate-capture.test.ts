@@ -20,6 +20,7 @@ type Logged = { event: string; data: Record<string, unknown> };
 async function fixture(
   setup: string,
   run: (page: Page, directory: string, logged: Logged[]) => Promise<void>,
+  html = links,
 ) {
   const browser = await chromium.launch();
   try {
@@ -29,7 +30,7 @@ async function fixture(
     await page.route('https://fixture.example/**', (route) =>
       route.fulfill({
         contentType: 'text/html',
-        body: `<h1>Fixture</h1>${links}<script>${setup}</script>`,
+        body: `<h1>Fixture</h1>${html}<script>${setup}</script>`,
       }),
     );
     await page.goto(baseURL);
@@ -41,8 +42,8 @@ async function fixture(
   }
 }
 
-function offerWith(page: Page, logged: Logged[]) {
-  return candidates(page, journey, baseURL, [], async (event, data) => {
+function offerWith(page: Page, logged: Logged[], scope = journey) {
+  return candidates(page, scope, baseURL, [], async (event, data) => {
     logged.push({ event, data: data as Record<string, unknown> });
   });
 }
@@ -170,4 +171,55 @@ test('a candidate that disappears after offering still cannot execute', async ()
       0,
     );
   });
+});
+
+// Removes the element the first time the page reads the named attribute through
+// the element itself. Discovery's name read is the first aria-label read of a link.
+const removeOnRead = (id: string, method: string, attribute: string) => `
+  const element = document.getElementById('${id}');
+  const original = element.${method}.bind(element);
+  let removed = false;
+  element.${method} = (name) => {
+    const value = original(name);
+    if (!removed && name === '${attribute}') { removed = true; element.remove(); }
+    return value;
+  };
+`;
+
+const discoverySkips = (logged: Logged[]) =>
+  logged
+    .filter(
+      (entry) =>
+        entry.event === 'candidate_skipped' && entry.data.phase === 'discovery',
+    )
+    .map((entry) => [entry.data.role, entry.data.name, entry.data.reason]);
+
+test('a link removed while discovery reads it cannot shift reads onto its neighbour', async () => {
+  await fixture(
+    removeOnRead('teams', 'getAttribute', 'aria-label'),
+    async (page, _directory, logged) => {
+      const offered = await offerWith(page, logged);
+      assert.deepEqual(
+        offered.map((action) => action.description),
+        ['Open Home', 'Open Usage', 'Wait briefly for loading to finish'],
+      );
+      assert.deepEqual(discoverySkips(logged), [['link', 'Teams', 'detached']]);
+    },
+  );
+});
+
+test('the last link removed while discovery reads it does not stall the stage', async () => {
+  await fixture(
+    removeOnRead('usage', 'getAttribute', 'aria-label'),
+    async (page, _directory, logged) => {
+      const started = Date.now();
+      const offered = await offerWith(page, logged);
+      assert.ok(Date.now() - started < 2500);
+      assert.deepEqual(
+        offered.map((action) => action.description),
+        ['Open Home', 'Open Teams', 'Wait briefly for loading to finish'],
+      );
+      assert.deepEqual(discoverySkips(logged), [['link', 'Usage', 'detached']]);
+    },
+  );
 });

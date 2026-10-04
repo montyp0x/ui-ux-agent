@@ -277,9 +277,71 @@ export function locate(page: Page, target: Target): Locator {
   }
 }
 
-async function inViewport(page: Page, locator: Locator): Promise<boolean> {
-  if (!(await locator.isVisible())) return false;
-  return (await locator.evaluate(projectViewport)).targetVisible;
+async function inViewport(
+  page: Page,
+  target: Locator | Element,
+): Promise<boolean> {
+  if (!(await target.isVisible())) return false;
+  const projection =
+    'asElement' in target
+      ? await target.evaluate(projectViewport)
+      : await target.evaluate(projectViewport);
+  return projection.targetVisible;
+}
+
+const connected = (element: Element) =>
+  element.evaluate((element) => element.isConnected);
+
+// isEnabled throws on a detached handle; report that as absence, not failure.
+async function enabled(element: Element): Promise<boolean | null> {
+  try {
+    return await element.isEnabled();
+  } catch (caught) {
+    if (!(await connected(element))) return null;
+    throw caught;
+  }
+}
+
+// Reads a discovered control's accessibility snapshot through its current
+// position, so a removed sibling cannot shift the read onto a neighbour.
+async function snapshotOf(
+  all: Locator,
+  element: Element,
+): Promise<{ snapshot: string } | Skip> {
+  const indexOf = () =>
+    all.evaluateAll((elements, element) => elements.indexOf(element), element);
+  for (let attempt = 0; ; attempt++) {
+    const index = await indexOf();
+    if (index < 0) return { reason: 'detached' };
+    const control = all.nth(index);
+    let failure: unknown = null;
+    try {
+      const snapshot = await control.ariaSnapshot({
+        timeout: CAPTURE_TIMEOUT_MS,
+      });
+      if (
+        await control.evaluate((current, old) => current === old, element, {
+          timeout: CAPTURE_TIMEOUT_MS,
+        })
+      )
+        return { snapshot };
+    } catch (caught) {
+      failure = caught;
+    }
+    const now = await indexOf();
+    if (now < 0)
+      return {
+        reason: 'detached',
+        detail: failure ? firstLine(failure) : undefined,
+      };
+    // Nothing moved, so the failure belongs to this control: surface it.
+    if (now === index && failure) throw failure;
+    if (attempt === 1)
+      return {
+        reason: 'replaced',
+        detail: failure ? firstLine(failure) : undefined,
+      };
+  }
 }
 
 async function scrollState(page: Page): Promise<Observation['scroll']> {
@@ -433,94 +495,148 @@ export async function candidates(
 ): Promise<Action[]> {
   await releaseActions(page);
   const out: Action[] = [];
-  const links = page.getByRole('link');
-  const counts = new Map<string, number>();
-  const observed: { name: string; href: string }[] = [];
-  for (const link of await links.all()) {
-    if (!(await inViewport(page, link))) continue;
-    const name = await link.evaluate((element) => {
-      const labelledBy = element.getAttribute('aria-labelledby');
-      return (
-        element.getAttribute('aria-label') ??
-        (labelledBy
-          ? labelledBy
-              .split(/\s+/)
-              .map((id) => document.getElementById(id)?.textContent ?? '')
-              .join(' ')
-          : null) ??
-        (element.textContent?.trim() || element.getAttribute('title') || '')
-      );
+  // Discovery reads through element handles: a removed element stays the same
+  // (detached) object instead of shifting nth() reads onto its neighbour.
+  const discovered: Element[] = [];
+  const skip = (skipped: Skip & { role: string; name?: string }) =>
+    log?.('candidate_skipped', {
+      journey: journey.id,
+      url: page.url(),
+      phase: 'discovery',
+      ...skipped,
     });
-    const href = await link.getAttribute('href');
-    let resolved: string;
-    try {
-      resolved = new URL(href ?? '', page.url()).href;
-    } catch {
-      continue;
-    }
-    if (
-      !name ||
-      !href ||
-      !allowedURL(resolved, baseURL, journey.allowedPaths, origins) ||
-      (await link.getAttribute('target')) === '_blank'
-    )
-      continue;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-    observed.push({ name, href: resolved });
-  }
-  for (const link of observed) {
-    const target: Target = { by: 'role', role: 'link', name: link.name };
-    if (
-      counts.get(link.name) === 1 &&
-      (await locate(page, target).count()) === 1
-    )
-      out.push({
-        kind: 'link',
-        id: `a${out.length}`,
-        description: `Open ${link.name}`,
-        target,
-        href: link.href,
+  try {
+    const counts = new Map<string, number>();
+    const observed: { name: string; href: string }[] = [];
+    const links = (await page.getByRole('link').elementHandles()) as Element[];
+    discovered.push(...links);
+    for (const link of links) {
+      if (!(await inViewport(page, link))) continue;
+      // One evaluation reads every field from the same element.
+      const read = await link.evaluate((element) => {
+        const labelledBy = element.getAttribute('aria-labelledby');
+        const name =
+          element.getAttribute('aria-label') ??
+          (labelledBy
+            ? labelledBy
+                .split(/\s+/)
+                .map((id) => document.getElementById(id)?.textContent ?? '')
+                .join(' ')
+            : null) ??
+          (element.textContent?.trim() || element.getAttribute('title') || '');
+        return {
+          name,
+          href: element.getAttribute('href'),
+          target: element.getAttribute('target'),
+          connected: element.isConnected,
+        };
       });
-  }
-  for (const interaction of journey.interactions) {
-    const target = locate(page, interaction.target);
-    if (
-      (await target.count()) === 1 &&
-      (await inViewport(page, target)) &&
-      (await target.isEnabled())
-    )
-      out.push({ ...interaction, id: `a${out.length}` });
-  }
-  for (const role of journey.discoverRoles) {
-    for (const control of await page.getByRole(role).all()) {
-      if (!(await inViewport(page, control)) || !(await control.isEnabled()))
+      if (!read.connected) {
+        await skip({ role: 'link', name: read.name, reason: 'detached' });
         continue;
-      const snapshot = await control.ariaSnapshot();
-      const match = snapshot.match(/^\s*- [a-z]+ "((?:\\.|[^"\\])*)"/);
-      if (!match) continue;
-      let name: string;
+      }
+      let resolved: string;
       try {
-        name = JSON.parse(`"${match[1]}"`) as string;
+        resolved = new URL(read.href ?? '', page.url()).href;
       } catch {
         continue;
       }
-      const target: Target = { by: 'role', role, name };
       if (
-        (await locate(page, target).count()) !== 1 ||
-        out.some(
-          (action) =>
-            'target' in action &&
-            JSON.stringify(action.target) === JSON.stringify(target),
-        )
+        !read.name ||
+        !read.href ||
+        !allowedURL(resolved, baseURL, journey.allowedPaths, origins) ||
+        read.target === '_blank'
       )
         continue;
-      out.push({
-        kind: 'click',
-        id: `a${out.length}`,
-        target,
-        description: `Click ${role} ${name}`,
-      });
+      counts.set(read.name, (counts.get(read.name) ?? 0) + 1);
+      observed.push({ name: read.name, href: resolved });
     }
+    for (const link of observed) {
+      const target: Target = { by: 'role', role: 'link', name: link.name };
+      if (
+        counts.get(link.name) === 1 &&
+        (await locate(page, target).count()) === 1
+      )
+        out.push({
+          kind: 'link',
+          id: `a${out.length}`,
+          description: `Open ${link.name}`,
+          target,
+          href: link.href,
+        });
+    }
+    for (const interaction of journey.interactions) {
+      const target = locate(page, interaction.target);
+      if ((await target.count()) !== 1) continue;
+      let element: Element | null = null;
+      try {
+        element = (await target.elementHandle({
+          timeout: CAPTURE_TIMEOUT_MS,
+        })) as Element | null;
+      } catch (caught) {
+        if (!(caught instanceof errors.TimeoutError)) throw caught;
+      }
+      if (!element) {
+        await skip({
+          role: 'interaction',
+          name: interaction.description,
+          reason: 'detached',
+        });
+        continue;
+      }
+      discovered.push(element);
+      if (!(await inViewport(page, element))) continue;
+      const usable = await enabled(element);
+      if (usable === null)
+        await skip({
+          role: 'interaction',
+          name: interaction.description,
+          reason: 'detached',
+        });
+      if (usable) out.push({ ...interaction, id: `a${out.length}` });
+    }
+    for (const role of journey.discoverRoles) {
+      const all = page.getByRole(role);
+      const controls = (await all.elementHandles()) as Element[];
+      discovered.push(...controls);
+      for (const control of controls) {
+        if (!(await inViewport(page, control))) continue;
+        const usable = await enabled(control);
+        if (usable === null) await skip({ role, reason: 'detached' });
+        if (!usable) continue;
+        const read = await snapshotOf(all, control);
+        if (!('snapshot' in read)) {
+          await skip({ role, ...read });
+          continue;
+        }
+        const match = read.snapshot.match(/^\s*- [a-z]+ "((?:\\.|[^"\\])*)"/);
+        if (!match) continue;
+        let name: string;
+        try {
+          name = JSON.parse(`"${match[1]}"`) as string;
+        } catch {
+          continue;
+        }
+        const target: Target = { by: 'role', role, name };
+        if (
+          (await locate(page, target).count()) !== 1 ||
+          out.some(
+            (action) =>
+              'target' in action &&
+              JSON.stringify(action.target) === JSON.stringify(target),
+          )
+        )
+          continue;
+        out.push({
+          kind: 'click',
+          id: `a${out.length}`,
+          target,
+          description: `Click ${role} ${name}`,
+        });
+      }
+    }
+  } finally {
+    await Promise.allSettled(discovered.map((element) => element.dispose()));
   }
   const { regions } = await page.evaluate(scrollGeometry, null);
   for (const region of regions) {
@@ -553,6 +669,7 @@ export async function candidates(
       await log?.('candidate_skipped', {
         journey: journey.id,
         url: page.url(),
+        phase: 'capture',
         action: action.description,
         kind: action.kind,
         ...skipped,
