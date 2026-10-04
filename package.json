@@ -1,0 +1,24 @@
+{
+  "name": "ui-ux-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "run": "tsx src/cli.ts",
+    "schema": "tsx src/schema.ts",
+    "demo": "tsx examples/demo.ts"
+  },
+  "dependencies": {
+    "playwright": "1.61.1",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

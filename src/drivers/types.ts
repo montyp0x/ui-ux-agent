@@ -1,0 +1,37 @@
+import type {
+  Action,
+  Check,
+  Journey,
+  Observation,
+  Suite,
+} from '../contracts.js';
+
+export type EventLogger = (event: string, data: unknown) => Promise<void>;
+export type SessionOptions = {
+  suite: Suite;
+  journey: Journey;
+  viewport: { width: number; height: number };
+  directory: string;
+  storageState?: string;
+  video?: boolean;
+  log: EventLogger;
+};
+
+export interface UISession {
+  readonly browserErrors: string[];
+  readonly unauthorized: boolean;
+  start(timeoutMs: number): Promise<void>;
+  setTimeout(timeoutMs: number): void;
+  location(): string;
+  check(condition: Check): Promise<boolean>;
+  observe(step: number, screenshot: string): Promise<Observation>;
+  candidates(): Promise<Action[]>;
+  execute(action: Action, before: Observation): Promise<void>;
+  screenshot(path: string): Promise<void>;
+  finish(trace: string): Promise<{ video: string | null }>;
+}
+
+export interface UIDriver {
+  openSession(options: SessionOptions): Promise<UISession>;
+  close(): Promise<void>;
+}
