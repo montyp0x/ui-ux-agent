@@ -2,7 +2,7 @@
 
 A reusable agent runner for websites and browser-based applications. Give it a URL, a user goal, a persona and observable success checks. It plans from screenshots, selects bounded interactions and records evidence for review.
 
-The architecture adapts the planner → action selector → verified outcome loop from [minecraft-agent](https://github.com/rmalde/minecraft-agent). Application routes, selectors and credentials live in suite configuration. The engine has no dependency on example-app or another application repository.
+The architecture adapts the planner → action selector → verified outcome loop from [minecraft-agent](https://github.com/rmalde/minecraft-agent). Application routes, selectors and credentials live in suite configuration. It is a standalone project: it needs Node, a Playwright browser runtime and model API credentials, and nothing else. No application repository, cloud secret store or hosted service of ours is required.
 
 ## Quick start
 
@@ -29,14 +29,40 @@ npm run run -- --init suite.json \
 
 Review the generated configuration. Add intermediate paths the journey needs, and visible-content checks that prove the intended result. The starter's URL check alone proves arrival at a route, not correct content. The generated file is never overwritten.
 
-Configure model credentials in the runner environment, then validate and run:
+Configure credentials (see [Credentials](#credentials)), then validate and run:
 
 ```sh
+cp .env.example .env   # fill in keys
 npm run run -- --suite suite.json --validate
 npm run run -- --suite suite.json --video
 ```
 
-`PLANNER_API_KEY` (or `OPENROUTER_API_KEY`) authenticates the screenshot-aware planner. `JEV_API_KEY` (or `TYPESAFE_API_KEY`) authenticates the Jev selector. Defaults are OpenRouter's `openai/gpt-6-astra` planner and TypeSafe's `jev-latest` selector. Override `PLANNER_MODEL`, `PLANNER_API_URL`, `SELECTOR_MODEL` and `SELECTOR_API_URL` as needed. The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields); value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Gateways that need more than a bearer token can set `PLANNER_API_HEADERS` to a JSON object of extra headers. For example, an OpenAI-compatible gateway's OpenAI-compatible endpoint (`PLANNER_API_URL=https://gateway.example/api/v2/example-app/v1/chat/completions`, `PLANNER_API_KEY=<PAT>`, `PLANNER_MODEL=claude-opus-4-8`) needs `PLANNER_API_HEADERS='{"X-gateway-Authorization-Token-Type":"PROGRAMMATIC_ACCESS_TOKEN"}'`. The selector uses TypeSafe's v1 contract. No application-specific cloud secret lookup or protected env file is loaded.
+## Credentials
+
+Credentials are read from environment variables, never from suite files. The CLI loads `./.env` when present, or the file given with `--env-file PATH`. Variables already set in the shell take precedence. `.env` is gitignored. [.env.example](.env.example) lists every variable.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `PLANNER_API_URL` | OpenAI-compatible Chat Completions endpoint for the screenshot planner | OpenRouter |
+| `PLANNER_API_KEY` (or `OPENROUTER_API_KEY`) | Planner bearer token | required |
+| `PLANNER_MODEL` | Planner model | `openai/gpt-6-astra` |
+| `PLANNER_API_HEADERS` | Optional JSON object of extra headers for gateways | none |
+| `SELECTOR_PROTOCOL` | `typesafe` (TypeSafe Jev choice API) or `chat` (any Chat Completions endpoint) | `typesafe` |
+| `JEV_API_KEY` (or `TYPESAFE_API_KEY`) | Jev selector key, for `typesafe` | required for `typesafe` |
+| `SELECTOR_API_URL`, `SELECTOR_API_KEY`, `SELECTOR_MODEL`, `SELECTOR_API_HEADERS` | Selector overrides; with `chat` each defaults to the planner's value | see left |
+
+With `SELECTOR_PROTOCOL=chat`, one provider key runs everything. Point `SELECTOR_MODEL` at a smaller, faster model than the planner's. The chat selector constrains its output to the offered action ids plus `no_match` through `json_schema`. It asks for a probability per option and normalizes the distribution before the same validation the Jev selector gets.
+
+The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields). Value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Example for a gateway that needs an extra header, an OpenAI-compatible gateway's OpenAI-compatible endpoint:
+
+```sh
+PLANNER_API_URL=https://gateway.example/api/v2/example-app/v1/chat/completions
+PLANNER_API_KEY=<programmatic access token>
+PLANNER_MODEL=claude-opus-4-8
+PLANNER_API_HEADERS='{"X-gateway-Authorization-Token-Type":"PROGRAMMATIC_ACCESS_TOKEN"}'
+SELECTOR_PROTOCOL=chat
+SELECTOR_MODEL=claude-haiku-4-5
+```
 
 Models receive viewport observations: visible text and control labels, dimensions, scroll availability and positions, URL and horizontal overflow. The planner also receives a viewport screenshot. Below-the-fold, clipped and covered content is excluded from model observations; the full accessibility snapshot stays in local evidence. Control labels retain accessible names, including associated labels. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
 
@@ -46,9 +72,7 @@ Viewport filtering uses DOM geometry, ancestor clipping, modal boundaries and sa
 
 ## Suite configuration
 
-Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one optional application example; it is never selected by default.
-
-On October 4, 2026, three example-app staging journeys were exercised with an approved authenticated session at desktop and narrow widths. Five of six probes passed their independent checks. The narrow session probe failed when Jev selected `no_match` despite an available scroll action. These live runs used Codex in chat for screenshot planning and the real Jev HTTP selector; they do not verify the default OpenRouter planner on example-app. Interactive planning pauses are included in run durations, which are not usability timing measurements. Private evidence stays in ignored local run directories. Those earlier arrival-only session passes did not prove loaded content. A later narrow-session replay with explicit content readiness passed all six checks in seven actions: tabs and a captured instruction were visible in the final screenshot and recording. It still recorded a timeline HTTP 503, so an asserted content outcome is not a backend-health verdict. The updated local browser tests separately cover persistent loading, accepted empty states, unavailable content, deadline limits, unauthorized responses and loading-induced layout shifts.
+Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one real application example; it is never selected by default. Results of live runs against it are in [docs/verification-log.md](docs/verification-log.md).
 
 | Setting              | Purpose                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
@@ -101,15 +125,19 @@ GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless conf
 
 ## Authentication and browser selection
 
-For authenticated applications, pass an approved Playwright storage-state file for that application's origin:
+For applications behind a login, capture a session once:
 
 ```sh
-npm run run -- --suite suite.json \
-  --storage-state /absolute/path/to/session.json \
-  --journey discover-destination --viewport desktop --video
+npm run run -- --suite suite.json --login .auth/app.json
 ```
 
-The runner creates isolated contexts, reuses only the supplied session and never extracts a personal browser profile. Session material stays outside version control. Authentication capture and account setup are owned by the target application's workflow.
+This opens a visible browser at the suite's `baseURL`. Sign in, then press Enter in the terminal. To convert an existing Playwright storage-state file instead, add `--from existing.json`. Either way, the saved file keeps only cookies and localStorage for the origins the suite declares: `baseURL`, `allowedOrigins`, `applicationOrigins`, and the origins in `allowedRequests` and `readOnlyPosts`. Other identities the login browser picked up, such as SSO-provider or personal Google cookies, are dropped. The file is written with mode 0600 under the gitignored `.auth/`, and the CLI prints the kept and dropped counts (never values). Then run with it:
+
+```sh
+npm run run -- --suite suite.json --storage-state .auth/app.json --video
+```
+
+Every run applies the same scoping when it loads a session, and logs a `storage_state_scoped` event with the kept and dropped counts. Foreign session material therefore never reaches the test browser or its traces, even from an unscoped file. The runner creates isolated contexts and never extracts a personal browser profile. A session expires on the application's schedule; capture it again when runs report `blocked`.
 
 Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. Browser integration tests and the bundled demo currently verify Chromium only; Firefox/WebKit are configurable but unverified in this checkout.
 
@@ -120,17 +148,17 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 - `src/drivers/types.ts`: browser-session interface.
 - `src/drivers/playwright.ts` and `src/browser.ts`: browser setup, observations, candidates, scope and execution.
 - `src/scroll.ts`: scroll-region discovery, wheel hit tests and chaining rules.
-- `src/models.ts`: screenshot planner and TypeSafe selector adapters. The engine also accepts a custom `Models` implementation.
+- `src/models.ts`: screenshot planner, TypeSafe and chat-completions selector adapters. The engine also accepts a custom `Models` implementation.
+- `src/config.ts`: model configuration from environment variables.
+- `src/auth.ts`: session (storage-state) parsing and origin scoping.
 - `src/planning.ts`: semantic action signatures and bounded planner refresh rules.
 - `src/report.ts`: local evidence report.
 
 `runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites and browser applications; native desktop/mobile drivers are not implemented.
 
-The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, a screenshot-aware planner kept aiming at visible links outside `allowedPaths`. On one live observation with the out-of-scope links Workstreams and Work Units visible, gateway `claude-opus-4-8` targeted them in 9 of 9 plans with only a prose rule or a list of non-offered names. With the marking plus the constraint, it chose an offered group in 3 of 3.
+The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, screenshot-aware planners tend to aim at visible links outside `allowedPaths`. The marking reduces this but does not eliminate it; see [docs/verification-log.md](docs/verification-log.md).
 
-An October 4 autonomous narrow example-app run from Home went through the real CLI, with gateway `claude-opus-4-8` as planner and Jev as selector, and no human in the loop. It passed all six checks in nine actions and 46 seconds: 8 planner calls (median 3.3s, 19.8K input and 1.0K output tokens in total) and 10 selector calls. The planner first expanded the wrong group; the `revisited-state` replan moved it to the right one. One candidate was withdrawn during the navigation into Sessions. In the final screenshot the captured instruction sits below the fold, so its loaded state rests on the `anyRendered` content check rather than on visual inspection. Model UX concerns included at least one incorrect hypothesis. This is a single run, not a reliability or model-quality benchmark. Custom `Models.plan` implementations can consume the optional fifth `actions` argument; existing implementations can ignore it. `plan` events include `refreshReasons`. More frequent actionable changes can increase planner calls; this is a relevance policy, not a measured cost or model-quality improvement. Jev selects from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
-
-An October 4 narrow example-app replay of the refresh policy passed six outcome/content checks in eight actions, with eight interactive Codex plans and eight real Jev selections. Sidebar and People expansion each occurred once; no action errors or scroll recovery occurred. This verifies observed refresh mechanics, not an autonomous HTTP planner or a controlled efficiency improvement. The run still recorded backend HTTP 503 findings.
+Custom `Models.plan` implementations can consume the optional fifth `actions` argument; existing implementations can ignore it. `plan` events include `refreshReasons`. More frequent actionable changes can increase planner calls; this is a relevance policy, not a measured cost or model-quality improvement. The selector chooses from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
 
 Two consecutive `no_match` decisions trigger a downward scroll from the offered actions, with at most two recovery attempts per journey. Recovery stops if the viewport does not advance and never selects a click or form action. Normal task and time budgets still apply. Recovery attempts appear as `selector-recovery` findings in the report and as `recovery` events in the log; their action results have `source: "recovery"`. A recovered pass still requires every independent success check and does not imply the selector succeeded unaided.
 
@@ -152,15 +180,13 @@ Up to ten targets are allowed. Each must match at most one element. A rendered t
 
 Wait actions are exempt from repetition rejection and remain limited by the normal decision/time budgets. `loop_check` events record the hashed key, visit count, limit, outcome (`dispatch`, `replan` or `rejected`), state source and number of progress targets, not raw recipient/progress snapshots. Custom drivers may implement `UISession.repeatState(action)`; return null to skip a loop check for that action. Drivers without it use the page fingerprint plus normalized action meaning, so background-noise resistance is not guaranteed. Such drivers must implement the method before accepting `loopProgressTargets`; unsupported configured progress is reported as an error rather than discarded.
 
-The loop policy's browser regressions cover background changes, rebound candidate IDs, blocked and advancing wheels, reversible cycles, declared progress, wait completion and custom-driver capability errors. An October 4 focused example-app replay starting at Sessions passed six checks in five actions (four interactive Codex plans, five real Jev calls), with loaded instruction content inspected in screenshot/video. A separate Home replay failed when an unselected Teams link disappeared during candidate binding; see Candidate capture below. Backend 503 findings were retained. These probes are not a controlled model-quality or backend-health benchmark.
+The loop policy's browser regressions cover background changes, rebound candidate IDs, blocked and advancing wheels, reversible cycles, declared progress, wait completion and custom-driver capability errors.
 
 ## Candidate capture
 
 Discovery reads links, configured interactions and discovered roles through element handles, and reads each link's name, `href` and `target` in one evaluation. A removed element therefore stays the same, now detached, object instead of shifting positional reads onto its neighbour. Discovered-role snapshots are read at the element's current position and checked against the same element. An element that is detached during discovery is withheld with a `candidate_skipped` event (`phase: "discovery"`, role, name when known, reason); one that is already invisible is simply not offered. Configured interaction lookups share the 1-second capture window below.
 
 Every offered action is bound to a guard (element identity plus control state, or scroll recipient) before any model sees it. A candidate that changes during this capture is withdrawn rather than offered without a guard, and a `candidate_skipped` event (`phase: "capture"`) records the journey, URL, action description, kind, reason, current match count and the first line of any browser error. Reasons are `detached` (no longer present, or absent for the whole 1-second capture window), `ambiguous` (now matches more than one element), `replaced` (the locator now resolves to a different element) and `no_recipient` (no scroll recipient at the region point). Remaining actions are renumbered `a0…` after withdrawal. A capture failure on a control that is still present and unchanged is not classified as transient; it still aborts the journey as an error. Withdrawal never relaxes the dispatch guards: an action whose target disappears after it was offered is still rejected as stale.
-
-An October 4 full narrow example-app replay from Home passed all six outcome/content checks in eight actions (eight interactive Codex plans, eight real Jev selections), with loaded instruction content inspected in the final screenshot and recording. On the navigation into Sessions, the sidebar closed during capture: `Open Sessions` was withdrawn as `detached` after the 1-second window and a collapsed group button by the pre-capture count, and the journey continued. One scroll was rejected as stale while the page loaded, and a backend HTTP 503 finding was retained. This verifies the withdrawal path on one live transition, not a controlled reliability or model-quality benchmark. A later full Home replay on the handle-based discovery commit passed all six checks in seven actions with no withdrawals, revisit replans or action errors. The navigation overlay stayed open after opening Sessions this time and needed one `no_match` replan. A backend HTTP 503 finding was retained.
 
 ## Evidence and outcomes
 
@@ -188,8 +214,8 @@ npm test
 npm run demo
 ```
 
-Tests use real Chromium against local synthetic pages with deterministic model HTTP responses. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
+Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, provider cost accounting or live model-quality benchmark. Browser behavior and application assumptions need validation on each target.
+Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, provider cost accounting or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; see [docs/verification-log.md](docs/verification-log.md) for measured runs. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).
