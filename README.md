@@ -53,7 +53,7 @@ Credentials are read from environment variables, never from suite files. The CLI
 
 With `SELECTOR_PROTOCOL=chat`, one provider key runs everything. Point `SELECTOR_MODEL` at a smaller, faster model than the planner's. The chat selector constrains its output to the offered action ids plus `no_match` through `json_schema`. It asks for a probability per option and normalizes the distribution before the same validation the Jev selector gets.
 
-The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields). Value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Example for a gateway that needs an extra header, an OpenAI-compatible gateway's OpenAI-compatible endpoint:
+The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields). Value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Some gateways do not enforce `json_schema`. A valid object wrapped in a single key is unwrapped, and any other invalid structured reply is requested once more before the journey reports an error. `model_call` events carry the attempt number. Example for a gateway that needs an extra header, an OpenAI-compatible gateway's OpenAI-compatible endpoint:
 
 ```sh
 PLANNER_API_URL=https://gateway.example/api/v2/example-app/v1/chat/completions
@@ -121,7 +121,7 @@ After every `success` assertion passes, the runner polls content checks every 20
 
 `content_readiness` events record poll outcomes, elapsed time, the limiting budget and failed check definitions. Result checks list `success` followed by `contentReady.checks` once content waiting begins. Without `contentReady`, arrival-only journeys retain their narrower contract. Final screenshot capture and cleanup run after the task deadline with a separate bounded screenshot timeout; total reported duration includes them.
 
-GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
+GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. A blocked non-navigation request to one of the suite's own origins becomes an observed `policy-block` finding. The page under test may show errors caused by the harness rather than the application, so add genuine reads such as search POSTs to `readOnlyPosts`. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 
 ## Authentication and browser selection
 

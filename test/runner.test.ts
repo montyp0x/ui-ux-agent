@@ -883,3 +883,79 @@ test('structured output wrapped in one key is unwrapped only when the inner obje
     /objective/,
   );
 });
+
+test('an invalid structured planner reply is retried once; truncation is not', async () => {
+  const replies: { content: string; finish_reason: string }[][] = [];
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    const reply = replies[0]![requests++] ?? replies[0]!.at(-1)!;
+    response.setHeader('Content-Type', 'application/json');
+    response.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: reply.content },
+            finish_reason: reply.finish_reason,
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-retry-'));
+  const browser = await chromium.launch();
+  const valid = {
+    content: '{"objective": "Open Sessions", "concerns": []}',
+    finish_reason: 'stop',
+  };
+  const decorated = {
+    content:
+      '{"$FUNCTION_NAME": "\\n", "objective": "Open Sessions", "concerns": []}',
+    finish_reason: 'stop',
+  };
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<h1>Fixture</h1>');
+    const observation = await observe(page, 0, join(directory, 'step.png'));
+    const attempts: (number | undefined)[] = [];
+    const planner = models({
+      plannerURL: `http://127.0.0.1:${address.port}/planner`,
+      plannerKey: 'test-only',
+      plannerModel: 'fixture',
+      selectorURL: '',
+      selectorKey: '',
+      selectorModel: '',
+      onCall: async (data) => {
+        attempts.push(data.attempt);
+      },
+    });
+    const run = async (sequence: (typeof valid)[]) => {
+      replies[0] = sequence;
+      requests = 0;
+      attempts.length = 0;
+      return planner
+        .plan(journey, observation, [], 5000)
+        .catch((error: Error) => error);
+    };
+    const recovered = await run([decorated, valid]);
+    assert.deepEqual(recovered, { objective: 'Open Sessions', concerns: [] });
+    assert.deepEqual(attempts, [1, 2]);
+    const failed = await run([decorated, decorated]);
+    assert.ok(
+      failed instanceof Error && /\$FUNCTION_NAME/.test(failed.message),
+    );
+    assert.equal(requests, 2);
+    const truncated = await run([
+      { content: '{"objective": "Op', finish_reason: 'length' },
+    ]);
+    assert.ok(
+      truncated instanceof Error && /truncated/.test(truncated.message),
+    );
+    assert.equal(requests, 1);
+  } finally {
+    await browser.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
