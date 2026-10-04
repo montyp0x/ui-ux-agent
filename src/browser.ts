@@ -5,10 +5,12 @@ import type {
   Check,
   Journey,
   Observation,
+  ScrollPoint,
   Suite,
   Target,
 } from './contracts.js';
 import { projectViewport } from './viewport.js';
+import { scrollGeometry } from './scroll.js';
 
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard =
@@ -29,6 +31,8 @@ type Guard =
       width: number;
       height: number;
       dialogs: Element[];
+      point: ScrollPoint;
+      direction: 'up' | 'down';
     };
 const guards = new WeakMap<Action, Guard>();
 const offeredActions = new WeakMap<Page, Action[]>();
@@ -120,27 +124,20 @@ async function controlState(target: Locator): Promise<string> {
   });
 }
 
-async function scrollElement(page: Page): Promise<Element> {
-  const viewport = page.viewportSize()!;
-  const handle = await page.evaluateHandle(
-    ({ x, y }) => {
-      for (
-        let element = document.elementFromPoint(x, y);
-        element;
-        element = element.parentElement
-      ) {
-        const style = getComputedStyle(element);
-        if (
-          /auto|scroll/.test(style.overflowY) &&
-          element.scrollHeight > element.clientHeight
-        )
-          return element;
-      }
-      return document.scrollingElement ?? document.documentElement;
-    },
-    { x: viewport.width / 2, y: viewport.height * 0.7 },
-  );
-  return handle.asElement() as Element;
+async function scrollElement(
+  page: Page,
+  point: ScrollPoint,
+  direction: 'up' | 'down',
+): Promise<Element | null> {
+  const result = await page.evaluateHandle(scrollGeometry, {
+    point,
+    direction,
+  });
+  const handle = await result.getProperty('recipient');
+  await result.dispose();
+  const element = handle.asElement() as Element | null;
+  if (!element) await handle.dispose();
+  return element;
 }
 
 async function bind(
@@ -154,7 +151,8 @@ async function bind(
     return;
   }
   if (action.kind === 'scroll') {
-    const element = await scrollElement(page);
+    const element = await scrollElement(page, action.point, action.direction);
+    if (!element) return;
     const { x, y } = await element.evaluate((element) => ({
       x: element.scrollLeft,
       y: element.scrollTop,
@@ -167,6 +165,8 @@ async function bind(
       y,
       ...page.viewportSize()!,
       dialogs: visibleDialogs,
+      point: { ...action.point },
+      direction: action.direction,
     });
   } else {
     const target = locate(page, action.target);
@@ -203,16 +203,25 @@ async function inViewport(page: Page, locator: Locator): Promise<boolean> {
 }
 
 async function scrollState(page: Page): Promise<Observation['scroll']> {
-  return page.evaluate(() => ({
-    x: window.scrollX,
-    y: window.scrollY,
-    containers: Array.from(document.querySelectorAll('*')).flatMap(
-      (element, index) =>
+  return page.evaluate(() => {
+    const roots: ParentNode[] = [document];
+    const elements: globalThis.Element[] = [];
+    for (let index = 0; index < roots.length; index++) {
+      for (const element of Array.from(roots[index]!.querySelectorAll('*'))) {
+        elements.push(element);
+        if (element.shadowRoot) roots.push(element.shadowRoot);
+      }
+    }
+    return {
+      x: window.scrollX,
+      y: window.scrollY,
+      containers: elements.flatMap((element, index) =>
         element.scrollTop || element.scrollLeft
           ? [{ index, x: element.scrollLeft, y: element.scrollTop }]
           : [],
-    ),
-  }));
+      ),
+    };
+  });
 }
 
 export function allowedURL(
@@ -307,6 +316,13 @@ export async function observe(
   const { targetVisible: _targetVisible, ...viewport } = await page.evaluate(
     projectViewport,
     null,
+  );
+  viewport.scrollRegions = (await page.evaluate(scrollGeometry, null)).regions;
+  viewport.canScrollUp = viewport.scrollRegions.some(
+    (region) => region.up !== null,
+  );
+  viewport.canScrollDown = viewport.scrollRegions.some(
+    (region) => region.down !== null,
   );
   const fingerprint = createHash('sha256')
     .update(url + snapshot + JSON.stringify(scroll))
@@ -420,21 +436,21 @@ export async function candidates(
       });
     }
   }
-  const viewport = await page.evaluate(projectViewport, null);
-  if (viewport.canScrollDown)
-    out.push({
-      kind: 'scroll',
-      id: `a${out.length}`,
-      description: 'Scroll down to find more content',
-      direction: 'down',
-    });
-  if (viewport.canScrollUp)
-    out.push({
-      kind: 'scroll',
-      id: `a${out.length}`,
-      description: 'Scroll up to earlier content',
-      direction: 'up',
-    });
+  const { regions } = await page.evaluate(scrollGeometry, null);
+  for (const region of regions) {
+    for (const direction of ['down', 'up'] as const) {
+      const point = region[direction];
+      if (!point) continue;
+      out.push({
+        kind: 'scroll',
+        id: `a${out.length}`,
+        description: `Scroll ${direction} in ${region.label} (${region.id}, ${region.parent ? `inside ${region.parent}` : 'outer region'})`,
+        direction,
+        region: region.id,
+        point,
+      });
+    }
+  }
   out.push({
     kind: 'wait',
     id: `a${out.length}`,
@@ -471,14 +487,22 @@ export async function execute(
       guard.kind !== 'scroll' ||
       viewport.width !== guard.width ||
       viewport.height !== guard.height ||
-      !(await sameDialogs(page, guard.dialogs))
+      action.direction !== guard.direction ||
+      action.point.x !== guard.point.x ||
+      action.point.y !== guard.point.y
     )
       throw new Error(
         'Stale observation: scroll context changed during selection',
       );
-    const current = await scrollElement(page);
+    await page.mouse.move(guard.point.x, guard.point.y);
+    if (page.url() !== guard.url || !(await sameDialogs(page, guard.dialogs)))
+      throw new Error(
+        'Stale observation: scroll context changed during selection',
+      );
+    const current = await scrollElement(page, guard.point, guard.direction);
     try {
       if (
+        !current ||
         !(await current.evaluate(
           (element, old) => element === old,
           guard.element,
@@ -493,10 +517,14 @@ export async function execute(
           'Stale observation: scroll container or position changed during selection',
         );
     } finally {
-      await current.dispose();
+      await current?.dispose();
     }
-    await page.mouse.move(viewport.width / 2, viewport.height * 0.7);
     await page.mouse.wheel(0, action.direction === 'down' ? 600 : -600);
+    // Wheel returns before scrolling finishes. Chromium ends its synthetic
+    // wheel transaction after 500ms; let it settle before observing or switching
+    // regions, otherwise the next wheel can remain latched to the old panel.
+    // https://chromium.googlesource.com/chromium/src/+/HEAD/content/browser/renderer_host/input/mouse_wheel_phase_handler.h
+    await page.waitForTimeout(550);
     return;
   }
   const target = locate(page, action.target);

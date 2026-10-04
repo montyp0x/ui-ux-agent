@@ -246,7 +246,7 @@ test('visible shadow controls are included and password values are excluded', as
   );
 });
 
-test('scroll candidates reflect the nested container under the wheel position', async () => {
+test('scroll candidates reflect a reachable container and its boundaries', async () => {
   await fixture(
     '<style>body{margin:0}</style><main style="height:800px;overflow:auto;overscroll-behavior:contain"><div style="height:1600px">Long panel</div></main>',
     async (page, directory) => {

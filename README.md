@@ -40,6 +40,8 @@ npm run run -- --suite suite.json --video
 
 Models receive viewport observations: visible text and control labels, dimensions, scroll availability and positions, URL and horizontal overflow. The planner also receives a viewport screenshot. Below-the-fold, clipped and covered content is excluded from model observations; the full accessibility snapshot stays in local evidence. Control labels retain accessible names, including associated labels. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
 
+`scrollRegions` identifies visible scroll containers by label, bounds, parent region, position and reachable up/down wheel points. The driver samples ten points per region and reports at most twelve regions. A direction can be unavailable even when content remains, for example when an overlay or a nested panel with scroll chaining disabled intercepts every sampled point. The model chooses a candidate ID; wheel coordinates come from the driver.
+
 Viewport filtering uses DOM geometry, ancestor clipping, modal boundaries and sampled hit tests, including open shadow roots. It is approximate; canvas content, closed shadow roots and frame interiors remain available through the planner's screenshot. Text is capped at 12,000 characters and 100 controls after scanning at most 10,000 text nodes; `textTruncated` indicates an incomplete projection.
 
 ## Suite configuration
@@ -73,7 +75,7 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 }
 ```
 
-Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Scroll directions are offered only when the container under the driver's wheel position or its scroll ancestors can advance in that direction. Scroll actions check their container, position, viewport size and dialog context; waits tolerate page updates. Scrolling tracks both the document and nested containers.
+Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 
@@ -97,6 +99,7 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 - `src/runner.ts`: app-independent journey execution, budgets and outcomes.
 - `src/drivers/types.ts`: browser-session interface.
 - `src/drivers/playwright.ts` and `src/browser.ts`: browser setup, observations, candidates, scope and execution.
+- `src/scroll.ts`: scroll-region discovery, wheel hit tests and chaining rules.
 - `src/models.ts`: screenshot planner and TypeSafe selector adapters. The engine also accepts a custom `Models` implementation.
 - `src/report.ts`: local evidence report.
 

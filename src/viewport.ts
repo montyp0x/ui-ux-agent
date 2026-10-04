@@ -107,6 +107,7 @@ export function projectViewport(
     controls: [],
     canScrollUp: false,
     canScrollDown: false,
+    scrollRegions: [],
     targetVisible: false,
   };
   if (target) {
@@ -209,31 +210,5 @@ export function projectViewport(
           element.getAttribute('aria-disabled') === 'true',
       });
     }
-  for (
-    let element = document.elementFromPoint(width / 2, height * 0.7);
-    element;
-    element = geometry.parent(element)
-  ) {
-    const style = getComputedStyle(element);
-    if (
-      /auto|scroll/.test(style.overflowY) &&
-      element.scrollHeight > element.clientHeight
-    ) {
-      output.canScrollUp ||= element.scrollTop > 1;
-      output.canScrollDown ||=
-        element.scrollTop + element.clientHeight < element.scrollHeight - 1;
-      if (/contain|none/.test(style.overscrollBehaviorY)) return output;
-    }
-  }
-  const documentScroll = document.scrollingElement;
-  if (
-    documentScroll &&
-    !/hidden|clip/.test(getComputedStyle(documentScroll).overflowY) &&
-    !/hidden|clip/.test(getComputedStyle(document.body).overflowY)
-  ) {
-    output.canScrollUp ||= documentScroll.scrollTop > 1;
-    output.canScrollDown ||=
-      documentScroll.scrollTop + height < documentScroll.scrollHeight - 1;
-  }
   return output;
 }

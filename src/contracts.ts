@@ -193,8 +193,21 @@ export type Action =
       id: string;
       description: string;
       direction: 'up' | 'down';
+      region: string;
+      point: ScrollPoint;
     }
   | { kind: 'wait'; id: string; description: string };
+export type ScrollPoint = { x: number; y: number };
+export type ScrollRegion = {
+  id: string;
+  label: string;
+  parent: string | null;
+  bounds: { x: number; y: number; width: number; height: number };
+  x: number;
+  y: number;
+  up: ScrollPoint | null;
+  down: ScrollPoint | null;
+};
 export type Viewport = {
   width: number;
   height: number;
@@ -209,6 +222,7 @@ export type Viewport = {
   }[];
   canScrollUp: boolean;
   canScrollDown: boolean;
+  scrollRegions: ScrollRegion[];
 };
 export type Observation = {
   step: number;
