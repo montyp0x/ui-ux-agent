@@ -13,6 +13,7 @@ import type {
 } from './contracts.js';
 import type { History, Models } from './models.js';
 import { reportHTML } from './report.js';
+import { actionSignature, refreshReasons, type PlanState } from './planning.js';
 
 export type RunOptions = {
   directory: string;
@@ -115,7 +116,7 @@ async function runJourney(
   };
   let observation: Observation | null = null;
   let plan: Plan | null = null;
-  let planPath = '';
+  let planState: PlanState | null = null;
   let noMatch = 0;
   let recoveryScrolls = 0;
   const history: History = [];
@@ -212,21 +213,34 @@ async function runJourney(
             step,
             screenshot: observation.screenshot,
           });
-        const path = new URL(observation.url).pathname;
-        if (
-          !plan ||
-          path !== planPath ||
-          step % 5 === 0 ||
-          history.at(-1)?.changed === false
-        ) {
+        const actions = await session.candidates();
+        const currentPlanState = {
+          url: observation.url,
+          actions: actionSignature(actions),
+          step,
+        };
+        const reasons = refreshReasons(
+          !!plan,
+          planState,
+          currentPlanState,
+          history,
+        );
+        if (reasons.length) {
           plan = await models.plan(
             journey,
             observation,
             history,
             deadline - Date.now(),
+            actions,
           );
-          planPath = path;
-          await log('plan', { journey: journey.id, viewport, step, plan });
+          planState = currentPlanState;
+          await log('plan', {
+            journey: journey.id,
+            viewport,
+            step,
+            plan,
+            refreshReasons: reasons,
+          });
           for (const concern of plan.concerns)
             result.findings.push({
               kind: 'hypothesis',
@@ -236,7 +250,7 @@ async function runJourney(
               screenshot: observation.screenshot,
             });
         }
-        const actions = await session.candidates();
+        if (!plan) throw new Error('Planner did not produce an objective');
         const decision = await models.choose(
           journey,
           observation,

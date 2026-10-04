@@ -88,17 +88,34 @@ async function fixture() {
     if (path === '/planner') {
       const payload = (await body(request)) as {
         messages: {
-          content: string | { type: string; image_url?: { url: string } }[];
+          content:
+            | string
+            | { type: string; text?: string; image_url?: { url: string } }[];
         }[];
       };
       assert.ok(Array.isArray(payload.messages[1]?.content));
       const content = payload.messages[1]?.content;
-      if (Array.isArray(content))
+      if (Array.isArray(content)) {
         assert.ok(
           content.some((part) =>
             part.image_url?.url.startsWith('data:image/png;base64,'),
           ),
         );
+        const plannerInput = JSON.parse(
+          content.find((part) => part.type === 'text')!.text!,
+        );
+        assert.ok(
+          plannerInput.availableActions.some(
+            (action: { kind: string }) => action.kind === 'link',
+          ),
+        );
+        assert.ok(
+          plannerInput.availableActions.every(
+            (action: Record<string, unknown>) =>
+              Object.keys(action).sort().join(',') === 'description,id,kind',
+          ),
+        );
+      }
       response.setHeader('Content-Type', 'application/json');
       response.end(
         JSON.stringify({
