@@ -173,6 +173,8 @@ Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewpo
 
 Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error.
 
+The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage` or `timeout`), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
+
 ## Development
 
 ```sh

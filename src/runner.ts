@@ -27,6 +27,19 @@ export type RunOptions = {
 };
 export type Logger = EventLogger;
 
+// A stage that would start after the journey deadline; reported as budget exhaustion.
+class BudgetExpired extends Error {}
+
+// Playwright and AbortSignal.timeout both name their timeout errors TimeoutError.
+function isTimeout(caught: unknown): boolean {
+  return (caught as { name?: unknown } | null)?.name === 'TimeoutError';
+}
+
+function firstLine(caught: unknown): string {
+  const message = caught instanceof Error ? caught.message : String(caught);
+  return message.split('\n')[0]!.slice(0, 200);
+}
+
 async function ready(
   session: UISession,
   journey: Journey,
@@ -122,12 +135,20 @@ async function runJourney(
   let recoveryScrolls = 0;
   const history: History = [];
   const repeats = new Map<string, number>();
+  let stage = 'start';
+  // Names the stage for budget reporting and refuses to start it after the deadline.
+  const remaining = (next: string): number => {
+    stage = next;
+    if (Date.now() >= deadline) throw new BudgetExpired();
+    return deadline - Date.now();
+  };
   try {
     if (journey.loopProgressTargets?.length && !session.repeatState)
       throw new Error(
         'Driver must implement repeatState to support loopProgressTargets',
       );
     await session.start(Math.min(15000, journey.maxDurationMs));
+    stage = 'ready';
     if (!(await ready(session, journey, deadline))) {
       result.status = 'blocked';
       result.reason =
@@ -135,6 +156,7 @@ async function runJourney(
     } else {
       for (let step = 0; step <= journey.maxSteps; step++) {
         session.setTimeout(Math.max(1, Math.min(5000, deadline - Date.now())));
+        stage = 'observe';
         observation = await session.observe(
           step,
           join(directory, `step-${String(step).padStart(3, '0')}.png`),
@@ -149,10 +171,12 @@ async function runJourney(
           result.reason = 'An authenticated request returned 401';
           break;
         }
+        stage = 'checks';
         result.checks = await Promise.all(
           journey.success.map((condition) => session.check(condition)),
         );
         if (result.checks.every(Boolean)) {
+          stage = 'content';
           const completion = journey.contentReady
             ? await waitForContent(session, journey, deadline, viewport, log)
             : { checks: [], passed: Date.now() < deadline };
@@ -218,6 +242,7 @@ async function runJourney(
             step,
             screenshot: observation.screenshot,
           });
+        stage = 'candidates';
         const actions = await session.candidates();
         const currentPlanState = {
           url: observation.url,
@@ -235,7 +260,7 @@ async function runJourney(
             journey,
             observation,
             history,
-            deadline - Date.now(),
+            remaining('plan'),
             actions,
           );
           planState = currentPlanState;
@@ -262,7 +287,7 @@ async function runJourney(
           plan,
           actions,
           history,
-          deadline - Date.now(),
+          remaining('choose'),
         );
         await log('decision', {
           journey: journey.id,
@@ -310,6 +335,7 @@ async function runJourney(
         }
         noMatch = 0;
         if (!action) throw new Error('Selected action was not offered');
+        stage = 'loop_check';
         const state =
           action.kind === 'wait'
             ? null
@@ -351,12 +377,16 @@ async function runJourney(
           }
         }
         let error: string | null = null;
+        let budgetCut = false;
+        remaining('execute');
         const actionStarted = Date.now();
         try {
           await session.execute(action, observation);
         } catch (caught) {
           error = caught instanceof Error ? caught.message : String(caught);
+          budgetCut = isTimeout(caught) && Date.now() >= deadline;
         }
+        stage = 'observe';
         const after = await session.observe(
           step + 1,
           join(directory, `step-${String(step + 1).padStart(3, '0')}.png`),
@@ -384,7 +414,8 @@ async function runJourney(
             'Selector recovery scroll did not advance the viewport';
           break;
         }
-        if (error && !error.startsWith('Stale observation'))
+        // A timeout cut short by the journey deadline is not a UI defect.
+        if (error && !error.startsWith('Stale observation') && !budgetCut)
           result.findings.push({
             kind: 'observed',
             category: 'action-error',
@@ -407,8 +438,26 @@ async function runJourney(
       }
     }
   } catch (caught) {
-    result.reason = caught instanceof Error ? caught.message : String(caught);
-    result.status = session.unauthorized ? 'blocked' : 'error';
+    const notStarted = caught instanceof BudgetExpired;
+    if (
+      !session.unauthorized &&
+      (notStarted || (isTimeout(caught) && Date.now() >= deadline))
+    ) {
+      result.status = 'failed';
+      result.reason = `Task budget exhausted before the outcome was observed (${notStarted ? `deadline reached before ${stage}` : `${stage} timed out at the deadline`})`;
+      await log('budget_exhausted', {
+        journey: journey.id,
+        viewport,
+        step: result.steps,
+        stage,
+        cause: notStarted ? 'deadline_before_stage' : 'timeout',
+        detail: notStarted ? null : firstLine(caught),
+        overrunMs: Date.now() - deadline,
+      });
+    } else {
+      result.reason = caught instanceof Error ? caught.message : String(caught);
+      result.status = session.unauthorized ? 'blocked' : 'error';
+    }
   } finally {
     try {
       // Evidence capture has its own bounded timeout, not the expired task timeout.
