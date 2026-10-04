@@ -71,7 +71,7 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 }
 ```
 
-Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, and stale observations invalidate selections. Scrolling tracks both the document and nested containers.
+Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Scroll actions check their container, position, viewport size and dialog context; waits tolerate page updates. Scrolling tracks both the document and nested containers.
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 

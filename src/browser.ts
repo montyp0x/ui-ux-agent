@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Locator, Page, Request } from 'playwright';
+import type { ElementHandle, Locator, Page, Request } from 'playwright';
 import type {
   Action,
   Check,
@@ -8,6 +8,178 @@ import type {
   Suite,
   Target,
 } from './contracts.js';
+
+type Element = ElementHandle<HTMLElement | SVGElement>;
+type Guard =
+  | { kind: 'wait'; url: string }
+  | {
+      kind: 'control';
+      url: string;
+      element: Element;
+      state: string;
+      dialogs: Element[];
+    }
+  | {
+      kind: 'scroll';
+      url: string;
+      element: Element;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      dialogs: Element[];
+    };
+const guards = new WeakMap<Action, Guard>();
+const offeredActions = new WeakMap<Page, Action[]>();
+
+async function releaseActions(page: Page): Promise<void> {
+  const elements = new Set<Element>();
+  for (const action of offeredActions.get(page) ?? []) {
+    const guard = guards.get(action);
+    if (guard && guard.kind !== 'wait') {
+      elements.add(guard.element);
+      guard.dialogs.forEach((element) => elements.add(element));
+    }
+    guards.delete(action);
+  }
+  offeredActions.delete(page);
+  await Promise.allSettled([...elements].map((element) => element.dispose()));
+}
+
+async function dialogs(page: Page): Promise<Element[]> {
+  const visible: Element[] = [];
+  for (const dialog of await page.getByRole('dialog').all()) {
+    if (await dialog.isVisible()) {
+      const element = await dialog.elementHandle();
+      if (element) visible.push(element);
+    }
+  }
+  return visible;
+}
+
+async function sameDialogs(page: Page, before: Element[]): Promise<boolean> {
+  const current = await dialogs(page);
+  try {
+    if (current.length !== before.length) return false;
+    for (let index = 0; index < current.length; index++) {
+      if (
+        !(await current[index]!.evaluate(
+          (element, old) => element === old,
+          before[index]!,
+        ))
+      )
+        return false;
+    }
+    return true;
+  } finally {
+    await Promise.all(current.map((element) => element.dispose()));
+  }
+}
+
+async function controlState(target: Locator): Promise<string> {
+  return JSON.stringify({
+    snapshot: await target.ariaSnapshot(),
+    properties: await target.evaluate((element) => {
+      const control = element as HTMLInputElement;
+      const form = control.form;
+      return {
+        tag: element.tagName,
+        attributes: [
+          'href',
+          'target',
+          'type',
+          'name',
+          'role',
+          'formaction',
+          'formmethod',
+          'readonly',
+          'aria-disabled',
+        ].map((name) => [name, element.getAttribute(name)]),
+        value: control.value,
+        checked: control.checked,
+        disabled: control.disabled,
+        formAction: control.formAction,
+        formMethod: control.formMethod,
+        formTarget: control.formTarget,
+        resolvedHref:
+          element instanceof HTMLAnchorElement ? element.href : null,
+        form: form
+          ? { action: form.action, method: form.method, target: form.target }
+          : null,
+        options:
+          element instanceof HTMLSelectElement
+            ? Array.from(element.options, (option) => ({
+                value: option.value,
+                text: option.text,
+                disabled: option.disabled,
+              }))
+            : null,
+      };
+    }),
+  });
+}
+
+async function scrollElement(page: Page): Promise<Element> {
+  const viewport = page.viewportSize()!;
+  const handle = await page.evaluateHandle(
+    ({ x, y }) => {
+      for (
+        let element = document.elementFromPoint(x, y);
+        element;
+        element = element.parentElement
+      ) {
+        const style = getComputedStyle(element);
+        if (
+          /auto|scroll/.test(style.overflowY) &&
+          element.scrollHeight > element.clientHeight
+        )
+          return element;
+      }
+      return document.scrollingElement ?? document.documentElement;
+    },
+    { x: viewport.width / 2, y: viewport.height * 0.7 },
+  );
+  return handle.asElement() as Element;
+}
+
+async function bind(
+  page: Page,
+  action: Action,
+  visibleDialogs: Element[],
+): Promise<void> {
+  const url = page.url();
+  if (action.kind === 'wait') {
+    guards.set(action, { kind: 'wait', url });
+    return;
+  }
+  if (action.kind === 'scroll') {
+    const element = await scrollElement(page);
+    const { x, y } = await element.evaluate((element) => ({
+      x: element.scrollLeft,
+      y: element.scrollTop,
+    }));
+    guards.set(action, {
+      kind: 'scroll',
+      url,
+      element,
+      x,
+      y,
+      ...page.viewportSize()!,
+      dialogs: visibleDialogs,
+    });
+  } else {
+    const target = locate(page, action.target);
+    const element = await target.elementHandle();
+    if (element)
+      guards.set(action, {
+        kind: 'control',
+        url,
+        element,
+        state: await controlState(target),
+        dialogs: visibleDialogs,
+      });
+  }
+}
 
 export function locate(page: Page, target: Target): Locator {
   switch (target.by) {
@@ -160,6 +332,7 @@ export async function candidates(
   baseURL: string,
   origins: string[] = [],
 ): Promise<Action[]> {
+  await releaseActions(page);
   const out: Action[] = [];
   const links = page.getByRole('link');
   const counts = new Map<string, number>();
@@ -267,6 +440,9 @@ export async function candidates(
     id: `a${out.length}`,
     description: 'Wait briefly for loading to finish',
   });
+  offeredActions.set(page, out);
+  const visibleDialogs = await dialogs(page);
+  for (const action of out) await bind(page, action, visibleDialogs);
   return out;
 }
 
@@ -278,19 +454,47 @@ export async function execute(
   baseURL: string,
   origins: string[] = [],
 ): Promise<void> {
-  const snapshot = await page.locator('body').ariaSnapshot();
-  const scroll = await scrollState(page);
-  const fingerprint = createHash('sha256')
-    .update(page.url() + snapshot + JSON.stringify(scroll))
-    .digest('hex');
-  if (fingerprint !== before.fingerprint)
-    throw new Error('Stale observation: UI changed during selection');
+  const guard = guards.get(action);
+  if (!guard)
+    throw new Error(
+      'Stale observation: action was not captured by this browser',
+    );
+  if (page.url() !== before.url || page.url() !== guard.url)
+    throw new Error('Stale observation: navigation changed during selection');
   if (action.kind === 'wait') {
     await page.waitForTimeout(500);
     return;
   }
   if (action.kind === 'scroll') {
     const viewport = page.viewportSize()!;
+    if (
+      guard.kind !== 'scroll' ||
+      viewport.width !== guard.width ||
+      viewport.height !== guard.height ||
+      !(await sameDialogs(page, guard.dialogs))
+    )
+      throw new Error(
+        'Stale observation: scroll context changed during selection',
+      );
+    const current = await scrollElement(page);
+    try {
+      if (
+        !(await current.evaluate(
+          (element, old) => element === old,
+          guard.element,
+        )) ||
+        !(await current.evaluate(
+          (element, state) =>
+            element.scrollLeft === state.x && element.scrollTop === state.y,
+          { x: guard.x, y: guard.y },
+        ))
+      )
+        throw new Error(
+          'Stale observation: scroll container or position changed during selection',
+        );
+    } finally {
+      await current.dispose();
+    }
     await page.mouse.move(viewport.width / 2, viewport.height * 0.7);
     await page.mouse.wheel(0, action.direction === 'down' ? 600 : -600);
     return;
@@ -301,7 +505,21 @@ export async function execute(
     !(await inViewport(page, target)) ||
     !(await target.isEnabled())
   )
-    throw new Error('Selected target is unavailable or ambiguous');
+    throw new Error(
+      'Stale observation: selected target is unavailable or ambiguous',
+    );
+  if (
+    guard.kind !== 'control' ||
+    !(await sameDialogs(page, guard.dialogs)) ||
+    !(await target.evaluate(
+      (element, old) => element === old,
+      guard.element,
+    )) ||
+    (await controlState(target)) !== guard.state
+  )
+    throw new Error(
+      'Stale observation: selected target or dialog context changed during selection',
+    );
   if (action.kind === 'link') {
     const href = await target.getAttribute('href');
     if (
@@ -310,12 +528,14 @@ export async function execute(
       !allowedURL(action.href, baseURL, journey.allowedPaths, origins)
     )
       throw new Error('Selected link changed or left the journey scope');
-    await target.click();
-  } else if (action.kind === 'click') await target.click();
-  else if (action.kind === 'fill') await target.fill(action.value);
-  else if (action.kind === 'select') await target.selectOption(action.value);
-  else if (action.kind === 'check') await target.setChecked(action.checked);
-  else await target.press(action.key);
+    await guard.element.click();
+  } else if (action.kind === 'click') await guard.element.click();
+  else if (action.kind === 'fill') await guard.element.fill(action.value);
+  else if (action.kind === 'select')
+    await guard.element.selectOption(action.value);
+  else if (action.kind === 'check')
+    await guard.element.setChecked(action.checked);
+  else await guard.element.press(action.key);
   if (!allowedURL(page.url(), baseURL, journey.allowedPaths, origins))
     throw new Error('Navigation left the journey scope');
 }

@@ -476,7 +476,7 @@ test('no_match recovery remains capped even when each scroll makes progress', as
   }
 });
 
-test('browser refuses a selected action after the UI changes', async () => {
+test('browser refuses a selected link after its destination changes', async () => {
   const app = await fixture();
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
@@ -487,7 +487,7 @@ test('browser refuses a selected action after the UI changes', async () => {
     const before = await observe(page, 0, join(directory, 'before.png'));
     const offered = await candidates(page, journey, app.url);
     await page.evaluate(() => {
-      document.querySelector('h1')!.textContent = 'UI changed';
+      document.querySelector('a')!.setAttribute('href', '/sessions/example');
     });
     await assert.rejects(
       execute(
