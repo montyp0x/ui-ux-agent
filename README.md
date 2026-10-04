@@ -38,7 +38,9 @@ npm run run -- --suite suite.json --video
 
 `PLANNER_API_KEY` (or `OPENROUTER_API_KEY`) authenticates the screenshot-aware planner. `JEV_API_KEY` (or `TYPESAFE_API_KEY`) authenticates the Jev selector. Defaults are OpenRouter's `openai/gpt-6-astra` planner and TypeSafe's `jev-latest` selector. Override `PLANNER_MODEL`, `PLANNER_API_URL`, `SELECTOR_MODEL` and `SELECTOR_API_URL` as needed. The planner endpoint must support Chat Completions with images; the selector uses TypeSafe's v1 contract. No application-specific cloud secret lookup or protected env file is loaded.
 
-Models receive page observations; the planner also receives screenshots. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
+Models receive viewport observations: visible text and control labels, dimensions, scroll availability and positions, URL and horizontal overflow. The planner also receives a viewport screenshot. Below-the-fold, clipped and covered content is excluded from model observations; the full accessibility snapshot stays in local evidence. Control labels retain accessible names, including associated labels. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
+
+Viewport filtering uses DOM geometry, ancestor clipping, modal boundaries and sampled hit tests, including open shadow roots. It is approximate; canvas content, closed shadow roots and frame interiors remain available through the planner's screenshot. Text is capped at 12,000 characters and 100 controls after scanning at most 10,000 text nodes; `textTruncated` indicates an incomplete projection.
 
 ## Suite configuration
 
@@ -71,7 +73,7 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 }
 ```
 
-Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Scroll actions check their container, position, viewport size and dialog context; waits tolerate page updates. Scrolling tracks both the document and nested containers.
+Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Scroll directions are offered only when the container under the driver's wheel position or its scroll ancestors can advance in that direction. Scroll actions check their container, position, viewport size and dialog context; waits tolerate page updates. Scrolling tracks both the document and nested containers.
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 

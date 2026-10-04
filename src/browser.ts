@@ -8,6 +8,7 @@ import type {
   Suite,
   Target,
 } from './contracts.js';
+import { projectViewport } from './viewport.js';
 
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard =
@@ -198,16 +199,7 @@ export function locate(page: Page, target: Target): Locator {
 
 async function inViewport(page: Page, locator: Locator): Promise<boolean> {
   if (!(await locator.isVisible())) return false;
-  const box = await locator.boundingBox();
-  const viewport = page.viewportSize();
-  return (
-    !!box &&
-    !!viewport &&
-    box.x < viewport.width &&
-    box.y < viewport.height &&
-    box.x + box.width > 0 &&
-    box.y + box.height > 0
-  );
+  return (await locator.evaluate(projectViewport)).targetVisible;
 }
 
 async function scrollState(page: Page): Promise<Observation['scroll']> {
@@ -312,6 +304,10 @@ export async function observe(
   );
   const url = page.url();
   const scroll = await scrollState(page);
+  const { targetVisible: _targetVisible, ...viewport } = await page.evaluate(
+    projectViewport,
+    null,
+  );
   const fingerprint = createHash('sha256')
     .update(url + snapshot + JSON.stringify(scroll))
     .digest('hex');
@@ -320,6 +316,7 @@ export async function observe(
     url,
     snapshot: snapshot.slice(0, 20000),
     screenshot: screenshotPath,
+    visibleViewport: viewport,
     fingerprint,
     scroll,
     horizontalOverflow,
@@ -423,18 +420,21 @@ export async function candidates(
       });
     }
   }
-  out.push({
-    kind: 'scroll',
-    id: `a${out.length}`,
-    description: 'Scroll down to find more content',
-    direction: 'down',
-  });
-  out.push({
-    kind: 'scroll',
-    id: `a${out.length}`,
-    description: 'Scroll up to earlier content',
-    direction: 'up',
-  });
+  const viewport = await page.evaluate(projectViewport, null);
+  if (viewport.canScrollDown)
+    out.push({
+      kind: 'scroll',
+      id: `a${out.length}`,
+      description: 'Scroll down to find more content',
+      direction: 'down',
+    });
+  if (viewport.canScrollUp)
+    out.push({
+      kind: 'scroll',
+      id: `a${out.length}`,
+      description: 'Scroll up to earlier content',
+      direction: 'up',
+    });
   out.push({
     kind: 'wait',
     id: `a${out.length}`,

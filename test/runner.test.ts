@@ -149,6 +149,12 @@ async function fixture() {
       return;
     }
     response.setHeader('Content-Type', 'text/html');
+    if (path === '/blocked-scroll') {
+      response.end(
+        '<h1>Local harness fixture</h1><a href="/sessions">Sessions</a><div style="height:3000px">Summary cards</div><script>addEventListener("wheel", event => event.preventDefault(), { passive: false });</script>',
+      );
+      return;
+    }
     if (path === '/scroll' || path === '/long-scroll') {
       response.end(
         `<!doctype html><html><h1>Local harness fixture</h1><main><div style="height:${path === '/scroll' ? 1300 : 8000}px">Summary cards</div><a href="/sessions/example">Inspect recent session</a></main></html>`,
@@ -395,13 +401,23 @@ test('repeated no_match recovers by scrolling to an off-screen destination at na
   }
 });
 
-test('no_match recovery stops without progress and never clicks an offered control', async () => {
+test('no_match recovery stops when a scrollable page blocks the wheel and never clicks an offered control', async () => {
   const app = await fixture();
   const directory = await output('no-progress-recovery');
   let choices = 0;
   try {
     const results = await runSuite(
-      suiteSchema.parse({ ...base, baseURL: app.url }),
+      suiteSchema.parse({
+        ...base,
+        baseURL: app.url,
+        journeys: [
+          {
+            ...journey,
+            startPath: '/blocked-scroll',
+            allowedPaths: ['/blocked-scroll', '/sessions'],
+          },
+        ],
+      }),
       {
         ...deterministic,
         async choose(_j, _o, _p, actions) {

@@ -195,11 +195,27 @@ export type Action =
       direction: 'up' | 'down';
     }
   | { kind: 'wait'; id: string; description: string };
+export type Viewport = {
+  width: number;
+  height: number;
+  text: string;
+  textTruncated: boolean;
+  controls: {
+    role: string;
+    name: string;
+    value?: string;
+    checked?: boolean;
+    disabled: boolean;
+  }[];
+  canScrollUp: boolean;
+  canScrollDown: boolean;
+};
 export type Observation = {
   step: number;
   url: string;
   snapshot: string;
   screenshot: string;
+  visibleViewport: Viewport;
   fingerprint: string;
   scroll: {
     x: number;
