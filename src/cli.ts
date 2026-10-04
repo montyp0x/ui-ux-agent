@@ -1,7 +1,11 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { chromium, firefox, webkit } from 'playwright';
+import { scopeStorageState, storageStateSchema, suiteOrigins } from './auth.js';
 import { parseArgs } from 'node:util';
-import { z } from 'zod';
+import { modelOptionsFromEnv } from './config.js';
 import { suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
@@ -23,12 +27,29 @@ const { values } = parseArgs({
     'success-path': { type: 'string' },
     goal: { type: 'string' },
     browser: { type: 'string' },
+    'env-file': { type: 'string' },
+    login: { type: 'string' },
+    from: { type: 'string' },
   },
 });
+
+// Credentials come from the environment. An explicit --env-file, or ./.env when
+// present, is loaded first; variables already set in the shell take precedence.
+function loadCredentials(): void {
+  const path = values['env-file']
+    ? resolve(values['env-file'])
+    : existsSync('.env')
+      ? resolve('.env')
+      : null;
+  if (!path) return;
+  process.loadEnvFile(path);
+  console.log(`Loaded environment from ${path}`);
+}
 if (values.help) {
   console.log(
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--headed] [--video] [--validate]',
+      'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--env-file PATH] [--headed] [--video] [--validate]',
   );
 } else {
   try {
@@ -64,36 +85,52 @@ if (values.help) {
           ...suite,
           browser: values.browser,
         }).browser;
-      if (values.validate) {
+      if (values.login) {
+        // Capture (or import with --from) a session, scoped to the suite's origins.
+        let raw: unknown;
+        if (values.from)
+          raw = JSON.parse(await readFile(resolve(values.from), 'utf8'));
+        else {
+          const browser = await { chromium, firefox, webkit }[
+            suite.browser
+          ].launch({
+            headless: false,
+          });
+          try {
+            const context = await browser.newContext();
+            const page = await context.newPage();
+            await page.goto(suite.baseURL);
+            const prompt = createInterface({
+              input: process.stdin,
+              output: process.stdout,
+            });
+            await prompt.question(
+              `Sign in to ${suite.baseURL} in the opened browser, then press Enter here to save the session. `,
+            );
+            prompt.close();
+            raw = await context.storageState();
+          } finally {
+            await browser.close();
+          }
+        }
+        const { state, report } = scopeStorageState(
+          storageStateSchema.parse(raw),
+          suiteOrigins(suite),
+        );
+        const out = resolve(values.login);
+        await mkdir(dirname(out), { recursive: true, mode: 0o700 });
+        await writeFile(out, JSON.stringify(state, null, 2), { mode: 0o600 });
+        await chmod(out, 0o600);
+        console.log(
+          `Saved ${out}: ${report.keptCookies} cookies and ${report.keptOrigins.length} origins for ${suiteOrigins(suite).join(', ')}; dropped ${Object.values(report.droppedCookies).reduce((sum, count) => sum + count, 0)} cookies (${Object.keys(report.droppedCookies).join(', ') || 'none'}) and ${report.droppedOrigins.length} origins.`,
+        );
+      } else if (values.validate) {
         console.log(
           `Valid suite: ${suite.name} (${suite.journeys.length} journeys, ${suite.viewports.length} viewports)`,
         );
       } else {
-        const required = (key: string) => {
-          const value = process.env[key];
-          if (!value)
-            throw new Error(
-              `Missing ${key}; do not put credentials in the suite file`,
-            );
-          return value;
-        };
-        const options = {
-          plannerURL:
-            process.env.PLANNER_API_URL ??
-            'https://openrouter.ai/api/v1/chat/completions',
-          plannerKey:
-            process.env.PLANNER_API_KEY ?? required('OPENROUTER_API_KEY'),
-          plannerModel: process.env.PLANNER_MODEL ?? 'openai/gpt-6-astra',
-          // Optional JSON object of extra planner headers for gateways.
-          plannerHeaders: z
-            .record(z.string(), z.string())
-            .parse(JSON.parse(process.env.PLANNER_API_HEADERS ?? '{}')),
-          selectorURL:
-            process.env.SELECTOR_API_URL ??
-            'https://api.typesafe.ai/v1/systemone',
-          selectorKey: process.env.JEV_API_KEY ?? required('TYPESAFE_API_KEY'),
-          selectorModel: process.env.SELECTOR_MODEL ?? 'jev-latest',
-        };
+        loadCredentials();
+        const options = modelOptionsFromEnv(process.env);
         const directory = resolve(
           values.out ??
             `runs/${new Date().toISOString().replace(/[:.]/g, '-')}`,

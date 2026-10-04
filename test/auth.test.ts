@@ -1,0 +1,195 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { promisify } from 'node:util';
+import { scopeStorageState, suiteOrigins } from '../src/auth.js';
+import { suiteSchema } from '../src/contracts.js';
+import type { Models } from '../src/models.js';
+import { runSuite } from '../src/runner.js';
+
+const cookie = (name: string, domain: string) => ({
+  name,
+  value: 'v',
+  domain,
+  path: '/',
+  expires: -1,
+  httpOnly: false,
+  secure: false,
+  sameSite: 'Lax',
+});
+
+const state = {
+  cookies: [
+    cookie('session', 'app.example.com'),
+    cookie('edge', '.example.com'),
+    cookie('api', 'api.example.net'),
+    cookie('sso', '.accounts.idp.test'),
+    cookie('lookalike', 'evil-example.com'),
+  ],
+  origins: [
+    {
+      origin: 'https://app.example.com',
+      localStorage: [{ name: 't', value: '1' }],
+    },
+    { origin: 'https://other.test', localStorage: [{ name: 'x', value: '2' }] },
+  ],
+};
+
+test('session scoping keeps only cookies and storage for the suite origins', () => {
+  const { state: scoped, report } = scopeStorageState(state, [
+    'https://app.example.com',
+    'https://api.example.net',
+  ]);
+  assert.deepEqual(
+    scoped.cookies.map((entry) => entry.name),
+    ['session', 'edge', 'api'],
+  );
+  assert.deepEqual(report.droppedCookies, {
+    'accounts.idp.test': 1,
+    'evil-example.com': 1,
+  });
+  assert.deepEqual(report.keptOrigins, ['https://app.example.com']);
+  assert.deepEqual(report.droppedOrigins, ['https://other.test']);
+  // Cookie fields Playwright wrote survive the round trip.
+  assert.equal((scoped.cookies[0] as Record<string, unknown>).sameSite, 'Lax');
+});
+
+test('suite origins include navigation, backend and request-rule origins', () => {
+  const suite = suiteSchema.parse({
+    name: 'Origins',
+    baseURL: 'https://app.example.com/start',
+    allowedOrigins: ['https://docs.example.com'],
+    applicationOrigins: ['https://api.example.net'],
+    readOnlyPosts: [{ origin: 'https://search.example.net', path: '/q' }],
+    viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+    journeys: [
+      {
+        id: 'j',
+        goal: 'g',
+        persona: 'p',
+        startPath: '/',
+        allowedPaths: ['/'],
+        ready: { kind: 'path', pattern: '.*' },
+        success: [{ kind: 'path', pattern: '^/done$' }],
+      },
+    ],
+  });
+  assert.deepEqual(suiteOrigins(suite), [
+    'https://app.example.com',
+    'https://docs.example.com',
+    'https://api.example.net',
+    'https://search.example.net',
+  ]);
+});
+
+test('--login --from writes a scoped, owner-only session file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-login-'));
+  const source = join(directory, 'full.json');
+  const out = join(directory, '.auth', 'app.json');
+  await writeFile(source, JSON.stringify(state));
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      'src/cli.ts',
+      '--suite',
+      'examples/website.json',
+      '--url',
+      'https://app.example.com',
+      '--login',
+      out,
+      '--from',
+      source,
+    ],
+    { env: { ...process.env } },
+  );
+  assert.match(stdout, /dropped 3 cookies/);
+  assert.doesNotMatch(stdout, /"value"/);
+  assert.equal((await stat(out)).mode & 0o777, 0o600);
+  const saved = JSON.parse(await readFile(out, 'utf8'));
+  assert.deepEqual(
+    saved.cookies.map((entry: { name: string }) => entry.name),
+    ['session', 'edge'],
+  );
+});
+
+test('runs load the scoped session and report the cookies they dropped', async () => {
+  const seen: string[] = [];
+  const server = createServer((request, response) => {
+    seen.push(request.headers.cookie ?? '');
+    response.setHeader('Content-Type', 'text/html');
+    response.end('<h1>Session fixture</h1>');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-scope-'));
+  const session = join(directory, 'session.json');
+  await writeFile(
+    session,
+    JSON.stringify({
+      cookies: [cookie('kept', '127.0.0.1'), cookie('foreign', '.idp.test')],
+      origins: [],
+    }),
+  );
+  const models: Models = {
+    async plan() {
+      return { objective: 'Wait', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      return {
+        type: 'choice',
+        choice: 'no_match',
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, 0]),
+          ['no_match', 1],
+        ]),
+      };
+    },
+  };
+  try {
+    await runSuite(
+      suiteSchema.parse({
+        name: 'Scoped session',
+        baseURL: `http://127.0.0.1:${address.port}`,
+        requiresAuth: true,
+        viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        journeys: [
+          {
+            id: 'scoped',
+            goal: 'g',
+            persona: 'p',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: {
+              kind: 'visible',
+              target: { by: 'role', role: 'heading', name: 'Session fixture' },
+            },
+            success: [{ kind: 'path', pattern: '^/never$' }],
+            maxSteps: 1,
+          },
+        ],
+      }),
+      models,
+      { directory: join(directory, 'run'), storageState: session },
+    );
+    assert.ok(seen.length > 0);
+    assert.ok(seen.every((header) => header === 'kept=v'));
+    const scoped = (
+      await readFile(join(directory, 'run', 'events.jsonl'), 'utf8')
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.event === 'storage_state_scoped');
+    assert.deepEqual(scoped.data.droppedCookies, { 'idp.test': 1 });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

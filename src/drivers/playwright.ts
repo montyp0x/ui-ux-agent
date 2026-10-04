@@ -1,4 +1,15 @@
-import { chromium, firefox, webkit } from 'playwright';
+import { readFile } from 'node:fs/promises';
+import {
+  chromium,
+  firefox,
+  webkit,
+  type BrowserContextOptions,
+} from 'playwright';
+import {
+  scopeStorageState,
+  storageStateSchema,
+  suiteOrigins,
+} from '../auth.js';
 import {
   allowedRequest,
   allowedURL,
@@ -36,9 +47,21 @@ export async function playwrightDriver(
       video,
       log,
     }) {
+      // Load only the session material for the suite's own origins.
+      let scoped: BrowserContextOptions['storageState'];
+      if (storageState) {
+        const { state, report } = scopeStorageState(
+          storageStateSchema.parse(
+            JSON.parse(await readFile(storageState, 'utf8')),
+          ),
+          suiteOrigins(suite),
+        );
+        await log('storage_state_scoped', report);
+        scoped = state as BrowserContextOptions['storageState'];
+      }
       const context = await browser.newContext({
         viewport,
-        storageState,
+        storageState: scoped,
         serviceWorkers: 'block',
         acceptDownloads: false,
         ...(video ? { recordVideo: { dir: directory } } : {}),
