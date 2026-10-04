@@ -22,7 +22,14 @@ type Scenario =
   | 'blocked-scroll'
   | 'scroll';
 async function fixtureRun(scenario: Scenario) {
-  const server = createServer((_request, response) => {
+  // The wait scenario's content loads only after the selector chose three waits,
+  // so the assertion does not depend on how long each step takes.
+  let waitsChosen = 0;
+  const server = createServer((request, response) => {
+    if (request.url === '/loaded') {
+      response.end(waitsChosen >= 3 ? 'yes' : 'no');
+      return;
+    }
     response.setHeader('Content-Type', 'text/html');
     response.end(`<!doctype html><h1>Loop fixture</h1>
       <button aria-expanded="false" onclick="${scenario === 'background' ? "document.querySelector('#clock').textContent = 'Background ' + ++window.count" : scenario === 'toggle' || scenario === 'cycle' ? "this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'false' ? 'true' : 'false'); if (++window.count === 2 && " + (scenario === 'toggle' ? 'true' : 'false') + ") document.querySelector('#outcome').textContent = 'Done'" : scenario === 'progress' ? "document.querySelector('#progress').textContent = 'Page ' + ++window.count; if(window.count === 4) document.querySelector('#outcome').textContent = 'Done'" : ''}">Continue</button>
@@ -30,7 +37,7 @@ async function fixtureRun(scenario: Scenario) {
       <p id="outcome" style="${scenario === 'scroll' ? 'position:fixed;bottom:0;background:white' : ''}">Working</p>
       ${scenario === 'blocked-scroll' || scenario === 'scroll' ? '<div style="height:5000px"></div>' : ''}
       <script>window.count = 0;
-      ${scenario === 'wait' ? "setTimeout(() => document.querySelector('#outcome').textContent = 'Done', 1800);" : ''}
+      ${scenario === 'wait' ? "setInterval(async () => { if ((await (await fetch('/loaded')).text()) === 'yes') document.querySelector('#outcome').textContent = 'Done'; }, 100);" : ''}
       ${scenario === 'blocked-scroll' ? "addEventListener('wheel', event => { event.preventDefault(); document.querySelector('#clock').textContent = 'Background ' + ++window.count; }, {passive:false});" : ''}
       ${scenario === 'scroll' ? "addEventListener('scroll', () => { if (document.scrollingElement.scrollTop >= 1800) document.querySelector('#outcome').textContent = 'Done'; });" : ''}
       </script>`);
@@ -64,6 +71,7 @@ async function fixtureRun(scenario: Scenario) {
       return { objective: 'Continue until Done', concerns: [] };
     },
     async choose(_j, _o, _p, actions) {
+      if (scenario === 'wait') waitsChosen++;
       const choice = actions.find((action) =>
         scenario === 'wait'
           ? action.kind === 'wait'
@@ -254,7 +262,18 @@ for (const [scenario, reason] of [
 }
 
 test('waiting for asynchronous content is limited by task budgets, not repeated-state rejection', async () => {
-  const { result } = await fixtureRun('wait');
+  const { result, events } = await fixtureRun('wait');
   assert.equal(result.status, 'passed');
+  // Content appears only after the third wait is chosen: three or more waits in
+  // an unchanged state were dispatched, none checked or rejected as a loop.
   assert.ok(result.steps >= 3);
+  assert.ok(
+    events
+      .filter((event) => event.event === 'action_result')
+      .every((event) => event.data.action.kind === 'wait'),
+  );
+  assert.equal(
+    events.filter((event) => event.event === 'loop_check').length,
+    0,
+  );
 });
