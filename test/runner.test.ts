@@ -18,7 +18,12 @@ import {
   type Choice,
   type Journey,
 } from '../src/contracts.js';
-import { models, validateChoice, type Models } from '../src/models.js';
+import {
+  models,
+  portableSchema,
+  validateChoice,
+  type Models,
+} from '../src/models.js';
 import { reportHTML } from '../src/report.js';
 import { runSuite } from '../src/runner.js';
 import { starterSuite } from '../src/scaffold.js';
@@ -82,17 +87,31 @@ async function body(request: IncomingMessage): Promise<unknown> {
 
 async function fixture() {
   const requests: { method: string; path: string }[] = [];
+  const plannerGateway: (string | undefined)[] = [];
   const server = createServer(async (request, response) => {
     const path = request.url ?? '/';
     requests.push({ method: request.method ?? 'GET', path });
     if (path === '/planner') {
+      plannerGateway.push(request.headers['x-planner-gateway'] as string);
       const payload = (await body(request)) as {
+        max_completion_tokens?: number;
+        max_tokens?: number;
+        response_format: { type: string; json_schema: { schema: unknown } };
         messages: {
           content:
             | string
             | { type: string; text?: string; image_url?: { url: string } }[];
         }[];
       };
+      // Current Chat Completions shape: max_completion_tokens and a json_schema
+      // carrying only structure; value limits are enforced by the Zod parse.
+      assert.equal(payload.max_completion_tokens, 1200);
+      assert.equal(payload.max_tokens, undefined);
+      assert.equal(payload.response_format.type, 'json_schema');
+      assert.doesNotMatch(
+        JSON.stringify(payload.response_format.json_schema.schema),
+        /maxItems|minLength|\$schema/,
+      );
       assert.ok(Array.isArray(payload.messages[1]?.content));
       const content = payload.messages[1]?.content;
       if (Array.isArray(content)) {
@@ -189,6 +208,7 @@ async function fixture() {
   return {
     url: `http://127.0.0.1:${address.port}`,
     requests,
+    plannerGateway,
     async close() {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
@@ -272,12 +292,15 @@ test('a real browser reaches all assertions through the planner and selector HTT
       selectorURL: `${app.url}/selector`,
       selectorKey: 'test-only',
       selectorModel: 'fixture-selector',
+      plannerHeaders: { 'X-Planner-Gateway': 'fixture' },
     });
     const results = await runSuite(
       suiteSchema.parse({ ...base, baseURL: app.url }),
       integration,
       { directory, video: true },
     );
+    assert.ok(app.plannerGateway.length > 0);
+    assert.ok(app.plannerGateway.every((value) => value === 'fixture'));
     assert.equal(results[0]?.status, 'passed');
     assert.equal(results[0]?.steps, 2);
     assert.deepEqual(results[0]?.checks, [true, true]);
@@ -691,5 +714,70 @@ test('configured form actions work on a website without application test IDs', a
   } finally {
     await browser?.close();
     await app.close();
+  }
+});
+
+test('structured-output schemas drop value keywords but keep fields that share their names', () => {
+  assert.deepEqual(
+    portableSchema({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', minLength: 1, pattern: '^a' },
+        items: { type: 'array', maxItems: 6, items: { type: 'string' } },
+      },
+      required: ['pattern', 'items'],
+      additionalProperties: false,
+    }),
+    {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string' },
+        items: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['pattern', 'items'],
+      additionalProperties: false,
+    },
+  );
+});
+
+test('a planner completion truncated at the token limit is rejected, not parsed', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: '{"objective": "Open the' },
+            finish_reason: 'length',
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-truncated-'));
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<h1>Fixture</h1>');
+    const observation = await observe(page, 0, join(directory, 'step.png'));
+    const planner = models({
+      plannerURL: `http://127.0.0.1:${address.port}/planner`,
+      plannerKey: 'test-only',
+      plannerModel: 'fixture',
+      selectorURL: '',
+      selectorKey: '',
+      selectorModel: '',
+    });
+    await assert.rejects(
+      planner.plan(journey, observation, [], 5000),
+      /truncated at the token limit/,
+    );
+  } finally {
+    await browser.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

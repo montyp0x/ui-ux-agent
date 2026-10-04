@@ -17,6 +17,8 @@ export type ModelOptions = {
   selectorURL: string;
   selectorKey: string;
   selectorModel: string;
+  // Extra planner request headers, for gateways that need more than a bearer token.
+  plannerHeaders?: Record<string, string>;
   onCall?: (data: {
     role: 'planner' | 'selector';
     model: string;
@@ -57,15 +59,64 @@ function modelObservation(observation: Observation) {
   };
 }
 
+// Structured-output dialects accept different keyword subsets. Send the shape
+// (types, properties, required, additionalProperties) and validate value
+// constraints with the Zod schema after parsing.
+const VALUE_CONSTRAINTS = new Set([
+  '$schema',
+  'minLength',
+  'maxLength',
+  'minItems',
+  'maxItems',
+  'pattern',
+  'format',
+  'minimum',
+  'maximum',
+]);
+
+export function portableSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(portableSchema);
+  if (!schema || typeof schema !== 'object') return schema;
+  return Object.fromEntries(
+    Object.entries(schema).flatMap(([key, value]) =>
+      VALUE_CONSTRAINTS.has(key)
+        ? []
+        : key === 'properties'
+          ? [
+              [
+                key,
+                Object.fromEntries(
+                  Object.entries(value as object).map(([name, child]) => [
+                    name,
+                    portableSchema(child),
+                  ]),
+                ),
+              ],
+            ]
+          : [[key, portableSchema(value)]],
+    ),
+  );
+}
+
+const planResponseFormat = {
+  type: 'json_schema',
+  json_schema: {
+    name: 'plan',
+    schema: portableSchema(z.toJSONSchema(planSchema)),
+  },
+};
+
 async function post(
   url: string,
   key: string,
   body: unknown,
   timeoutMs: number,
+  headers: Record<string, string> = {},
 ): Promise<unknown> {
   const response = await fetch(url, {
     method: 'POST',
     headers: {
+      ...headers,
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     },
@@ -139,10 +190,11 @@ export function models(options: ModelOptions): Models {
               ],
             },
           ],
-          max_tokens: 1200,
-          response_format: { type: 'json_object' },
+          max_completion_tokens: 1200,
+          response_format: planResponseFormat,
         },
         timeoutMs,
+        options.plannerHeaders,
       );
       await options.onCall?.({
         role: 'planner',
@@ -153,11 +205,19 @@ export function models(options: ModelOptions): Models {
       const response = z
         .object({
           choices: z
-            .array(z.object({ message: z.object({ content: z.string() }) }))
+            .array(
+              z.object({
+                message: z.object({ content: z.string() }),
+                finish_reason: z.string().nullish(),
+              }),
+            )
             .min(1),
         })
         .parse(payload);
-      return planSchema.parse(JSON.parse(response.choices[0]!.message.content));
+      const choice = response.choices[0]!;
+      if (choice.finish_reason === 'length')
+        throw new Error('Planner output was truncated at the token limit');
+      return planSchema.parse(JSON.parse(choice.message.content));
     },
     async choose(journey, observation, plan, actions, history, timeoutMs) {
       const started = Date.now();

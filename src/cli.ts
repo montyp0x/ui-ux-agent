@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { z } from 'zod';
 import { suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
@@ -83,6 +84,10 @@ if (values.help) {
           plannerKey:
             process.env.PLANNER_API_KEY ?? required('OPENROUTER_API_KEY'),
           plannerModel: process.env.PLANNER_MODEL ?? 'openai/gpt-6-astra',
+          // Optional JSON object of extra planner headers for gateways.
+          plannerHeaders: z
+            .record(z.string(), z.string())
+            .parse(JSON.parse(process.env.PLANNER_API_HEADERS ?? '{}')),
           selectorURL:
             process.env.SELECTOR_API_URL ??
             'https://api.typesafe.ai/v1/systemone',
