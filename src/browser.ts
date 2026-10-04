@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { ElementHandle, Locator, Page, Request } from 'playwright';
+import {
+  errors,
+  type ElementHandle,
+  type Locator,
+  type Page,
+  type Request,
+} from 'playwright';
 import type {
   Action,
   Check,
@@ -11,6 +17,7 @@ import type {
 } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
+import type { EventLogger } from './drivers/types.js';
 
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard =
@@ -34,12 +41,25 @@ type Guard =
       point: ScrollPoint;
       direction: 'up' | 'down';
     };
+// Evidence that an offered candidate changed while its guard was being bound.
+type Skip = {
+  reason: 'detached' | 'ambiguous' | 'replaced' | 'no_recipient';
+  matches?: number;
+  detail?: string;
+};
+// Discovery has just seen the candidate, so capture only bridges a short race;
+// it must not wait out the task timeout for an element that has gone.
+const CAPTURE_TIMEOUT_MS = 1000;
 const guards = new WeakMap<Action, Guard>();
-const offeredActions = new WeakMap<Page, Action[]>();
+const offeredActions = new WeakMap<
+  Page,
+  { actions: Action[]; dialogs: Element[] }
+>();
 
 async function releaseActions(page: Page): Promise<void> {
-  const elements = new Set<Element>();
-  for (const action of offeredActions.get(page) ?? []) {
+  const offered = offeredActions.get(page);
+  const elements = new Set<Element>(offered?.dialogs);
+  for (const action of offered?.actions ?? []) {
     const guard = guards.get(action);
     if (guard && guard.kind !== 'wait') {
       elements.add(guard.element);
@@ -81,47 +101,108 @@ async function sameDialogs(page: Page, before: Element[]): Promise<boolean> {
   }
 }
 
-async function controlState(target: Locator): Promise<string> {
+async function controlState(
+  target: Locator,
+  timeout?: number,
+): Promise<string> {
   return JSON.stringify({
-    snapshot: await target.ariaSnapshot(),
-    properties: await target.evaluate((element) => {
-      const control = element as HTMLInputElement;
-      const form = control.form;
-      return {
-        tag: element.tagName,
-        attributes: [
-          'href',
-          'target',
-          'type',
-          'name',
-          'role',
-          'formaction',
-          'formmethod',
-          'readonly',
-          'aria-disabled',
-        ].map((name) => [name, element.getAttribute(name)]),
-        value: control.value,
-        checked: control.checked,
-        disabled: control.disabled,
-        formAction: control.formAction,
-        formMethod: control.formMethod,
-        formTarget: control.formTarget,
-        resolvedHref:
-          element instanceof HTMLAnchorElement ? element.href : null,
-        form: form
-          ? { action: form.action, method: form.method, target: form.target }
-          : null,
-        options:
-          element instanceof HTMLSelectElement
-            ? Array.from(element.options, (option) => ({
-                value: option.value,
-                text: option.text,
-                disabled: option.disabled,
-              }))
+    snapshot: await target.ariaSnapshot({ timeout }),
+    properties: await target.evaluate(
+      (element) => {
+        const control = element as HTMLInputElement;
+        const form = control.form;
+        return {
+          tag: element.tagName,
+          attributes: [
+            'href',
+            'target',
+            'type',
+            'name',
+            'role',
+            'formaction',
+            'formmethod',
+            'readonly',
+            'aria-disabled',
+          ].map((name) => [name, element.getAttribute(name)]),
+          value: control.value,
+          checked: control.checked,
+          disabled: control.disabled,
+          formAction: control.formAction,
+          formMethod: control.formMethod,
+          formTarget: control.formTarget,
+          resolvedHref:
+            element instanceof HTMLAnchorElement ? element.href : null,
+          form: form
+            ? { action: form.action, method: form.method, target: form.target }
             : null,
-      };
-    }),
+          options:
+            element instanceof HTMLSelectElement
+              ? Array.from(element.options, (option) => ({
+                  value: option.value,
+                  text: option.text,
+                  disabled: option.disabled,
+                }))
+              : null,
+        };
+      },
+      undefined,
+      { timeout },
+    ),
   });
+}
+
+function firstLine(caught: unknown): string {
+  const message = caught instanceof Error ? caught.message : String(caught);
+  return message.split('\n')[0]!.slice(0, 200);
+}
+
+// Binds the control's identity and state, or proves it changed meanwhile.
+// Failures on a control that is still present and unchanged propagate.
+async function bindControl(
+  target: Locator,
+  bound: (element: Element, state: string) => void,
+): Promise<Skip | null> {
+  const present = await target.count();
+  if (present !== 1)
+    return { reason: present ? 'ambiguous' : 'detached', matches: present };
+  let element: Element | null = null;
+  let failure: unknown = null;
+  try {
+    element = (await target.elementHandle({
+      timeout: CAPTURE_TIMEOUT_MS,
+    })) as Element | null;
+    if (element) {
+      const state = await controlState(target, CAPTURE_TIMEOUT_MS);
+      if (
+        await target.evaluate((current, old) => current === old, element, {
+          timeout: CAPTURE_TIMEOUT_MS,
+        })
+      ) {
+        bound(element, state);
+        return null;
+      }
+    }
+  } catch (caught) {
+    failure = caught;
+  }
+  try {
+    const matches = await target.count();
+    const detail = failure ? firstLine(failure) : undefined;
+    if (!element) {
+      // Absent for the whole capture window: the candidate is gone, not slow.
+      if (!failure || failure instanceof errors.TimeoutError)
+        return { reason: 'detached', matches, detail };
+    } else if (matches === 0) return { reason: 'detached', matches, detail };
+    else if (matches > 1) return { reason: 'ambiguous', matches, detail };
+    else if (
+      !failure ||
+      !(await target.evaluate((current, old) => current === old, element))
+    )
+      return { reason: 'replaced', matches, detail };
+    throw failure;
+  } finally {
+    await element?.dispose();
+  }
 }
 
 async function scrollElement(
@@ -144,15 +225,15 @@ async function bind(
   page: Page,
   action: Action,
   visibleDialogs: Element[],
-): Promise<void> {
+): Promise<Skip | null> {
   const url = page.url();
   if (action.kind === 'wait') {
     guards.set(action, { kind: 'wait', url });
-    return;
+    return null;
   }
   if (action.kind === 'scroll') {
     const element = await scrollElement(page, action.point, action.direction);
-    if (!element) return;
+    if (!element) return { reason: 'no_recipient' };
     const { x, y } = await element.evaluate((element) => ({
       x: element.scrollLeft,
       y: element.scrollTop,
@@ -168,18 +249,17 @@ async function bind(
       point: { ...action.point },
       direction: action.direction,
     });
-  } else {
-    const target = locate(page, action.target);
-    const element = await target.elementHandle();
-    if (element)
-      guards.set(action, {
-        kind: 'control',
-        url,
-        element,
-        state: await controlState(target),
-        dialogs: visibleDialogs,
-      });
+    return null;
   }
+  return bindControl(locate(page, action.target), (element, state) =>
+    guards.set(action, {
+      kind: 'control',
+      url,
+      element,
+      state,
+      dialogs: visibleDialogs,
+    }),
+  );
 }
 
 export function locate(page: Page, target: Target): Locator {
@@ -349,6 +429,7 @@ export async function candidates(
   journey: Journey,
   baseURL: string,
   origins: string[] = [],
+  log?: EventLogger,
 ): Promise<Action[]> {
   await releaseActions(page);
   const out: Action[] = [];
@@ -461,10 +542,26 @@ export async function candidates(
     id: `a${out.length}`,
     description: 'Wait briefly for loading to finish',
   });
-  offeredActions.set(page, out);
   const visibleDialogs = await dialogs(page);
-  for (const action of out) await bind(page, action, visibleDialogs);
-  return out;
+  offeredActions.set(page, { actions: out, dialogs: visibleDialogs });
+  const offered: Action[] = [];
+  for (const action of out) {
+    const skipped = await bind(page, action, visibleDialogs);
+    if (!skipped) offered.push(action);
+    // Never offer an action without a guard; record why it was withdrawn.
+    else
+      await log?.('candidate_skipped', {
+        journey: journey.id,
+        url: page.url(),
+        action: action.description,
+        kind: action.kind,
+        ...skipped,
+      });
+  }
+  offered.forEach((action, index) => {
+    action.id = `a${index}`;
+  });
+  return offered;
 }
 
 export async function repeatState(

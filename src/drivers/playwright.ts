@@ -130,7 +130,13 @@ export async function playwrightDriver(
           return observe(page, step, screenshot);
         },
         candidates() {
-          return candidates(page, journey, suite.baseURL, suite.allowedOrigins);
+          return candidates(
+            page,
+            journey,
+            suite.baseURL,
+            suite.allowedOrigins,
+            log,
+          );
         },
         repeatState(action) {
           return repeatState(page, action, journey);
