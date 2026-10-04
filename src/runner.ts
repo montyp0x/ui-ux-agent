@@ -38,6 +38,58 @@ async function ready(
   return false;
 }
 
+async function waitForContent(
+  session: UISession,
+  journey: Journey,
+  deadline: number,
+  viewport: string,
+  log: Logger,
+): Promise<{ checks: boolean[]; passed: boolean }> {
+  const started = Date.now();
+  const expires = Math.min(deadline, started + journey.contentReady!.timeoutMs);
+  const conditions = journey.contentReady!.checks;
+  let checks = conditions.map(() => false);
+  while (true) {
+    if (Date.now() < expires) {
+      session.setTimeout(Math.max(1, Math.min(5000, expires - Date.now())));
+      try {
+        checks = await Promise.all(
+          conditions.map((condition) => session.check(condition)),
+        );
+      } catch (caught) {
+        if (Date.now() < expires) throw caught;
+        // Preserve the last complete assertion evidence when a deadline interrupts a poll.
+      }
+    }
+    const passed =
+      checks.every(Boolean) && Date.now() < expires && !session.unauthorized;
+    const finished = passed || Date.now() >= expires || session.unauthorized;
+    await log('content_readiness', {
+      journey: journey.id,
+      viewport,
+      outcome: session.unauthorized
+        ? 'unauthorized'
+        : passed
+          ? 'passed'
+          : finished
+            ? 'timeout'
+            : 'waiting',
+      checks,
+      failedChecks: conditions.flatMap((condition, index) =>
+        checks[index]
+          ? []
+          : [{ index: journey.success.length + index, condition }],
+      ),
+      durationMs: Date.now() - started,
+      budget: expires === deadline ? 'journey' : 'content',
+    });
+    if (finished) return { checks, passed };
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, Math.min(200, expires - Date.now()))),
+    );
+  }
+}
+
 async function runJourney(
   session: UISession,
   suite: Suite,
@@ -95,8 +147,52 @@ async function runJourney(
           journey.success.map((condition) => session.check(condition)),
         );
         if (result.checks.every(Boolean)) {
-          result.status = 'passed';
-          result.reason = 'All independent outcome assertions passed';
+          const completion = journey.contentReady
+            ? await waitForContent(session, journey, deadline, viewport, log)
+            : { checks: [], passed: Date.now() < deadline };
+          if (completion.passed && journey.contentReady) {
+            // Loading can move arrival controls below the viewport. Refresh before planning.
+            observation = await session.observe(step, observation.screenshot);
+            await log('content_observation', {
+              journey: journey.id,
+              viewport,
+              ...observation,
+            });
+            result.checks = await Promise.all(
+              journey.success.map((condition) => session.check(condition)),
+            );
+          }
+          result.checks = [...result.checks, ...completion.checks];
+          if (
+            session.unauthorized ||
+            !completion.passed ||
+            (result.checks.every(Boolean) && Date.now() < deadline)
+          ) {
+            result.status = session.unauthorized
+              ? 'blocked'
+              : completion.passed
+                ? 'passed'
+                : 'failed';
+            result.reason = session.unauthorized
+              ? 'An authenticated request returned 401'
+              : completion.passed
+                ? 'All independent outcome assertions passed'
+                : journey.contentReady
+                  ? 'Content readiness timed out before the configured content assertions passed'
+                  : 'Task budget exhausted before the outcome was observed';
+            break;
+          }
+        }
+        if (
+          !allowedURL(
+            session.location(),
+            suite.baseURL,
+            journey.allowedPaths,
+            suite.allowedOrigins,
+          )
+        ) {
+          result.status = 'blocked';
+          result.reason = 'Navigation left the allowed journey scope';
           break;
         }
         if (Date.now() >= deadline || step === journey.maxSteps) {
@@ -272,6 +368,8 @@ async function runJourney(
     result.status = session.unauthorized ? 'blocked' : 'error';
   } finally {
     try {
+      // Evidence capture has its own bounded timeout, not the expired task timeout.
+      session.setTimeout(5000);
       const screenshot = join(directory, 'final.png');
       await session.screenshot(screenshot);
       for (const error of new Set(session.browserErrors))

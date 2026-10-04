@@ -48,7 +48,7 @@ Viewport filtering uses DOM geometry, ancestor clipping, modal boundaries and sa
 
 Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one optional application example; it is never selected by default.
 
-On October 4, 2026, three example-app staging journeys were exercised with an approved authenticated session at desktop and narrow widths. Five of six probes passed their independent checks. The narrow session probe failed when Jev selected `no_match` despite an available scroll action. These live runs used Codex in chat for screenshot planning and the real Jev HTTP selector; they do not verify the default OpenRouter planner on example-app. Interactive planning pauses are included in run durations, which are not usability timing measurements. Private evidence stays in ignored local run directories.
+On October 4, 2026, three example-app staging journeys were exercised with an approved authenticated session at desktop and narrow widths. Five of six probes passed their independent checks. The narrow session probe failed when Jev selected `no_match` despite an available scroll action. These live runs used Codex in chat for screenshot planning and the real Jev HTTP selector; they do not verify the default OpenRouter planner on example-app. Interactive planning pauses are included in run durations, which are not usability timing measurements. Private evidence stays in ignored local run directories. Those earlier arrival-only session passes did not prove loaded content. A later narrow-session replay with explicit content readiness passed all six checks in seven actions: tabs and a captured instruction were visible in the final screenshot and recording. It still recorded a timeline HTTP 503, so an asserted content outcome is not a backend-health verdict. The updated local browser tests separately cover persistent loading, accepted empty states, unavailable content, deadline limits, unauthorized responses and loading-induced layout shifts.
 
 | Setting              | Purpose                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
@@ -75,7 +75,27 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 }
 ```
 
-Checks support route patterns, visible content, any visible match, text patterns and absence. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
+Checks support route patterns, visible content, any visible match, text patterns and absence. `anyRendered` accepts any Playwright-visible match, including below the viewport; it proves layout presence, not that the user inspected it. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
+
+### Content readiness
+
+Route/page-shell checks prove arrival, not loaded content. Optionally add `contentReady` to a journey:
+
+```json
+{
+  "contentReady": {
+    "timeoutMs": 10000,
+    "checks": [
+      { "kind": "anyRendered", "target": { "by": "css", "value": ".result, .accepted-empty-state" } },
+      { "kind": "notVisible", "target": { "by": "css", "value": ".loading, .error" } }
+    ]
+  }
+}
+```
+
+After every `success` assertion passes, the runner polls content checks every 200ms, without planner calls or additional actions. Waiting is capped by `timeoutMs` (default 10s, maximum 60s) and the remaining journey duration, including after the last allowed action. A failed content deadline ends the journey rather than resuming navigation. Once content loads, the runner refreshes its observation and rechecks arrival assertions; if a layout shift moved required controls off-screen, normal navigation can continue within the remaining action/time budgets. Choose explicit positive content and scoped blockers; empty/error states are accepted only if your checks allow them. Use viewport checks when inspection matters, and `anyRendered` only for loaded-content presence. No product vocabulary or automatic loading detection is built into the engine.
+
+`content_readiness` events record poll outcomes, elapsed time, the limiting budget and failed check definitions. Result checks list `success` followed by `contentReady.checks` once content waiting begins. Without `contentReady`, arrival-only journeys retain their narrower contract. Final screenshot capture and cleanup run after the task deadline with a separate bounded screenshot timeout; total reported duration includes them.
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 

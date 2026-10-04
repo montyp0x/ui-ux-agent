@@ -288,9 +288,14 @@ export async function check(page: Page, condition: Check): Promise<boolean> {
       if (await element.isVisible()) return false;
     return true;
   }
-  if (condition.kind === 'anyVisible') {
+  if (condition.kind === 'anyVisible' || condition.kind === 'anyRendered') {
     for (const element of await target.all())
-      if (await inViewport(page, element)) return true;
+      if (
+        condition.kind === 'anyRendered'
+          ? await element.isVisible()
+          : await inViewport(page, element)
+      )
+        return true;
     return false;
   }
   if ((await target.count()) !== 1 || !(await inViewport(page, target)))

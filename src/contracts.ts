@@ -47,6 +47,7 @@ export const checkSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('path'), pattern: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('visible'), target: targetSchema }).strict(),
   z.object({ kind: z.literal('anyVisible'), target: targetSchema }).strict(),
+  z.object({ kind: z.literal('anyRendered'), target: targetSchema }).strict(),
   z.object({ kind: z.literal('notVisible'), target: targetSchema }).strict(),
   z
     .object({
@@ -107,6 +108,13 @@ export const journeySchema = z
     allowedPaths: z.array(relativePath).min(1),
     ready: checkSchema,
     success: z.array(checkSchema).min(1),
+    contentReady: z
+      .object({
+        checks: z.array(checkSchema).min(1),
+        timeoutMs: z.number().int().min(200).max(60000).default(10000),
+      })
+      .strict()
+      .optional(),
     interactions: z.array(interactionSchema).default([]),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
     maxSteps: z.number().int().min(1).max(100).default(20),
@@ -164,7 +172,11 @@ export const suiteSchema = z
     if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
     for (const journey of suite.journeys) {
-      for (const check of [journey.ready, ...journey.success]) {
+      for (const check of [
+        journey.ready,
+        ...journey.success,
+        ...(journey.contentReady?.checks ?? []),
+      ]) {
         if (check.kind === 'path' || check.kind === 'text') {
           try {
             new RegExp(check.pattern);
