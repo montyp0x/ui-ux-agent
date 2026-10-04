@@ -115,6 +115,7 @@ export const journeySchema = z
       })
       .strict()
       .optional(),
+    loopProgressTargets: z.array(targetSchema).max(10).optional(),
     interactions: z.array(interactionSchema).default([]),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
     maxSteps: z.number().int().min(1).max(100).default(20),

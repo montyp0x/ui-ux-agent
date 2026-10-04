@@ -135,6 +135,19 @@ test('planning signatures ignore candidate rebinding, ordering and wheel coordin
       { ...link, id: 'a4' },
     ]),
   );
+  assert.equal(
+    signature,
+    actionSignature([
+      scroll,
+      {
+        target: { name: 'Library', role: 'link', by: 'role' },
+        href: '/library',
+        description: 'Open Library',
+        id: 'reordered',
+        kind: 'link',
+      },
+    ]),
+  );
   assert.notEqual(
     signature,
     actionSignature([{ ...link, href: '/other' }, scroll]),

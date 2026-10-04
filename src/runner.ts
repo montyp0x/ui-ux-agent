@@ -1,5 +1,6 @@
 import { mkdir, appendFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
@@ -122,6 +123,10 @@ async function runJourney(
   const history: History = [];
   const repeats = new Map<string, number>();
   try {
+    if (journey.loopProgressTargets?.length && !session.repeatState)
+      throw new Error(
+        'Driver must implement repeatState to support loopProgressTargets',
+      );
     await session.start(Math.min(15000, journey.maxDurationMs));
     if (!(await ready(session, journey, deadline))) {
       result.status = 'blocked';
@@ -305,21 +310,45 @@ async function runJourney(
         }
         noMatch = 0;
         if (!action) throw new Error('Selected action was not offered');
-        const repeatKey = `${observation.fingerprint}:${JSON.stringify(action)}`;
-        const repeated = (repeats.get(repeatKey) ?? 0) + 1;
-        repeats.set(repeatKey, repeated);
-        if (repeated >= 3) {
-          result.status = 'failed';
-          result.reason =
-            'Repeated the same action in the same state three times';
-          result.findings.push({
-            kind: 'observed',
-            category: 'loop',
-            description: `Repeated action: ${action.description}`,
+        const state =
+          action.kind === 'wait'
+            ? null
+            : session.repeatState
+              ? await session.repeatState(action)
+              : observation.fingerprint;
+        if (state !== null) {
+          const repeatKey = createHash('sha256')
+            .update(
+              JSON.stringify([state, actionSignature([action]), result.checks]),
+            )
+            .digest('hex');
+          const repeated = (repeats.get(repeatKey) ?? 0) + 1;
+          repeats.set(repeatKey, repeated);
+          await log('loop_check', {
+            journey: journey.id,
+            viewport,
             step,
-            screenshot: observation.screenshot,
+            action: action.description,
+            stateSource: session.repeatState ? 'recipient' : 'page-fallback',
+            key: repeatKey,
+            visits: repeated,
+            limit: 3,
+            progressTargets: journey.loopProgressTargets?.length ?? 0,
           });
-          break;
+          if (repeated >= 3) {
+            result.status = 'failed';
+            result.reason = session.repeatState
+              ? 'Repeated the same action in the same recipient/progress state three times'
+              : 'Repeated the same action in the same page state three times';
+            result.findings.push({
+              kind: 'observed',
+              category: 'loop',
+              description: `Repeated action: ${action.description}; ${session.repeatState ? 'recipient and declared progress' : 'page'} state revisited three times`,
+              step,
+              screenshot: observation.screenshot,
+            });
+            break;
+          }
         }
         let error: string | null = null;
         const actionStarted = Date.now();

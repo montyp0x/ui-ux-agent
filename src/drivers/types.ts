@@ -27,6 +27,8 @@ export interface UISession {
   observe(step: number, screenshot: string): Promise<Observation>;
   candidates(): Promise<Action[]>;
   execute(action: Action, before: Observation): Promise<void>;
+  // Stable recipient/progress state for loop detection; null disables detection for this action.
+  repeatState?(action: Action): Promise<string | null>;
   screenshot(path: string): Promise<void>;
   finish(trace: string): Promise<{ video: string | null }>;
 }

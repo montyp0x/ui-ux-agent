@@ -467,6 +467,58 @@ export async function candidates(
   return out;
 }
 
+export async function repeatState(
+  page: Page,
+  action: Action,
+  journey: Journey,
+): Promise<string | null> {
+  const guard = guards.get(action);
+  if (!guard || guard.kind === 'wait') return null;
+  const progress = [];
+  for (const configured of journey.loopProgressTargets ?? []) {
+    const target = locate(page, configured);
+    const count = await target.count();
+    if (count > 1)
+      throw new Error(
+        'Loop progress target is ambiguous; configure a unique target',
+      );
+    const visible = count === 1 && (await target.isVisible());
+    progress.push({
+      count,
+      visible,
+      snapshot: visible ? (await target.ariaSnapshot()).slice(0, 20000) : null,
+    });
+  }
+  const dialogNames = await Promise.all(
+    guard.dialogs.map((dialog) =>
+      dialog.evaluate((element) => ({
+        role: element.getAttribute('role'),
+        name:
+          element.getAttribute('aria-label') ??
+          (element.getAttribute('aria-labelledby') ?? '')
+            .split(/\s+/)
+            .map(
+              (id) =>
+                element.ownerDocument.getElementById(id)?.textContent ?? '',
+            )
+            .join(' '),
+      })),
+    ),
+  );
+  const recipient =
+    guard.kind === 'control'
+      ? guard.state
+      : await guard.element.evaluate((element) => ({
+          x: element.scrollLeft,
+          y: element.scrollTop,
+          width: element.clientWidth,
+          height: element.clientHeight,
+          scrollWidth: element.scrollWidth,
+          scrollHeight: element.scrollHeight,
+        }));
+  return JSON.stringify({ url: guard.url, recipient, dialogNames, progress });
+}
+
 export async function execute(
   page: Page,
   action: Action,

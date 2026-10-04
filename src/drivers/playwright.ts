@@ -6,6 +6,7 @@ import {
   check,
   execute,
   observe,
+  repeatState,
 } from '../browser.js';
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
@@ -130,6 +131,9 @@ export async function playwrightDriver(
         },
         candidates() {
           return candidates(page, journey, suite.baseURL, suite.allowedOrigins);
+        },
+        repeatState(action) {
+          return repeatState(page, action, journey);
         },
         execute(action, before) {
           return execute(

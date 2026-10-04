@@ -132,6 +132,26 @@ An October 4 narrow example-app replay of the refresh policy passed six outcome/
 
 Two consecutive `no_match` decisions trigger a downward scroll from the offered actions, with at most two recovery attempts per journey. Recovery stops if the viewport does not advance and never selects a click or form action. Normal task and time budgets still apply. Recovery attempts appear as `selector-recovery` findings in the report and as `recovery` events in the log; their action results have `source: "recovery"`. A recovered pass still requires every independent success check and does not imply the selector succeeded unaided.
 
+## Loop detection
+
+Playwright counts visits to the same action meaning and selected recipient state, including URL, control accessibility/value state or scroll position/dimensions, dialog names and current outcome-check results. Candidate IDs, object-field/candidate-array ordering and wheel hit points do not define action meaning. The third visit is rejected before another dispatch (two prior attempts in that state). This is a bounded repetition policy, not a claim that all page changes were irrelevant. Whole-page fingerprints remain available for observations/history, but unrelated background text cannot reset recipient-based loop detection.
+
+If a repeatable control's progress appears elsewhere—for example a Next button with an unchanged label—declare narrow progress regions in the journey:
+
+```json
+{
+  "loopProgressTargets": [
+    { "by": "testId", "value": "current-page-status" }
+  ]
+}
+```
+
+Up to ten targets are allowed. Each must match at most one element. A rendered target's accessibility snapshot (capped at 20,000 characters) participates in loop identity; missing/hidden state is recorded without text. Progress may be below the viewport. These detector snapshots stay local and are not added to HTTP model payloads; ordinary visible content remains in viewport observations. Ambiguous targets are configuration errors. Choose real progress regions, not clocks/loading animations; unconfigured external progress cannot reliably be inferred. Changed control state, changed scroll position and declared external progress distinguish legitimate repeated actions. Reversible cycles are still bounded if they revisit the same state repeatedly.
+
+Wait actions are exempt from repetition rejection and remain limited by the normal decision/time budgets. `loop_check` events record the hashed key, visit count, limit, state source and number of progress targets, not raw recipient/progress snapshots. Custom drivers may implement `UISession.repeatState(action)`; return null to skip a loop check for that action. Drivers without it use the page fingerprint plus normalized action meaning, so background-noise resistance is not guaranteed. Such drivers must implement the method before accepting `loopProgressTargets`; unsupported configured progress is reported as an error rather than discarded.
+
+The loop policy's browser regressions cover background changes, rebound candidate IDs, blocked and advancing wheels, reversible cycles, declared progress, wait completion and custom-driver capability errors. An October 4 focused example-app replay starting at Sessions passed six checks in five actions (four interactive Codex plans, five real Jev calls), with loaded instruction content inspected in screenshot/video. A separate Home replay failed when an unselected Teams link disappeared during candidate binding; that transition race remains unresolved. Backend 503 findings were retained. These probes are not a controlled model-quality or backend-health benchmark.
+
 ## Evidence and outcomes
 
 Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten.

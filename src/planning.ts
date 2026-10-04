@@ -1,6 +1,16 @@
 import type { Action } from './contracts.js';
 import type { History } from './models.js';
 
+function semanticJSON(value: object): string {
+  return JSON.stringify(value, (_key, child: unknown) =>
+    child && typeof child === 'object' && !Array.isArray(child)
+      ? Object.fromEntries(
+          Object.entries(child).sort(([a], [b]) => a.localeCompare(b)),
+        )
+      : child,
+  );
+}
+
 // Candidate IDs and wheel hit points are transient bindings, not new planning opportunities.
 export function actionSignature(actions: Action[]): string {
   return JSON.stringify(
@@ -9,9 +19,9 @@ export function actionSignature(actions: Action[]): string {
         const { id: _id, ...meaning } = action;
         if (meaning.kind === 'scroll') {
           const { point: _point, ...regionAction } = meaning;
-          return JSON.stringify(regionAction);
+          return semanticJSON(regionAction);
         }
-        return JSON.stringify(meaning);
+        return semanticJSON(meaning);
       })
       .sort(),
   );
