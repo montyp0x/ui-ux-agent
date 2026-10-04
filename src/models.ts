@@ -115,6 +115,23 @@ export function portableSchema(schema: unknown): unknown {
   );
 }
 
+// Some gateways do not enforce json_schema and wrap a valid object in one key
+// (for example {"json_schema": {...}}). Accept the inner object only when it
+// passes the same schema; otherwise report the original validation error.
+export function parseStructured<T>(content: string, schema: z.ZodType<T>): T {
+  const value: unknown = JSON.parse(content);
+  const direct = schema.safeParse(value);
+  if (direct.success) return direct.data;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entries = Object.values(value);
+    if (entries.length === 1) {
+      const inner = schema.safeParse(entries[0]);
+      if (inner.success) return inner.data;
+    }
+  }
+  throw direct.error;
+}
+
 const planResponseFormat = {
   type: 'json_schema',
   json_schema: {
@@ -264,7 +281,7 @@ export function models(options: ModelOptions): Models {
       const choice = response.choices[0]!;
       if (choice.finish_reason === 'length')
         throw new Error('Planner output was truncated at the token limit');
-      return planSchema.parse(JSON.parse(choice.message.content));
+      return parseStructured(choice.message.content, planSchema);
     },
     async choose(journey, observation, plan, actions, history, timeoutMs) {
       const started = Date.now();
@@ -346,12 +363,13 @@ export function models(options: ModelOptions): Models {
           .parse(payload).choices[0]!;
         if (choice.finish_reason === 'length')
           throw new Error('Selector output was truncated at the token limit');
-        const answer = z
-          .object({
+        const answer = parseStructured(
+          choice.message.content,
+          z.object({
             choice: z.string(),
             probabilities: z.record(z.string(), z.number().min(0)),
-          })
-          .parse(JSON.parse(choice.message.content));
+          }),
+        );
         // Chat models give approximate distributions; normalize at this boundary
         // and let validateChoice enforce coverage and range.
         const total = Object.values(answer.probabilities).reduce(

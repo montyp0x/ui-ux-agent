@@ -13,6 +13,7 @@ import {
   observe,
 } from '../src/browser.js';
 import {
+  planSchema,
   suiteSchema,
   type Action,
   type Choice,
@@ -20,6 +21,7 @@ import {
 } from '../src/contracts.js';
 import {
   models,
+  parseStructured,
   portableSchema,
   validateChoice,
   type Models,
@@ -862,4 +864,22 @@ test('the planner sees which visible controls are offered only when the driver r
     await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test('structured output wrapped in one key is unwrapped only when the inner object is valid', () => {
+  const plan = { objective: 'Open Sessions', concerns: [] };
+  assert.deepEqual(
+    parseStructured(JSON.stringify({ json_schema: plan }), planSchema),
+    plan,
+  );
+  assert.deepEqual(parseStructured(JSON.stringify(plan), planSchema), plan);
+  assert.throws(
+    () =>
+      parseStructured(JSON.stringify({ plan: { objective: '' } }), planSchema),
+    /objective/,
+  );
+  assert.throws(
+    () => parseStructured(JSON.stringify({ a: plan, b: plan }), planSchema),
+    /objective/,
+  );
 });
