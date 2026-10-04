@@ -3,7 +3,14 @@ import { dirname, join } from 'node:path';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
-import type { Journey, Observation, Plan, Result, Suite } from './contracts.js';
+import type {
+  Action,
+  Journey,
+  Observation,
+  Plan,
+  Result,
+  Suite,
+} from './contracts.js';
 import type { History, Models } from './models.js';
 import { reportHTML } from './report.js';
 
@@ -58,6 +65,7 @@ async function runJourney(
   let plan: Plan | null = null;
   let planPath = '';
   let noMatch = 0;
+  let recoveryScrolls = 0;
   const history: History = [];
   const repeats = new Map<string, number>();
   try {
@@ -148,20 +156,44 @@ async function runJourney(
           candidates: actions,
           decision,
         });
+        let action: Action | undefined;
+        const source = decision.choice === 'no_match' ? 'recovery' : 'selector';
         if (decision.choice === 'no_match') {
           plan = null;
-          if (++noMatch >= 2) {
+          if (++noMatch < 2) continue;
+          action = actions.find(
+            (candidate) =>
+              candidate.kind === 'scroll' && candidate.direction === 'down',
+          );
+          if (!action || recoveryScrolls >= 2) {
             result.status = 'failed';
             result.reason =
-              'Planner and selector could not find a path to the task outcome';
+              'Selector could not find a path after bounded scroll recovery';
             break;
           }
-          continue;
+          recoveryScrolls++;
+          await log('recovery', {
+            journey: journey.id,
+            viewport,
+            step,
+            reason: 'Two consecutive no_match decisions',
+            attempt: recoveryScrolls,
+            limit: 2,
+            action,
+          });
+          result.findings.push({
+            kind: 'observed',
+            category: 'selector-recovery',
+            description: `Selector returned no_match twice; runner attempted downward scroll recovery ${recoveryScrolls}/2`,
+            step,
+            screenshot: observation.screenshot,
+          });
+        } else {
+          action = actions.find(
+            (candidate) => candidate.id === decision.choice,
+          );
         }
         noMatch = 0;
-        const action = actions.find(
-          (candidate) => candidate.id === decision.choice,
-        );
         if (!action) throw new Error('Selected action was not offered');
         const repeatKey = `${observation.fingerprint}:${JSON.stringify(action)}`;
         const repeated = (repeats.get(repeatKey) ?? 0) + 1;
@@ -198,10 +230,21 @@ async function runJourney(
           viewport,
           step,
           action,
+          source,
           changed,
           error,
           durationMs: Date.now() - actionStarted,
         });
+        if (
+          source === 'recovery' &&
+          !error &&
+          JSON.stringify(after.scroll) === JSON.stringify(observation.scroll)
+        ) {
+          result.status = 'failed';
+          result.reason =
+            'Selector recovery scroll did not advance the viewport';
+          break;
+        }
         if (error && !error.startsWith('Stale observation'))
           result.findings.push({
             kind: 'observed',

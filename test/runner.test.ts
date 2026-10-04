@@ -149,6 +149,12 @@ async function fixture() {
       return;
     }
     response.setHeader('Content-Type', 'text/html');
+    if (path === '/scroll' || path === '/long-scroll') {
+      response.end(
+        `<!doctype html><html><h1>Local harness fixture</h1><main><div style="height:${path === '/scroll' ? 1300 : 8000}px">Summary cards</div><a href="/sessions/example">Inspect recent session</a></main></html>`,
+      );
+      return;
+    }
     response.end(
       `<!doctype html><html lang="en"><title>Local runner fixture</title><style>body{font:18px system-ui;max-width:900px;margin:64px auto;padding:24px;background:#f2f4f8;color:#18223a}nav,a,button{margin:12px}main{background:white;padding:32px;border-radius:16px}button{font:inherit;padding:8px}</style><h1>Local harness fixture</h1><main>${path === '/sessions/example' ? '<h2>Session outcome</h2><p data-testid="session-result">Completed: test output is visible.</p>' : path === '/sessions' ? '<h2>Recent sessions</h2><a href="/sessions/example">Inspect recent session</a>' : path === '/broken' ? '<h2>No-op regression</h2><button aria-label="Open session">Open session</button>' : '<h2>Team activity</h2><a href="/sessions">Sessions</a>'}</main></html>`,
     );
@@ -321,6 +327,149 @@ test('an expired or missing login never becomes a task pass', async () => {
         { directory: await output('missing-auth') },
       ),
       /storage-state/,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('repeated no_match recovers by scrolling to an off-screen destination at narrow width', async () => {
+  const app = await fixture();
+  const directory = await output('scroll-recovery');
+  let planCalls = 0;
+  try {
+    const results = await runSuite(
+      suiteSchema.parse({
+        ...base,
+        baseURL: app.url,
+        viewports: [{ name: 'narrow', width: 390, height: 844 }],
+        journeys: [
+          {
+            ...journey,
+            startPath: '/scroll',
+            allowedPaths: ['/scroll', '/sessions'],
+          },
+        ],
+      }),
+      {
+        ...deterministic,
+        async plan() {
+          planCalls++;
+          return {
+            objective: 'Find and open the session below the summaries',
+            concerns: [],
+          };
+        },
+      },
+      { directory },
+    );
+    assert.equal(results[0]?.status, 'passed');
+    assert.deepEqual(results[0]?.checks, [true, true]);
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const recovery = events.filter((event) => event.event === 'recovery');
+    assert.ok(recovery.length >= 1 && recovery.length <= 2);
+    assert.ok(planCalls >= 2, 'Reconsider the plan before recovery');
+    assert.ok(
+      recovery.every(
+        (event) =>
+          event.data.action.kind === 'scroll' &&
+          event.data.action.direction === 'down',
+      ),
+    );
+    assert.ok(
+      events.some(
+        (event) =>
+          event.event === 'action_result' && event.data.source === 'recovery',
+      ),
+    );
+    assert.ok(
+      results[0]?.findings.some(
+        (finding) => finding.category === 'selector-recovery',
+      ),
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('no_match recovery stops without progress and never clicks an offered control', async () => {
+  const app = await fixture();
+  const directory = await output('no-progress-recovery');
+  let choices = 0;
+  try {
+    const results = await runSuite(
+      suiteSchema.parse({ ...base, baseURL: app.url }),
+      {
+        ...deterministic,
+        async choose(_j, _o, _p, actions) {
+          choices++;
+          assert.ok(actions.some((action) => action.kind === 'link'));
+          return selected('no_match', actions);
+        },
+      },
+      { directory },
+    );
+    assert.equal(results[0]?.status, 'failed');
+    assert.match(results[0]?.reason ?? '', /did not advance the viewport/);
+    assert.equal(choices, 2);
+    assert.ok(!app.requests.some((request) => request.path === '/sessions'));
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      events.filter((event) => event.event === 'recovery').length,
+      1,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('no_match recovery remains capped even when each scroll makes progress', async () => {
+  const app = await fixture();
+  const directory = await output('capped-recovery');
+  let choices = 0;
+  try {
+    const results = await runSuite(
+      suiteSchema.parse({
+        ...base,
+        baseURL: app.url,
+        journeys: [
+          {
+            ...journey,
+            startPath: '/long-scroll',
+            allowedPaths: ['/long-scroll', '/sessions'],
+            maxSteps: 20,
+          },
+        ],
+      }),
+      {
+        ...deterministic,
+        async choose(_j, _o, _p, actions) {
+          choices++;
+          return selected('no_match', actions);
+        },
+      },
+      { directory },
+    );
+    assert.equal(results[0]?.status, 'failed');
+    assert.match(results[0]?.reason ?? '', /after bounded scroll recovery/);
+    assert.equal(choices, 6);
+    assert.equal(results[0]?.steps, 2);
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      events.filter((event) => event.event === 'recovery').length,
+      2,
+    );
+    assert.ok(
+      !app.requests.some((request) => request.path === '/sessions/example'),
     );
   } finally {
     await app.close();

@@ -102,6 +102,8 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 
 The planner refreshes on navigation, after no progress and every five steps. Jev selects from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
 
+Two consecutive `no_match` decisions trigger a downward scroll from the offered actions, with at most two recovery attempts per journey. Recovery stops if the viewport does not advance and never selects a click or form action. Normal task and time budgets still apply. Recovery attempts appear as `selector-recovery` findings in the report and as `recovery` events in the log; their action results have `source: "recovery"`. A recovered pass still requires every independent success check and does not imply the selector succeeded unaided.
+
 ## Evidence and outcomes
 
 Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten.
