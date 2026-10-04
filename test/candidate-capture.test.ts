@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { chromium, type Page } from 'playwright';
-import { candidates, execute, observe } from '../src/browser.js';
+import { candidates, execute, observe, snapshotName } from '../src/browser.js';
 import { starterSuite } from '../src/scaffold.js';
 
 const baseURL = 'https://fixture.example';
@@ -221,5 +221,49 @@ test('the last link removed while discovery reads it does not stall the stage', 
       );
       assert.deepEqual(discoverySkips(logged), [['link', 'Usage', 'detached']]);
     },
+  );
+});
+
+test('controls whose names Playwright YAML-quotes in snapshots are still discovered', async () => {
+  const names = [
+    'View: Organization',
+    'Open detail for #8342 - done',
+    "It's: here",
+    'Say "hi": now',
+    'Plain name',
+  ];
+  await fixture(
+    `for (const [i, name] of ${JSON.stringify(names)}.entries()) {
+      const button = document.createElement('button');
+      button.textContent = name;
+      document.body.append(button);
+    }`,
+    async (page, _directory, logged) => {
+      const offered = await offerWith(page, logged, {
+        ...journey,
+        discoverRoles: ['button'],
+      });
+      assert.deepEqual(
+        offered
+          .filter((action) => action.kind === 'click')
+          .map(
+            (action) =>
+              'target' in action &&
+              action.target.by === 'role' &&
+              action.target.name,
+          ),
+        names,
+      );
+      for (const name of names)
+        assert.equal(
+          snapshotName(
+            await page
+              .getByRole('button', { name, exact: true })
+              .ariaSnapshot(),
+          ),
+          name,
+        );
+    },
+    '',
   );
 });

@@ -309,6 +309,26 @@ async function enabled(element: Element): Promise<boolean | null> {
   }
 }
 
+// The accessible name from the first line of an aria snapshot. Playwright emits
+// `- role "name"` with JSON-style escapes, and wraps the whole line in YAML
+// single quotes (doubling inner ') when the name contains YAML-significant text
+// such as ': ' or ' #'. A trailing ':' marks child nodes.
+export function snapshotName(snapshot: string): string | null {
+  let line = snapshot.split('\n')[0]!.trim().replace(/^- /, '');
+  if (line.startsWith("'")) {
+    line = line.replace(/:$/, '');
+    if (!line.endsWith("'") || line.length < 2) return null;
+    line = line.slice(1, -1).replace(/''/g, "'");
+  }
+  const match = line.match(/^[a-z]+ "((?:\\.|[^"\\])*)"/);
+  if (!match) return null;
+  try {
+    return JSON.parse(`"${match[1]}"`) as string;
+  } catch {
+    return null;
+  }
+}
+
 // Reads a discovered control's accessibility snapshot through its current
 // position, so a removed sibling cannot shift the read onto a neighbour.
 async function snapshotOf(
@@ -628,14 +648,8 @@ export async function candidates(
           await skip({ role, ...read });
           continue;
         }
-        const match = read.snapshot.match(/^\s*- [a-z]+ "((?:\\.|[^"\\])*)"/);
-        if (!match) continue;
-        let name: string;
-        try {
-          name = JSON.parse(`"${match[1]}"`) as string;
-        } catch {
-          continue;
-        }
+        const name = snapshotName(read.snapshot);
+        if (name === null) continue;
         const target: Target = { by: 'role', role, name };
         if (
           (await locate(page, target).count()) !== 1 ||
