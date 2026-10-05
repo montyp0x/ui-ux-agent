@@ -54,7 +54,10 @@ export type AXNode = {
   placeholder?: string;
   enabled?: boolean;
   focused?: boolean;
+  selected?: boolean;
   frame?: Frame;
+  // Derived for rows (lists, tables, outlines): their descendants' text.
+  rowText?: string;
   actions: string[];
 };
 type Snapshot = {
@@ -122,6 +125,7 @@ const ROLES: Record<string, string> = {
   AXSheet: 'dialog',
   AXStaticText: 'text',
   AXImage: 'image',
+  AXRow: 'option',
 };
 export function roleOf(node: AXNode): string {
   if (node.subrole === 'AXTabButton') return 'tab';
@@ -134,6 +138,7 @@ export function nameOf(node: AXNode): string {
   const role = roleOf(node);
   return clean(
     node.title ||
+      node.rowText ||
       node.description ||
       (role === 'text' || role === 'heading' ? node.value : undefined) ||
       node.help ||
@@ -231,7 +236,14 @@ const PRESSABLE = new Set([
 
 type Guard =
   | { kind: 'wait' }
-  | { kind: 'control'; ref: number; signature: string; title: string }
+  | {
+      kind: 'control';
+      ref: number;
+      signature: string;
+      title: string;
+      // Rows are selected (AXSelected) rather than pressed.
+      select?: boolean;
+    }
   | {
       kind: 'scroll';
       ref: number;
@@ -307,6 +319,9 @@ export async function macosDriver(): Promise<UIDriver> {
         `${suite.baseURL}/${encodeURIComponent(title)}`;
       const snapshot = async () => {
         last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+        for (const node of last.elements)
+          if (node.role === 'AXRow' && !node.title && !node.description)
+            node.rowText = textOf(last, node);
         lastURL = urlOf(last.window.title);
         return last;
       };
@@ -448,6 +463,7 @@ export async function macosDriver(): Promise<UIDriver> {
               (node) =>
                 !isChrome(node) &&
                 (PRESSABLE.has(roleOf(node)) ||
+                  roleOf(node) === 'option' ||
                   ['textbox', 'searchbox'].includes(roleOf(node))),
             )
             .slice(0, 100)
@@ -514,6 +530,7 @@ export async function macosDriver(): Promise<UIDriver> {
                 ref: node.ref,
                 signature: signature(node),
                 title: snap.window.title,
+                select: node.role === 'AXRow',
               },
               nameOf(node),
             );
@@ -570,6 +587,49 @@ export async function macosDriver(): Promise<UIDriver> {
                 ref: node.ref,
                 signature: signature(node),
                 title: snap.window.title,
+              },
+              name,
+            );
+          }
+          // Rows of lists, tables and outlines: selected, not pressed. Rows that
+          // are already selected or have no text are not offered.
+          const rows = snap.elements.filter(
+            (node) =>
+              node.role === 'AXRow' &&
+              visible.has(node.ref) &&
+              node.enabled !== false &&
+              node.selected === false &&
+              nameOf(node),
+          );
+          const rowCounts = new Map<string, number>();
+          for (const row of rows)
+            rowCounts.set(nameOf(row), (rowCounts.get(nameOf(row)) ?? 0) + 1);
+          for (const row of rows) {
+            const name = nameOf(row);
+            if (rowCounts.get(name) !== 1) continue;
+            if (blocked.some((pattern) => pattern.test(name))) {
+              await log('candidate_skipped', {
+                journey: journey.id,
+                phase: 'discovery',
+                role: 'option',
+                name,
+                reason: 'blocked',
+              });
+              continue;
+            }
+            offer(
+              {
+                kind: 'click',
+                id: `a${out.length}`,
+                target: { by: 'role', role: 'option', name },
+                description: `Select row ${name}`,
+              },
+              {
+                kind: 'control',
+                ref: row.ref,
+                signature: signature(row),
+                title: snap.window.title,
+                select: true,
               },
               name,
             );
@@ -761,6 +821,14 @@ export async function macosDriver(): Promise<UIDriver> {
             const checked = current.value === '1';
             if (checked !== action.checked)
               await helper.call({ cmd: 'press', ref: guard.ref });
+          } else if (guard.select) {
+            await helper.call({ cmd: 'select', ref: guard.ref });
+            const after = await helper.call<AXNode>({
+              cmd: 'inspect',
+              ref: guard.ref,
+            });
+            if (after.selected !== true)
+              throw new Error('The row did not become selected');
           } else await helper.call({ cmd: 'press', ref: guard.ref });
           await new Promise((resolve) => setTimeout(resolve, 300));
           const frontAfter = await frontmost();

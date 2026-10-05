@@ -4,7 +4,11 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { suiteSchema, type Action } from '../src/contracts.js';
+import {
+  DEFAULT_BLOCKED_CONTROLS,
+  suiteSchema,
+  type Action,
+} from '../src/contracts.js';
 import { ensureHelper } from '../src/drivers/macos.js';
 import {
   buildFixtureApp,
@@ -246,3 +250,84 @@ test(
       );
   },
 );
+
+test(
+  'list rows are offered as selections and selecting one changes the app',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-rows-')),
+      'run',
+    );
+    const themes = suiteSchema.parse({
+      ...suite(app),
+      journeys: [
+        {
+          ...suite(app).journeys[0]!,
+          id: 'dark-theme',
+          goal: 'Switch to the Dark theme',
+          success: [
+            {
+              kind: 'text',
+              target: { by: 'testId', value: 'theme-current' },
+              pattern: '^Theme: Dark$',
+            },
+          ],
+        },
+      ],
+    });
+    const offered: string[][] = [];
+    const models: Models = {
+      async plan() {
+        return { objective: 'Open Settings and choose Dark', concerns: [] };
+      },
+      async choose(_j, _o, _p, actions) {
+        offered.push(actions.map((action) => action.description));
+        const choice = (actions.find(
+          (action) => action.description === 'Select row Dark',
+        ) ??
+          actions.find(
+            (action) => action.description === 'Press button Settings',
+          ))!.id;
+        return {
+          type: 'choice',
+          choice,
+          confidence: 1,
+          probabilities: Object.fromEntries([
+            ...actions.map((action) => [
+              action.id,
+              action.id === choice ? 1 : 0,
+            ]),
+            ['no_match', 0],
+          ]),
+        };
+      },
+    };
+    const [result] = await runSuite(themes, models, { directory });
+    assert.equal(result!.status, 'passed', result!.reason);
+    const settings = offered.find((list) => list.includes('Select row Dark'))!;
+    // The selected row (Light) is not offered; the others are.
+    assert.ok(settings.includes('Select row Solarized'));
+    assert.ok(!settings.includes('Select row Light'));
+  },
+);
+
+test('file side effects such as Save are blocked by default', () => {
+  const save = new RegExp(
+    DEFAULT_BLOCKED_CONTROLS.find((pattern) => pattern.includes('save'))!,
+    'i',
+  );
+  for (const name of [
+    'Save',
+    'Save As…',
+    'Export as PDF',
+    'Rename…',
+    'Move To…',
+    'Duplicate',
+  ])
+    assert.ok(save.test(name), name);
+  // Harmless names stay offered ("Saved" is not the word "save").
+  for (const name of ['Bold', 'align center', 'Saved searches'])
+    assert.ok(!save.test(name), name);
+});

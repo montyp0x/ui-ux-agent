@@ -72,6 +72,7 @@ func describe(_ element: AXUIElement) -> [String: Any] {
   }
   if let enabled = bool(element, kAXEnabledAttribute) { out["enabled"] = enabled }
   if let focused = bool(element, kAXFocusedAttribute) { out["focused"] = focused }
+  if let selected = bool(element, kAXSelectedAttribute) { out["selected"] = selected }
   if let box = frame(element) { out["frame"] = box }
   return out
 }
@@ -209,6 +210,11 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
   case "press":
     let result = AXUIElementPerformAction(try element(request), kAXPressAction as CFString)
     return result == .success ? ["ok": true] : ["error": "Press failed (\(result.rawValue))"]
+  case "select":
+    // Rows in lists, tables and outlines are selected, not pressed.
+    let target = try element(request)
+    let result = AXUIElementSetAttributeValue(target, kAXSelectedAttribute as CFString, kCFBooleanTrue)
+    return result == .success ? ["ok": true] : ["error": "Select failed (\(result.rawValue))"]
   case "setValue":
     let target = try element(request)
     AXUIElementSetAttributeValue(target, kAXFocusedAttribute as CFString, kCFBooleanTrue)

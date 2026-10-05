@@ -149,6 +149,8 @@ export const DEFAULT_BLOCKED_CONTROLS = [
   '\\b(buy|purchase|pay|subscribe|order|checkout)\\b',
   '\\b(quit|close|log ?out|sign ?out|shut ?down|restart|uninstall)\\b',
   '\\b(empty|reset|format|wipe|revoke)\\b',
+  // File side effects on the user's machine.
+  '\\b(save|export|overwrite|replace|rename|duplicate|move to)\\b',
 ];
 
 const appSchema = z

@@ -1,0 +1,71 @@
+{
+  "name": "TextEdit (macOS) \u2014 format a title",
+  "platform": "macos",
+  "app": {
+    "bundleId": "com.apple.TextEdit",
+    "relaunch": true
+  },
+  "viewports": [
+    {
+      "name": "window",
+      "width": 700,
+      "height": 500
+    }
+  ],
+  "journeys": [
+    {
+      "id": "center-title",
+      "goal": "Start a new document, write the title Meeting notes, and center it",
+      "persona": "Someone writing a quick document",
+      "ready": {
+        "kind": "anyVisible",
+        "target": {
+          "by": "testId",
+          "value": "NewDocumentButton"
+        }
+      },
+      "setup": [
+        {
+          "kind": "click",
+          "target": {
+            "by": "testId",
+            "value": "NewDocumentButton"
+          },
+          "description": "Create a new document (skips the file browser)"
+        }
+      ],
+      "interactions": [
+        {
+          "kind": "fill",
+          "target": {
+            "by": "testId",
+            "value": "First Text View"
+          },
+          "value": "Meeting notes",
+          "description": "Type the title Meeting notes into the document"
+        }
+      ],
+      "success": [
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "First Text View"
+          },
+          "pattern": "^Meeting notes$"
+        },
+        {
+          "kind": "text",
+          "target": {
+            "by": "role",
+            "role": "radio",
+            "name": "align center"
+          },
+          "pattern": "^1$"
+        }
+      ],
+      "maxSteps": 10,
+      "maxDurationMs": 180000
+    }
+  ]
+}

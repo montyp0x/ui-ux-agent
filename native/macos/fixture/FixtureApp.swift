@@ -22,6 +22,7 @@ struct ContentView: View {
   @State private var compact = false
   @State private var displayName = ""
   @State private var deleted = false
+  @State private var theme: String? = "Light"
 
   var body: some View {
     HStack(spacing: 0) {
@@ -66,6 +67,10 @@ struct ContentView: View {
         Toggle("Compact layout", isOn: $compact).accessibilityIdentifier("compact-toggle")
         TextField("Display name", text: $displayName).accessibilityIdentifier("display-name")
         Button("Delete all data") { deleted = true }.accessibilityIdentifier("delete-all")
+        Text("Theme: \(theme ?? "none")").accessibilityIdentifier("theme-current")
+        List(["Light", "Dark", "Solarized"], id: \.self, selection: $theme) { name in Text(name) }
+          .frame(height: 110)
+          .accessibilityLabel("Themes")
         if deleted { Text("All data deleted").accessibilityIdentifier("deleted-banner") }
       }
     } else {

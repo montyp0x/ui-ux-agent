@@ -194,11 +194,11 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
 - **`viewports`** are window sizes. Fixed-size windows log the refused resize and keep their size.
 - **Targets:** `testId` matches the accessibility identifier (SwiftUI `.accessibilityIdentifier`, AppKit `identifier`). `role` with `name` uses the same role names as the web (`button`, `checkbox`, `tab`, `textbox`, …). `label` matches the accessibility description or title, and `placeholder` the placeholder. CSS targets are rejected.
 - **Checks:** `path` matches `/` plus the window title. `text` matches an element's text content (its value, else its descendants' text, like `innerText`). Visibility means the element lies inside the window and every enclosing scroll area.
-- **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups), configured `click`/`fill`/`check` interactions, page scrolling of scroll areas, and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead. No synthesized mouse or keyboard events are sent, and `press`/`select` interactions are not supported yet.
+- **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups); rows of lists, tables and outlines (`Select row <text>`, role `option`, named by their text), which are selected rather than pressed, and are offered only when not already selected; configured `click`/`fill`/`check` interactions; page scrolling of scroll areas; and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead. No synthesized mouse or keyboard events are sent, and `press`/`select` interactions are not supported yet.
 
 **Safety model** (instead of the web request policy):
 
-- Controls whose names match `blockedControls` are never offered: delete, remove, trash, send, post, buy, pay, subscribe, quit, log/sign out, empty, reset, uninstall, discard and similar by default; suites can add patterns. Blocked controls are logged as `candidate_skipped` with reason `blocked`. Interactions a suite configures explicitly are allowed.
+- Controls whose names match `blockedControls` are never offered: delete, remove, trash, send, post, buy, pay, subscribe, quit, log/sign out, empty, reset, uninstall, discard, and file side effects (save, export, overwrite, replace, rename, duplicate, move to) by default; suites can add patterns. Blocked controls are logged as `candidate_skipped` with reason `blocked`. Interactions a suite configures explicitly are allowed.
 - Title-bar buttons (close, minimize, zoom, full screen) are never offered.
 - Before every press, the driver re-reads the exact accessibility element it offered, and rejects the action as stale if the element is gone or its role, name, identifier or enabled state changed.
 - A journey leaves its scope (`blocked`) when an action brings a different app to the front (for example, a link that opens the browser), or when the target app quits or loses its window. Runs work in the background: accessibility actions target the app's elements directly and window captures do not need the window in front or on the current Space, so you can keep using the Mac while a suite runs.
@@ -206,9 +206,9 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
 
 **Evidence:** screenshots of the app window (downscaled to point size) per step, and the final accessibility tree as `trace.json`, linked from the report. There is no video or Playwright trace.
 
-`npm run demo:macos` builds a small SwiftUI fixture app (`native/macos/fixture/`) and runs a deterministic journey in two window sizes. `examples/macos-calculator.json` runs against Calculator with real models.
+`npm run demo:macos` builds a small SwiftUI fixture app (`native/macos/fixture/`) and runs a deterministic journey in two window sizes. `examples/macos-calculator.json` (Calculator) and `examples/macos-textedit.json` (TextEdit: write and center a title) run with real models. Apps that open on a file browser, as TextEdit does, can expose your file and folder names. Use `setup` to leave that screen first: setup observations stay local and are never sent to the models. Close test documents yourself afterwards, since the agent cannot discard them.
 
-Current macOS limits: accessibility quality varies by app (custom-drawn UI may expose little); list-row selection, menus in the menu bar and keyboard shortcuts are not offered; only one window is observed (the focused, or else the first, window).
+Current macOS limits: accessibility quality varies by app (custom-drawn UI may expose little); menus in the menu bar and keyboard shortcuts are not offered; only one window is observed (the focused, or else the first, window).
 
 ## Architecture
 
