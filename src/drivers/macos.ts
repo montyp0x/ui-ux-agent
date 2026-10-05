@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   DEFAULT_BLOCKED_CONTROLS,
+  EXCLUDED_MENUS,
+  MENU_BLOCKED_CONTROLS,
   type Action,
   type Check,
   type Observation,
@@ -243,6 +245,8 @@ type Guard =
       title: string;
       // Rows are selected (AXSelected) rather than pressed.
       select?: boolean;
+      // Menu commands are re-checked by title instead of the full signature.
+      menu?: string;
     }
   | {
       kind: 'scroll';
@@ -333,17 +337,19 @@ export async function macosDriver(): Promise<UIDriver> {
         helper.call<{ bundleId: string; pid: number }>({ cmd: 'frontmost' });
       const inScope = async () => {
         if (leftScope) return false;
-        // Accessibility queries can transiently return no windows under load;
-        // only three consecutive misses mean the app or its window is gone.
-        for (let probe = 0; probe < 3; probe++) {
-          const { alive } = await helper.call<{ alive: boolean }>({
-            cmd: 'alive',
-            pid,
-          });
+        // A quit app is gone at once. A running app may have no window for a
+        // moment (one closes before the next opens, or accessibility answers
+        // empty under load), so wait up to 2s for a window to appear.
+        const until = Date.now() + 2000;
+        for (;;) {
+          const { alive, running } = await helper.call<{
+            alive: boolean;
+            running: boolean;
+          }>({ cmd: 'alive', pid });
           if (alive) return true;
+          if (!running || Date.now() > until) return false;
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        return false;
       };
       const find = (snap: Snapshot, target: Target) => {
         const visible = visibleNodes(snap);
@@ -634,6 +640,59 @@ export async function macosDriver(): Promise<UIDriver> {
               name,
             );
           }
+          // Menu-bar commands (opt-in), read without opening menus. Whole menus
+          // and risky commands are excluded; each path segment is checked.
+          if (suite.menus) {
+            const { items } = await helper.call<{
+              items: { ref: number; path: string[]; enabled: boolean }[];
+            }>({ cmd: 'menus', pid });
+            const menuOnly = MENU_BLOCKED_CONTROLS.map(
+              (pattern) => new RegExp(pattern, 'i'),
+            );
+            const menuBlocked = [...blocked, ...menuOnly];
+            let menuCount = 0;
+            for (const item of items) {
+              const path = item.path.map((segment) => clean(segment));
+              if (!item.enabled || EXCLUDED_MENUS.includes(path[0]!)) continue;
+              const label = path.join(' › ');
+              // The command itself is checked against every blocklist; parent
+              // menu names ("Format", "Edit") only against the menu list.
+              const leaf = path.at(-1)!;
+              if (
+                menuBlocked.some((pattern) => pattern.test(leaf)) ||
+                path
+                  .slice(0, -1)
+                  .some((segment) =>
+                    menuOnly.some((pattern) => pattern.test(segment)),
+                  )
+              ) {
+                await log('candidate_skipped', {
+                  journey: journey.id,
+                  phase: 'discovery',
+                  role: 'menuitem',
+                  name: label,
+                  reason: 'blocked',
+                });
+                continue;
+              }
+              if (menuCount++ >= 80) break;
+              offer(
+                {
+                  kind: 'click',
+                  id: `a${out.length}`,
+                  target: { by: 'role', role: 'menuitem', name: label },
+                  description: `Choose menu ${label}`,
+                },
+                {
+                  kind: 'control',
+                  ref: item.ref,
+                  signature: '',
+                  title: snap.window.title,
+                  menu: item.path.at(-1)!,
+                },
+              );
+            }
+          }
           // Scroll areas that support page scrolling; the vertical scroll bar's
           // value (0..1) gives position for availability, staleness and loops.
           for (const area of snap.elements.filter(
@@ -803,11 +862,11 @@ export async function macosDriver(): Promise<UIDriver> {
             cmd: 'inspect',
             ref: guard.ref,
           });
-          if (
-            !current.valid ||
-            signature(current) !== guard.signature ||
-            current.enabled === false
-          )
+          const same =
+            guard.menu !== undefined
+              ? current.title === guard.menu
+              : signature(current) === guard.signature;
+          if (!current.valid || !same || current.enabled === false)
             throw new Error(
               'Stale observation: selected control changed during selection',
             );

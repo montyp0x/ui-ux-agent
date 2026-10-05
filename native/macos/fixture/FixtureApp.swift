@@ -8,17 +8,33 @@ let projects = [
   "Umber", "Vesper", "Willow", "Xenon", "Yarrow", "Zephyr", "Atlas", "Beacon", "Comet", "Dune",
 ]
 
+// Navigation state shared with menu commands.
+final class Store: ObservableObject {
+  static let shared = Store()
+  @Published var section = "Inbox"
+  @Published var project: String?
+}
+
 @main
 struct FixtureApp: App {
   var body: some Scene {
     WindowGroup("UI Fixture") { ContentView() }
       .defaultSize(width: 900, height: 600)
+      .commands {
+        CommandMenu("Navigate") {
+          Button("Show Settings") { Store.shared.section = "Settings"; Store.shared.project = nil }
+          Button("Open Library…") {}
+          Divider()
+          Button("Erase Everything") {}
+        }
+      }
   }
 }
 
 struct ContentView: View {
-  @State private var section = "Inbox"
-  @State private var project: String?
+  @ObservedObject private var store = Store.shared
+  private var section: String { store.section }
+  private var project: String? { store.project }
   @State private var compact = false
   @State private var displayName = ""
   @State private var deleted = false
@@ -28,7 +44,7 @@ struct ContentView: View {
     HStack(spacing: 0) {
       VStack(alignment: .leading, spacing: 8) {
         ForEach(["Inbox", "Projects", "Settings"], id: \.self) { name in
-          Button(name) { section = name; project = nil }
+          Button(name) { store.section = name; store.project = nil }
             .accessibilityIdentifier("nav-\(name.lowercased())")
         }
         Spacer()
@@ -46,7 +62,7 @@ struct ContentView: View {
       VStack(alignment: .leading, spacing: 12) {
         Text(project).font(.largeTitle).accessibilityIdentifier("project-title")
         Text("Owner: Design team").accessibilityIdentifier("project-owner")
-        Button("Back to projects") { self.project = nil }.accessibilityIdentifier("project-back")
+        Button("Back to projects") { store.project = nil }.accessibilityIdentifier("project-back")
       }
     } else if section == "Projects" {
       VStack(alignment: .leading) {
@@ -54,7 +70,7 @@ struct ContentView: View {
         ScrollView {
           VStack(alignment: .leading, spacing: 10) {
             ForEach(projects, id: \.self) { name in
-              Button(name) { project = name }.accessibilityIdentifier("project-\(name.lowercased())")
+              Button(name) { store.project = name }.accessibilityIdentifier("project-\(name.lowercased())")
             }
           }
           .frame(maxWidth: .infinity, alignment: .leading)

@@ -44,6 +44,10 @@
         "minLength": 1
       }
     },
+    "menus": {
+      "default": false,
+      "type": "boolean"
+    },
     "baseURL": {
       "type": "string",
       "format": "uri"
@@ -3767,6 +3771,7 @@
     "name",
     "platform",
     "blockedControls",
+    "menus",
     "baseURL",
     "browser",
     "requiresAuth",

@@ -196,6 +196,14 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
 - **Checks:** `path` matches `/` plus the window title. `text` matches an element's text content (its value, else its descendants' text, like `innerText`). Visibility means the element lies inside the window and every enclosing scroll area.
 - **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups); rows of lists, tables and outlines (`Select row <text>`, role `option`, named by their text), which are selected rather than pressed, and are offered only when not already selected; configured `click`/`fill`/`check` interactions; page scrolling of scroll areas; and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead. No synthesized mouse or keyboard events are sent, and `press`/`select` interactions are not supported yet.
 
+**Menu-bar commands** are opt-in per suite with `"menus": true`. The driver reads the menu bar through the accessibility API without opening any menu. Each enabled command becomes `Choose menu File › New`, up to 80 per step, and is pressed directly, so no menu is opened visibly; an open menu would block the app's accessibility while it tracks. Never offered:
+
+- the Apple menu, and the whole Window and Help menus;
+- anything under Services;
+- commands matching the general blocklist (quit, close, delete, save, …), and the menu-only list: open/recent/import (they reveal your files), print/page setup, share, hide, minimize, zoom, full screen, revert, bring all to front, and system-provided items that act outside the app (dictation, emoji & symbols, AutoFill/passwords/contacts, Writing Tools, speech).
+
+Parent menu names are checked only against the menu-only list, so a menu called "Format" is not blocked. Blocked commands are logged as `candidate_skipped` (role `menuitem`). Before a press, the driver re-reads the menu item and rejects it as stale if it was removed, renamed or disabled.
+
 **Safety model** (instead of the web request policy):
 
 - Controls whose names match `blockedControls` are never offered: delete, remove, trash, send, post, buy, pay, subscribe, quit, log/sign out, empty, reset, uninstall, discard, and file side effects (save, export, overwrite, replace, rename, duplicate, move to) by default; suites can add patterns. Blocked controls are logged as `candidate_skipped` with reason `blocked`. Interactions a suite configures explicitly are allowed.
@@ -206,9 +214,9 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
 
 **Evidence:** screenshots of the app window (downscaled to point size) per step, and the final accessibility tree as `trace.json`, linked from the report. There is no video or Playwright trace.
 
-`npm run demo:macos` builds a small SwiftUI fixture app (`native/macos/fixture/`) and runs a deterministic journey in two window sizes. `examples/macos-calculator.json` (Calculator) and `examples/macos-textedit.json` (TextEdit: write and center a title) run with real models. Apps that open on a file browser, as TextEdit does, can expose your file and folder names. Use `setup` to leave that screen first: setup observations stay local and are never sent to the models. Close test documents yourself afterwards, since the agent cannot discard them.
+`npm run demo:macos` builds a small SwiftUI fixture app (`native/macos/fixture/`) and runs a deterministic journey in two window sizes. `examples/macos-calculator.json` (Calculator) and `examples/macos-textedit.json` (TextEdit: write and center a title, with menu commands enabled) run with real models. Apps that open on a file browser, as TextEdit does, can expose your file and folder names. Use `setup` to leave that screen first: setup observations stay local and are never sent to the models. Close test documents yourself afterwards, since the agent cannot discard them.
 
-Current macOS limits: accessibility quality varies by app (custom-drawn UI may expose little); menus in the menu bar and keyboard shortcuts are not offered; only one window is observed (the focused, or else the first, window).
+Current macOS limits: accessibility quality varies by app (custom-drawn UI may expose little); keyboard shortcuts are not offered, menu commands are offered only with `menus: true`; only one window is observed (the focused, or else the first, window).
 
 ## Architecture
 

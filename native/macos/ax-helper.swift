@@ -17,6 +17,9 @@ let maxText = 2000
 // Elements from the most recent snapshot, addressed by ref. Holding the
 // AXUIElement keeps identity: a later check reads the same element object.
 var elements: [Int: AXUIElement] = [:]
+// Menu items from the most recent menus listing, refs offset to stay distinct.
+let menuRefBase = 1_000_000
+var menuElements: [Int: AXUIElement] = [:]
 
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
   var value: CFTypeRef?
@@ -133,8 +136,46 @@ func snapshot(pid: pid_t) -> [String: Any] {
   ]
 }
 
+// Leaf items of the app's menu bar, read without opening any menu. The Apple
+// menu (first bar item, system commands) is never listed.
+func menus(pid: pid_t) -> [String: Any] {
+  menuElements = [:]
+  let app = AXUIElementCreateApplication(pid)
+  guard let bar = attribute(app, kAXMenuBarAttribute) else { return ["items": []] }
+  var items: [[String: Any]] = []
+  func walk(_ element: AXUIElement, path: [String], depth: Int) {
+    if depth > 4 || items.count >= 400 { return }
+    for child in children(element) {
+      let role = string(child, kAXRoleAttribute) ?? ""
+      if role == "AXMenu" { walk(child, path: path, depth: depth + 1); continue }
+      guard role == "AXMenuItem" || role == "AXMenuBarItem" else { continue }
+      let title = string(child, kAXTitleAttribute) ?? ""
+      if title.isEmpty { continue }
+      let submenu = children(child).contains { (string($0, kAXRoleAttribute) ?? "") == "AXMenu" }
+      if submenu || role == "AXMenuBarItem" {
+        walk(child, path: path + [title], depth: depth + 1)
+        continue
+      }
+      let ref = menuRefBase + items.count
+      menuElements[ref] = child
+      items.append([
+        "ref": ref, "path": path + [title],
+        "enabled": bool(child, kAXEnabledAttribute) ?? false,
+        "actions": actions(child),
+      ])
+    }
+  }
+  let top = children(bar as! AXUIElement)
+  for (index, item) in top.enumerated() where index > 0 {
+    let title = string(item, kAXTitleAttribute) ?? ""
+    if title.isEmpty { continue }
+    walk(item, path: [title], depth: 1)
+  }
+  return ["items": items]
+}
+
 func element(_ request: [String: Any]) throws -> AXUIElement {
-  guard let ref = request["ref"] as? Int, let found = elements[ref] else {
+  guard let ref = request["ref"] as? Int, let found = elements[ref] ?? menuElements[ref] else {
     throw NSError(domain: "helper", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown element ref"])
   }
   return found
@@ -188,12 +229,15 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     // Cheap scope probe: the process runs and still has an accessible window.
     guard let pid = request["pid"] as? Int, let app = NSRunningApplication(processIdentifier: pid_t(pid)),
       !app.isTerminated
-    else { return ["alive": false] }
+    else { return ["alive": false, "running": false] }
     let element = AXUIElementCreateApplication(pid_t(pid))
     let windows = (attribute(element, kAXWindowsAttribute) as? [AXUIElement]) ?? []
-    return ["alive": !windows.isEmpty]
+    return ["alive": !windows.isEmpty, "running": true]
   case "frontmost":
     return frontmost()
+  case "menus":
+    guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
+    return menus(pid: pid_t(pid))
   case "snapshot":
     guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
     return snapshot(pid: pid_t(pid))

@@ -330,4 +330,149 @@ test('file side effects such as Save are blocked by default', () => {
   // Harmless names stay offered ("Saved" is not the word "save").
   for (const name of ['Bold', 'align center', 'Saved searches'])
     assert.ok(!save.test(name), name);
+  // "Format" (a menu or a formatting button) is not blocked; formatting a disk is.
+  const blocked = DEFAULT_BLOCKED_CONTROLS.map(
+    (pattern) => new RegExp(pattern, 'i'),
+  );
+  assert.ok(!blocked.some((pattern) => pattern.test('Format')));
+  assert.ok(blocked.some((pattern) => pattern.test('Format Disk…')));
+});
+
+test(
+  'menu commands are opt-in, safe ones work, risky ones are never offered',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-menus-')),
+      'run',
+    );
+    const viaMenu = suiteSchema.parse({
+      ...suite(app),
+      menus: true,
+      journeys: [
+        {
+          ...suite(app).journeys[0]!,
+          id: 'settings-menu',
+          goal: 'Open Settings from the menu bar',
+          success: [{ kind: 'path', pattern: '^/Settings$' }],
+          maxSteps: 3,
+        },
+      ],
+    });
+    let offered: string[] = [];
+    const models: Models = {
+      async plan() {
+        return { objective: 'Use the Navigate menu', concerns: [] };
+      },
+      async choose(_j, _o, _p, actions) {
+        offered = actions.map((action) => action.description);
+        const choice = actions.find(
+          (action) =>
+            action.description === 'Choose menu Navigate › Show Settings',
+        )!.id;
+        return {
+          type: 'choice',
+          choice,
+          confidence: 1,
+          probabilities: Object.fromEntries([
+            ...actions.map((action) => [
+              action.id,
+              action.id === choice ? 1 : 0,
+            ]),
+            ['no_match', 0],
+          ]),
+        };
+      },
+    };
+    const [result] = await runSuite(viaMenu, models, { directory });
+    assert.equal(result!.status, 'passed', result!.reason);
+    const menus = offered.filter((description) =>
+      description.startsWith('Choose menu '),
+    );
+    assert.ok(menus.length > 0);
+    for (const risky of [
+      /Erase/,
+      /Open Library/,
+      /Quit/,
+      /Hide/,
+      /Close/,
+      /Full Screen/i,
+      /^Choose menu (Window|Help) /,
+      /Services/,
+      /About This Mac|Restart|Shut Down|Log Out/,
+      /Dictation/,
+      /Emoji/,
+    ])
+      assert.ok(
+        !menus.some((description) => risky.test(description)),
+        `${risky} offered: ${menus.join(', ')}`,
+      );
+    const skipped = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter(
+        (event) =>
+          event.event === 'candidate_skipped' && event.data.role === 'menuitem',
+      )
+      .map((event) => event.data.name);
+    assert.ok(skipped.includes('Navigate › Erase Everything'));
+    assert.ok(skipped.includes('Navigate › Open Library…'));
+    // Without the opt-in, no menu commands are offered.
+    const off = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-nomenus-')),
+      'run',
+    );
+    await runSuite(
+      suiteSchema.parse({
+        ...viaMenu,
+        menus: false,
+        journeys: [{ ...viaMenu.journeys[0]!, maxSteps: 1 }],
+      }),
+      {
+        ...models,
+        async choose(_j, _o, _p, actions) {
+          offered = actions.map((action) => action.description);
+          return {
+            type: 'choice',
+            choice: 'no_match',
+            confidence: 1,
+            probabilities: Object.fromEntries([
+              ...actions.map((action) => [action.id, 0]),
+              ['no_match', 1],
+            ]),
+          };
+        },
+      },
+      { directory: off },
+    );
+    assert.ok(
+      !offered.some((description) => description.startsWith('Choose menu ')),
+    );
+  },
+);
+
+test('menus is rejected for web suites', () => {
+  assert.throws(
+    () =>
+      suiteSchema.parse({
+        name: 'Web',
+        baseURL: 'https://app.example',
+        menus: true,
+        viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+        journeys: [
+          {
+            id: 'j',
+            goal: 'g',
+            persona: 'p',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: { kind: 'path', pattern: '.*' },
+            success: [{ kind: 'path', pattern: '^/x$' }],
+          },
+        ],
+      }),
+    /menus applies to macOS suites only/,
+  );
 });

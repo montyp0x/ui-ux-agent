@@ -67,5 +67,6 @@
       "maxSteps": 10,
       "maxDurationMs": 180000
     }
-  ]
+  ],
+  "menus": true
 }

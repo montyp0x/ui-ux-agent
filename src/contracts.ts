@@ -148,10 +148,23 @@ export const DEFAULT_BLOCKED_CONTROLS = [
   '\\b(send|post|publish|share|submit)\\b',
   '\\b(buy|purchase|pay|subscribe|order|checkout)\\b',
   '\\b(quit|close|log ?out|sign ?out|shut ?down|restart|uninstall)\\b',
-  '\\b(empty|reset|format|wipe|revoke)\\b',
+  '\\b(empty|reset|format (disk|drive|volume|card)|wipe|revoke)\\b',
   // File side effects on the user's machine.
   '\\b(save|export|overwrite|replace|rename|duplicate|move to)\\b',
 ];
+
+// Additionally blocked for menu commands: they reveal files, leave the window,
+// or act outside the app. Matched against each menu path segment.
+export const MENU_BLOCKED_CONTROLS = [
+  '\\b(open|recent|import|print|page setup|share|services)\\b',
+  '\\b(hide|minimi[sz]e|zoom|full ?screen|bring all to front|revert)\\b',
+  // System-provided items that act outside the app (microphone, system
+  // panels, passwords, AI text services, audio).
+  '\\b(dictation|emoji|symbols|autofill|passwords?|contacts|keychain|writing tools|speech|speaking)\\b',
+];
+// Whole menus never offered: system (Apple menu is skipped by the helper),
+// window management and help (opens other apps).
+export const EXCLUDED_MENUS = ['Window', 'Help'];
 
 const appSchema = z
   .object({
@@ -198,6 +211,8 @@ const suiteObject = z
     platform: z.enum(['web', 'macos']).default('web'),
     app: appSchema.optional(),
     blockedControls: z.array(z.string().min(1)).max(50).default([]),
+    // macOS: offer menu-bar commands (opt-in; see MENU_BLOCKED_CONTROLS).
+    menus: z.boolean().default(false),
     baseURL: z.url(),
     browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
     requiresAuth: z.boolean().default(false),
@@ -280,7 +295,9 @@ const suiteObject = z
           message:
             'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
         });
-    } else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
+    } else if (suite.menus)
+      ctx.addIssue({ code: 'custom', message: 'menus applies to macOS suites only' });
+    else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
     for (const journey of suite.journeys) {
       for (const check of [
