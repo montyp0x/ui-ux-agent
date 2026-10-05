@@ -206,9 +206,12 @@ Every offered action is bound to a guard (element identity plus control state, o
 
 Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten.
 
+Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N` (1–50) runs each selected journey and viewport N times in sequence, each with its own evidence directory (`<journey>-<viewport>-<n>`). The CLI prints `passed/runs` with median actions and duration per journey/viewport. Every result records its `attempt` and its `usage`: per role (planner, selector), the call count, total latency, and input/output tokens. Usage is taken from `model_call` events, from `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, and counts as zero when a provider omits it. Token counts are not converted to cost.
+
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: task outcomes and evidence links.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes, median actions and duration, model calls and tokens), then each run's outcome and evidence links.
+- `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
 - `results.json`: checks, statuses and findings.
 - Per journey/viewport: screenshots, Playwright trace and optional video.
@@ -230,6 +233,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, provider cost accounting or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

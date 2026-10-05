@@ -10,6 +10,7 @@ import { suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
+import { summarize } from './summary.js';
 
 const { values } = parseArgs({
   options: {
@@ -29,6 +30,7 @@ const { values } = parseArgs({
     browser: { type: 'string' },
     'env-file': { type: 'string' },
     login: { type: 'string' },
+    repeat: { type: 'string' },
     from: { type: 'string' },
   },
 });
@@ -49,7 +51,7 @@ if (values.help) {
   console.log(
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--env-file PATH] [--headed] [--video] [--validate]',
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]',
   );
 } else {
   try {
@@ -149,12 +151,18 @@ if (values.help) {
             video: values.video,
             journey: values.journey,
             viewport: values.viewport,
+            repeat: values.repeat ? Number(values.repeat) : 1,
           },
         );
         for (const result of results)
           console.log(
             `${result.status}: ${result.journey}/${result.viewport}: ${result.reason}`,
           );
+        for (const row of summarize(results))
+          if (row.runs > 1)
+            console.log(
+              `${row.journey}/${row.viewport}: ${row.passed}/${row.runs} passed, median ${row.medianSteps} actions, ${(row.medianDurationMs / 1000).toFixed(1)}s`,
+            );
         console.log(`Report: ${directory}/report.html`);
         process.exitCode = results.some((result) => result.status !== 'passed')
           ? 1

@@ -14,6 +14,7 @@ import type {
 } from './contracts.js';
 import type { History, Models } from './models.js';
 import { reportHTML } from './report.js';
+import { addModelCall, emptyUsage, summarize, type Usage } from './summary.js';
 import { actionSignature, refreshReasons, type PlanState } from './planning.js';
 
 export type RunOptions = {
@@ -24,6 +25,8 @@ export type RunOptions = {
   journey?: string;
   viewport?: string;
   driver?: UIDriver;
+  // Runs per journey/viewport, for pass rates (1-50, default 1).
+  repeat?: number;
 };
 export type Logger = EventLogger;
 
@@ -113,12 +116,16 @@ async function runJourney(
   directory: string,
   models: Models,
   log: Logger,
+  attempt: number,
+  usage: Usage,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
   const result: Result = {
     journey: journey.id,
     viewport,
+    attempt,
+    usage,
     status: 'error',
     reason: 'Journey did not finish',
     steps: 0,
@@ -589,9 +596,16 @@ export async function runSuite(
   );
   if (!journeys.length || !viewports.length)
     throw new Error('No matching journey or viewport');
+  const repeat = options.repeat ?? 1;
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
+    throw new Error('repeat must be an integer from 1 to 50');
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   await mkdir(options.directory, { mode: 0o700 });
+  // Journeys run one at a time, so model calls belong to the current run.
+  let currentUsage: Usage | null = null;
   const log: Logger = async (event, data) => {
+    if (event === 'model_call' && currentUsage)
+      addModelCall(currentUsage, data);
     await appendFile(
       join(options.directory, 'events.jsonl'),
       JSON.stringify({ time: new Date().toISOString(), event, data }) + '\n',
@@ -611,41 +625,58 @@ export async function runSuite(
   try {
     for (const journey of journeys) {
       for (const viewport of viewports) {
-        const directory = join(
-          options.directory,
-          `${journey.id}-${viewport.name}`,
-        );
-        await mkdir(directory, { mode: 0o700 });
-        const session = await driver.openSession({
-          suite,
-          journey,
-          viewport,
-          directory,
-          storageState: options.storageState,
-          video: options.video,
-          log,
-        });
-        results.push(
-          await runJourney(
-            session,
+        for (let attempt = 1; attempt <= repeat; attempt++) {
+          const directory = join(
+            options.directory,
+            repeat > 1
+              ? `${journey.id}-${viewport.name}-${attempt}`
+              : `${journey.id}-${viewport.name}`,
+          );
+          await mkdir(directory, { mode: 0o700 });
+          const session = await driver.openSession({
             suite,
             journey,
-            viewport.name,
+            viewport,
             directory,
-            engine,
+            storageState: options.storageState,
+            video: options.video,
             log,
-          ),
-        );
-        await writeFile(
-          join(options.directory, 'results.json'),
-          JSON.stringify(results, null, 2),
-          { mode: 0o600 },
-        );
-        await writeFile(
-          join(options.directory, 'report.html'),
-          reportHTML(suite.name, results, options.directory),
-          { mode: 0o600 },
-        );
+          });
+          const usage = emptyUsage();
+          currentUsage = usage;
+          try {
+            results.push(
+              await runJourney(
+                session,
+                suite,
+                journey,
+                viewport.name,
+                directory,
+                engine,
+                log,
+                attempt,
+                usage,
+              ),
+            );
+          } finally {
+            currentUsage = null;
+          }
+          await writeFile(
+            join(options.directory, 'results.json'),
+            JSON.stringify(results, null, 2),
+            { mode: 0o600 },
+          );
+          await writeFile(
+            join(options.directory, 'summary.json'),
+            JSON.stringify(summarize(results), null, 2),
+            { mode: 0o600 },
+          );
+          await writeFile(
+            join(options.directory, 'report.html'),
+            reportHTML(suite.name, results, options.directory),
+            { mode: 0o600 },
+          );
+        }
       }
     }
   } finally {

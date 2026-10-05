@@ -1,3 +1,4 @@
+import type { Usage } from './summary.js';
 import { z } from 'zod';
 
 const relativePath = z
@@ -298,6 +299,10 @@ export type Finding = {
 export type Result = {
   journey: string;
   viewport: string;
+  // 1-based repetition number when a journey/viewport is run several times.
+  attempt: number;
+  // Model calls, latency and tokens for this run, from model_call events.
+  usage: Usage;
   status: 'passed' | 'failed' | 'blocked' | 'error';
   reason: string;
   steps: number;
