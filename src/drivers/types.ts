@@ -36,7 +36,11 @@ export interface UISession {
   // Lets the planner see which visible controls the test cannot use.
   offeredControls?(): string[];
   screenshot(path: string): Promise<void>;
-  finish(trace: string): Promise<{ video: string | null }>;
+  // Whether the session is still inside the journey's scope. Web sessions use
+  // URL scope; native drivers check that the target app is frontmost.
+  inScope?(): Promise<boolean>;
+  // trace: the evidence file actually written, when not the suggested path.
+  finish(trace: string): Promise<{ video: string | null; trace?: string }>;
 }
 
 export interface UIDriver {

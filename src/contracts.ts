@@ -137,9 +137,61 @@ export const journeySchema = z
   })
   .strict();
 export type Journey = z.infer<typeof journeySchema>;
-export const suiteSchema = z
+// Control names never offered to the agent in native apps unless a suite
+// configures them explicitly as interactions. Suites can add patterns.
+export const DEFAULT_BLOCKED_CONTROLS = [
+  '\\b(delete|remove|erase|trash|discard|destroy)\\b',
+  '\\b(send|post|publish|share|submit)\\b',
+  '\\b(buy|purchase|pay|subscribe|order|checkout)\\b',
+  '\\b(quit|close|log ?out|sign ?out|shut ?down|restart|uninstall)\\b',
+  '\\b(empty|reset|format|wipe|revoke)\\b',
+];
+
+const appSchema = z
+  .object({
+    // Identity used for scope checks; required unless path is given.
+    bundleId: z.string().min(1).optional(),
+    // A .app bundle to launch, for apps that are not installed.
+    path: z.string().min(1).optional(),
+    // Quit (gracefully) and relaunch at session start for a known initial
+    // state. Off by default: quitting can lose a user's unsaved work.
+    relaunch: z.boolean().default(false),
+  })
+  .strict()
+  .refine((app) => app.bundleId || app.path, 'app needs bundleId or path');
+
+// Native suites have no URLs: fill the web-only fields with neutral values so
+// the engine's types stay unchanged. Observations use macos-app://<app>/<title>.
+function nativeDefaults(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const suite = raw as Record<string, unknown>;
+  if (suite.platform !== 'macos') return raw;
+  const app = (suite.app ?? {}) as { bundleId?: string; path?: string };
+  const host = (app.bundleId ?? 'local-app')
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]/g, '-');
+  return {
+    ...suite,
+    baseURL: suite.baseURL ?? `macos-app://${host}`,
+    viewports: suite.viewports ?? [
+      { name: 'window', width: 1024, height: 768 },
+    ],
+    journeys: Array.isArray(suite.journeys)
+      ? suite.journeys.map((journey) =>
+          journey && typeof journey === 'object'
+            ? { startPath: '/', allowedPaths: ['/'], ...journey }
+            : journey,
+        )
+      : suite.journeys,
+  };
+}
+
+const suiteObject = z
   .object({
     name: z.string().min(1),
+    platform: z.enum(['web', 'macos']).default('web'),
+    app: appSchema.optional(),
+    blockedControls: z.array(z.string().min(1)).max(50).default([]),
     baseURL: z.url(),
     browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
     requiresAuth: z.boolean().default(false),
@@ -184,7 +236,45 @@ export const suiteSchema = z
           message: 'Journey and viewport names must be unique',
         });
     }
-    if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
+    if (suite.platform === 'macos') {
+      if (!suite.app)
+        ctx.addIssue({ code: 'custom', message: 'macOS suites need app' });
+      if (
+        suite.allowedOrigins.length ||
+        suite.applicationOrigins.length ||
+        suite.allowedRequests.length ||
+        suite.readOnlyPosts.length ||
+        suite.requiresAuth
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'Web request and session settings do not apply to macOS suites',
+        });
+      for (const pattern of suite.blockedControls)
+        try {
+          new RegExp(pattern, 'i');
+        } catch {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Invalid blockedControls regex ${pattern}`,
+          });
+        }
+      const targets = suite.journeys.flatMap((journey) => [
+        ...journey.interactions.map((interaction) => interaction.target),
+        ...[
+          journey.ready,
+          ...journey.success,
+          ...(journey.contentReady?.checks ?? []),
+        ].flatMap((check) => ('target' in check ? [check.target] : [])),
+      ]);
+      if (targets.some((target) => target.by === 'css'))
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
+        });
+    } else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
     for (const journey of suite.journeys) {
       for (const check of [
@@ -209,7 +299,8 @@ export const suiteSchema = z
       }
     }
   });
-export type Suite = z.infer<typeof suiteSchema>;
+export const suiteSchema = z.preprocess(nativeDefaults, suiteObject);
+export type Suite = z.infer<typeof suiteObject>;
 export type Action =
   | {
       kind: 'link';

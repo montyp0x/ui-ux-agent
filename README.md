@@ -155,12 +155,57 @@ Every run applies the same scoping when it loads a session, and logs a `storage_
 
 Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. Browser integration tests and the bundled demo currently verify Chromium only; Firefox/WebKit are configurable but unverified in this checkout.
 
+## macOS apps
+
+The same engine tests native macOS apps through the accessibility API. Planner, selector, loop and stall handling, `--repeat`, usage accounting and reports work unchanged.
+
+**Requirements:** macOS 14 or newer, and the Xcode Command Line Tools (`swiftc`); a small helper (`native/macos/ax-helper.swift`) is compiled into `.build/` on first use. The app that runs the CLI (Terminal, iTerm, …) needs **Accessibility** and **Screen Recording** permission (System Settings → Privacy & Security). The runner checks both and stops with a clear error if either is missing.
+
+```json
+{
+  "name": "Calculator",
+  "platform": "macos",
+  "app": { "bundleId": "com.apple.calculator", "relaunch": true },
+  "viewports": [{ "name": "window", "width": 320, "height": 480 }],
+  "journeys": [
+    {
+      "id": "multiply",
+      "goal": "Work out 7 multiplied by 6 and read the result",
+      "persona": "Someone checking a quick sum",
+      "ready": { "kind": "visible", "target": { "by": "testId", "value": "StandardInputView" } },
+      "success": [{ "kind": "text", "target": { "by": "testId", "value": "StandardInputView" }, "pattern": "^42$" }]
+    }
+  ]
+}
+```
+
+- **`app`:** `bundleId` (installed app) and/or `path` (an `.app` to launch). With `relaunch: true` the app is quit gracefully and launched fresh for a known starting state. It is off by default because quitting can lose unsaved work; an app that refuses to quit is reported, never force-killed.
+- **`viewports`** are window sizes. Fixed-size windows log the refused resize and keep their size.
+- **Targets:** `testId` matches the accessibility identifier (SwiftUI `.accessibilityIdentifier`, AppKit `identifier`). `role` with `name` uses the same role names as the web (`button`, `checkbox`, `tab`, `textbox`, …). `label` matches the accessibility description or title, and `placeholder` the placeholder. CSS targets are rejected.
+- **Checks:** `path` matches `/` plus the window title. `text` matches an element's text content (its value, else its descendants' text, like `innerText`). Visibility means the element lies inside the window and every enclosing scroll area.
+- **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups), configured `click`/`fill`/`check` interactions, page scrolling of scroll areas, and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead. No synthesized mouse or keyboard events are sent, and `press`/`select` interactions are not supported yet.
+
+**Safety model** (instead of the web request policy):
+
+- Controls whose names match `blockedControls` are never offered: delete, remove, trash, send, post, buy, pay, subscribe, quit, log/sign out, empty, reset, uninstall, discard and similar by default; suites can add patterns. Blocked controls are logged as `candidate_skipped` with reason `blocked`. Interactions a suite configures explicitly are allowed.
+- Title-bar buttons (close, minimize, zoom, full screen) are never offered.
+- Before every press, the driver re-reads the exact accessibility element it offered, and rejects the action as stale if the element is gone or its role, name, identifier or enabled state changed.
+- A journey leaves its scope (`blocked`) when an action brings a different app to the front (for example, a link that opens the browser), or when the target app quits or loses its window. Runs work in the background: accessibility actions target the app's elements directly and window captures do not need the window in front or on the current Space, so you can keep using the Mac while a suite runs.
+- Use test data and accounts in apps that hold real data: the agent acts on the real app.
+
+**Evidence:** screenshots of the app window (downscaled to point size) per step, and the final accessibility tree as `trace.json`, linked from the report. There is no video or Playwright trace.
+
+`npm run demo:macos` builds a small SwiftUI fixture app (`native/macos/fixture/`) and runs a deterministic journey in two window sizes. `examples/macos-calculator.json` runs against Calculator with real models.
+
+Current macOS limits: accessibility quality varies by app (custom-drawn UI may expose little); list-row selection, menus in the menu bar and keyboard shortcuts are not offered; only one window is observed (the focused, or else the first, window).
+
 ## Architecture
 
 - `src/contracts.ts`: validated suite, action, model and result contracts.
 - `src/runner.ts`: app-independent journey execution, budgets and outcomes.
 - `src/drivers/types.ts`: browser-session interface.
 - `src/drivers/playwright.ts` and `src/browser.ts`: browser setup, observations, candidates, scope and execution.
+- `src/drivers/macos.ts` and `native/macos/ax-helper.swift`: the macOS accessibility driver and its helper; `src/drivers/macos-fixture.ts` builds the SwiftUI fixture app.
 - `src/scroll.ts`: scroll-region discovery, wheel hit tests and chaining rules.
 - `src/models.ts`: screenshot planner, TypeSafe and chat-completions selector adapters. The engine also accepts a custom `Models` implementation.
 - `src/config.ts`: model configuration from environment variables.
@@ -168,7 +213,7 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 - `src/planning.ts`: semantic action signatures and bounded planner refresh rules.
 - `src/report.ts`: local evidence report.
 
-`runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites and browser applications; native desktop/mobile drivers are not implemented.
+`runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites, browser applications and macOS apps; other native platforms (Windows, mobile) are not implemented.
 
 The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, screenshot-aware planners tend to aim at visible links outside `allowedPaths`. The marking reduces this but does not eliminate it.
 
@@ -233,6 +278,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit, price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

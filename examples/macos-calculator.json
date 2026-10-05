@@ -1,0 +1,26 @@
+{
+  "name": "Calculator (macOS) — basic arithmetic",
+  "platform": "macos",
+  "app": { "bundleId": "com.apple.calculator", "relaunch": true },
+  "viewports": [{ "name": "window", "width": 320, "height": 480 }],
+  "journeys": [
+    {
+      "id": "multiply",
+      "goal": "Work out 7 multiplied by 6 and read the result",
+      "persona": "Someone checking a quick sum",
+      "ready": {
+        "kind": "visible",
+        "target": { "by": "testId", "value": "StandardInputView" }
+      },
+      "success": [
+        {
+          "kind": "text",
+          "target": { "by": "testId", "value": "StandardInputView" },
+          "pattern": "^42$"
+        }
+      ],
+      "maxSteps": 10,
+      "maxDurationMs": 120000
+    }
+  ]
+}

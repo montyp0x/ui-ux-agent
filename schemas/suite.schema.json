@@ -6,6 +6,44 @@
       "type": "string",
       "minLength": 1
     },
+    "platform": {
+      "default": "web",
+      "type": "string",
+      "enum": [
+        "web",
+        "macos"
+      ]
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "bundleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relaunch": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "relaunch"
+      ],
+      "additionalProperties": false
+    },
+    "blockedControls": {
+      "default": [],
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "baseURL": {
       "type": "string",
       "format": "uri"
@@ -3036,6 +3074,8 @@
   },
   "required": [
     "name",
+    "platform",
+    "blockedControls",
     "baseURL",
     "browser",
     "requiresAuth",

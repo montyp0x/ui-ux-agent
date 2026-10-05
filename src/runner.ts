@@ -153,6 +153,15 @@ async function runJourney(
   const stalledPages = new Set<string>();
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
+  const inScope = async () =>
+    session.inScope
+      ? session.inScope()
+      : allowedURL(
+          session.location(),
+          suite.baseURL,
+          journey.allowedPaths,
+          suite.allowedOrigins,
+        );
   const remaining = (next: string): number => {
     stage = next;
     if (Date.now() >= deadline) throw new BudgetExpired();
@@ -251,14 +260,7 @@ async function runJourney(
             break;
           }
         }
-        if (
-          !allowedURL(
-            session.location(),
-            suite.baseURL,
-            journey.allowedPaths,
-            suite.allowedOrigins,
-          )
-        ) {
+        if (!(await inScope())) {
           result.status = 'blocked';
           result.reason = 'Navigation left the allowed journey scope';
           break;
@@ -504,14 +506,7 @@ async function runJourney(
             step: step + 1,
             screenshot: after.screenshot,
           });
-        if (
-          !allowedURL(
-            session.location(),
-            suite.baseURL,
-            journey.allowedPaths,
-            suite.allowedOrigins,
-          )
-        ) {
+        if (!(await inScope())) {
           result.status = 'blocked';
           result.reason = 'Navigation left the allowed journey scope';
           break;
@@ -583,7 +578,9 @@ async function runJourney(
       result.reason += `; evidence capture failed: ${caught instanceof Error ? caught.message : String(caught)}`;
     }
     try {
-      result.video = (await session.finish(result.trace)).video;
+      const finished = await session.finish(result.trace);
+      result.video = finished.video;
+      if (finished.trace) result.trace = finished.trace;
     } catch (caught) {
       result.status = 'error';
       result.reason += `; session cleanup failed: ${caught instanceof Error ? caught.message : String(caught)}`;
@@ -640,7 +637,9 @@ export async function runSuite(
   );
   const driver =
     options.driver ??
-    (await playwrightDriver(suite.browser, options.headless ?? true));
+    (suite.platform === 'macos'
+      ? await (await import('./drivers/macos.js')).macosDriver()
+      : await playwrightDriver(suite.browser, options.headless ?? true));
   const results: Result[] = [];
   try {
     for (const journey of journeys) {
