@@ -231,8 +231,14 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
       !app.isTerminated
     else { return ["alive": false, "running": false] }
     let element = AXUIElementCreateApplication(pid_t(pid))
-    let windows = (attribute(element, kAXWindowsAttribute) as? [AXUIElement]) ?? []
-    return ["alive": !windows.isEmpty, "running": true]
+    // The windows list intermittently comes back empty while the focused
+    // window is still readable; an error from a running app means "unknown".
+    var value: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &value)
+    if result != .success && result != .noValue { return ["alive": true, "running": true, "uncertain": true] }
+    let windows = (value as? [AXUIElement]) ?? []
+    let focused = attribute(element, kAXFocusedWindowAttribute) != nil
+    return ["alive": !windows.isEmpty || focused, "running": true]
   case "frontmost":
     return frontmost()
   case "menus":
