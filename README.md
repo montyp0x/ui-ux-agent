@@ -53,15 +53,15 @@ Credentials are read from environment variables, never from suite files. The CLI
 
 With `SELECTOR_PROTOCOL=chat`, one provider key runs everything. Point `SELECTOR_MODEL` at a smaller, faster model than the planner's. The chat selector constrains its output to the offered action ids plus `no_match` through `json_schema`. It asks for a probability per option and normalizes the distribution before the same validation the Jev selector gets.
 
-The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields). Value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Some gateways do not enforce `json_schema`. A valid object wrapped in a single key is unwrapped, and any other invalid structured reply is requested once more before the journey reports an error. `model_call` events carry the attempt number. Example for a gateway that needs an extra header, an OpenAI-compatible gateway's OpenAI-compatible endpoint:
+The planner endpoint must support Chat Completions with images, `max_completion_tokens` and `json_schema` structured output. The schema sent carries only structure (types, properties, required fields). Value limits such as the six-concern cap are enforced when the response is parsed, and a completion truncated at the token limit is rejected. Some gateways do not enforce `json_schema`. A valid object wrapped in a single key is unwrapped, and any other invalid structured reply is requested once more before the journey reports an error. `model_call` events carry the attempt number. Example for an OpenAI-compatible gateway that needs an extra header, with one provider for both roles:
 
 ```sh
-PLANNER_API_URL=https://gateway.example/api/v2/example-app/v1/chat/completions
-PLANNER_API_KEY=<programmatic access token>
-PLANNER_MODEL=claude-opus-4-8
-PLANNER_API_HEADERS='{"X-gateway-Authorization-Token-Type":"PROGRAMMATIC_ACCESS_TOKEN"}'
+PLANNER_API_URL=https://llm-gateway.example/v1/chat/completions
+PLANNER_API_KEY=<gateway token>
+PLANNER_MODEL=<screenshot-capable planner model>
+PLANNER_API_HEADERS='{"X-Gateway-Token-Type":"<value the gateway requires>"}'
 SELECTOR_PROTOCOL=chat
-SELECTOR_MODEL=claude-haiku-4-5
+SELECTOR_MODEL=<smaller, faster model>
 ```
 
 Models receive viewport observations: visible text and control labels, dimensions, scroll availability and positions, URL and horizontal overflow. The planner also receives a viewport screenshot. Below-the-fold, clipped and covered content is excluded from model observations; the full accessibility snapshot stays in local evidence. Control labels retain accessible names, including associated labels. Use data permitted for processing by the configured providers. Keys remain in request headers and are not written to evidence.
@@ -72,7 +72,7 @@ Viewport filtering uses DOM geometry, ancestor clipping, modal boundaries and sa
 
 ## Suite configuration
 
-Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. [examples/example-app.json](examples/example-app.json) is one real application example; it is never selected by default. Results of live runs against it are in [docs/verification-log.md](docs/verification-log.md).
+Use [examples/website.json](examples/website.json) as a template. [schemas/suite.schema.json](schemas/suite.schema.json) describes all fields. Keep suites for private applications outside this repository, or in the gitignored `suites/` directory; `--suite` accepts any path.
 
 | Setting              | Purpose                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
@@ -108,7 +108,7 @@ A journey can name pages that resemble its destination but are not it:
 ```json
 {
   "detours": [
-    { "pattern": "^/conversations/", "description": "a conversation view that is not the session detail page" }
+    { "pattern": "^/preview/", "description": "a preview page that resembles the item detail page but is not it" }
   ]
 }
 ```
@@ -170,7 +170,7 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 
 `runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites and browser applications; native desktop/mobile drivers are not implemented.
 
-The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, screenshot-aware planners tend to aim at visible links outside `allowedPaths`. The marking reduces this but does not eliminate it; see [docs/verification-log.md](docs/verification-log.md).
+The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, screenshot-aware planners tend to aim at visible links outside `allowedPaths`. The marking reduces this but does not eliminate it.
 
 Custom `Models.plan` implementations can consume the optional fifth `actions` argument; existing implementations can ignore it. `plan` events include `refreshReasons`. More frequent actionable changes can increase planner calls; this is a relevance policy, not a measured cost or model-quality improvement. The selector chooses from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
 
@@ -230,6 +230,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, provider cost accounting or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; see [docs/verification-log.md](docs/verification-log.md) for measured runs. Browser behavior and application assumptions need validation on each target.
+Current limits: no native-app drivers, screenshot baseline comparison, complete accessibility audit, provider cost accounting or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).
