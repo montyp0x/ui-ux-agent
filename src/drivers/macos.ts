@@ -206,9 +206,12 @@ export function matches(node: AXNode, target: Target): boolean {
     case 'testId':
       return node.identifier === target.value;
     case 'label':
+      // A label is visible text naming something: description, title, or the
+      // value of a static text element.
       return (
         clean(node.description) === target.value ||
-        clean(node.title) === target.value
+        clean(node.title) === target.value ||
+        (node.role === 'AXStaticText' && clean(node.value) === target.value)
       );
     case 'placeholder':
       return clean(node.placeholder) === target.value;

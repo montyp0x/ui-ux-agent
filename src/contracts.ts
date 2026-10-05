@@ -149,6 +149,8 @@ export const DEFAULT_BLOCKED_CONTROLS = [
   '\\b(buy|purchase|pay|subscribe|order|checkout)\\b',
   '\\b(quit|close|log ?out|sign ?out|shut ?down|restart|uninstall)\\b',
   '\\b(empty|reset|format (disk|drive|volume|card)|wipe|revoke)\\b',
+  // Services and agents running on the machine.
+  '\\b(install|upgrade|stop|pause|disable|deactivate|disconnect|unlink)\\b',
   // File side effects on the user's machine.
   '\\b(save|export|overwrite|replace|rename|duplicate|move to)\\b',
 ];
@@ -296,7 +298,10 @@ const suiteObject = z
             'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
         });
     } else if (suite.menus)
-      ctx.addIssue({ code: 'custom', message: 'menus applies to macOS suites only' });
+      ctx.addIssue({
+        code: 'custom',
+        message: 'menus applies to macOS suites only',
+      });
     else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
     for (const journey of suite.journeys) {

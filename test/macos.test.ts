@@ -476,3 +476,65 @@ test('menus is rejected for web suites', () => {
     /menus applies to macOS suites only/,
   );
 });
+
+test('controls that stop, pause or install system software are blocked by default', () => {
+  const blocked = DEFAULT_BLOCKED_CONTROLS.map(
+    (pattern) => new RegExp(pattern, 'i'),
+  );
+  for (const name of [
+    'Stop Defender',
+    'Install Update 0.5.72…',
+    'Pause sync',
+    'Disconnect',
+    'Unlink device',
+    'Upgrade now',
+  ])
+    assert.ok(
+      blocked.some((pattern) => pattern.test(name)),
+      name,
+    );
+  for (const name of ['Settings', 'Home', 'Open Claude Desktop'])
+    assert.ok(!blocked.some((pattern) => pattern.test(name)), name);
+});
+
+test(
+  'label targets match visible static text in native apps',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-label-')),
+      'run',
+    );
+    const labelled = suiteSchema.parse({
+      ...suite(app),
+      journeys: [
+        {
+          ...suite(app).journeys[0]!,
+          id: 'inbox-label',
+          success: [
+            {
+              kind: 'anyVisible',
+              target: { by: 'label', value: 'No new messages' },
+            },
+          ],
+          maxSteps: 1,
+        },
+      ],
+    });
+    const [result] = await runSuite(
+      labelled,
+      {
+        async plan() {
+          return { objective: 'none', concerns: [] };
+        },
+        async choose() {
+          throw new Error('not reached: the Inbox already shows the label');
+        },
+      },
+      { directory },
+    );
+    assert.equal(result!.status, 'passed', result!.reason);
+    assert.equal(result!.steps, 0);
+  },
+);
