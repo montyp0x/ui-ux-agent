@@ -131,10 +131,17 @@ async function fixture() {
             (action: { kind: string }) => action.kind === 'link',
           ),
         );
+        // Only id/kind/description, plus a destination path for links: no
+        // selectors, configured values or full URLs.
         assert.ok(
           plannerInput.availableActions.every(
             (action: Record<string, unknown>) =>
-              Object.keys(action).sort().join(',') === 'description,id,kind',
+              Object.keys(action).sort().join(',') ===
+                (action.kind === 'link'
+                  ? 'description,id,kind,to'
+                  : 'description,id,kind') &&
+              (action.kind !== 'link' ||
+                (typeof action.to === 'string' && action.to.startsWith('/'))),
           ),
         );
       }

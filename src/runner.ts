@@ -150,6 +150,7 @@ async function runJourney(
   let revisitPending: string | null = null;
   // Consecutive executed actions that stayed on the same page path.
   let dwellSteps = 0;
+  const stalledPages = new Set<string>();
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const remaining = (next: string): number => {
@@ -300,7 +301,10 @@ async function runJourney(
         // shared: being asked again already implies the goal is not reached.
         const stalled =
           !!plan && dwellSteps > 0 && dwellSteps % STALL_STEPS === 0;
-        if (stalled) reasons.push('stalled');
+        if (stalled) {
+          reasons.push('stalled');
+          stalledPages.add(new URL(observation.url).pathname);
+        }
         if (reasons.length) {
           plan = await models.plan(
             journey,
@@ -312,6 +316,7 @@ async function runJourney(
               reasons,
               ...(revisitedAction ? { revisitedAction } : {}),
               ...(stalled ? { stalledSteps: dwellSteps } : {}),
+              ...(stalledPages.size ? { stalledPages: [...stalledPages] } : {}),
               ...(session.offeredControls
                 ? { offeredControls: session.offeredControls() }
                 : {}),

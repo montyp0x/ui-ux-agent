@@ -552,6 +552,13 @@ test('lingering on one page for five observations asks the planner to reconsider
     );
     assert.equal(stalled.length, 1);
     assert.equal(stalled[0]!.stalledSteps, 5);
+    // The stalled page is remembered for every later plan, not before.
+    const at = contexts.indexOf(stalled[0]!);
+    for (const [index, context] of contexts.entries())
+      assert.deepEqual(
+        (context as { stalledPages?: string[] }).stalledPages,
+        index >= at ? ['/'] : undefined,
+      );
     assert.ok(
       contexts.every(
         (context) =>
