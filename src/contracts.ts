@@ -116,6 +116,19 @@ export const journeySchema = z
       .strict()
       .optional(),
     loopProgressTargets: z.array(targetSchema).max(10).optional(),
+    // Pages that resemble the destination but are not it. Visits are reported
+    // as observed UX findings; the planner is not told about them.
+    detours: z
+      .array(
+        z
+          .object({
+            pattern: z.string().min(1),
+            description: z.string().min(1),
+          })
+          .strict(),
+      )
+      .max(10)
+      .optional(),
     interactions: z.array(interactionSchema).default([]),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
     maxSteps: z.number().int().min(1).max(100).default(20),
@@ -177,6 +190,10 @@ export const suiteSchema = z
         journey.ready,
         ...journey.success,
         ...(journey.contentReady?.checks ?? []),
+        ...(journey.detours ?? []).map((detour) => ({
+          kind: 'path' as const,
+          pattern: detour.pattern,
+        })),
       ]) {
         if (check.kind === 'path' || check.kind === 'text') {
           try {

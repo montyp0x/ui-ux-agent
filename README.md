@@ -101,6 +101,20 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 
 Checks support route patterns, visible content, any visible match, text patterns and absence. `anyRendered` accepts any Playwright-visible match, including below the viewport; it proves layout presence, not that the user inspected it. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
 
+### Detours
+
+A journey can name pages that resemble its destination but are not it:
+
+```json
+{
+  "detours": [
+    { "pattern": "^/conversations/", "description": "a conversation view that is not the session detail page" }
+  ]
+}
+```
+
+Up to ten path regexes. When the agent reaches a matching path, the runner records an observed `detour` finding with the screenshot and the reviewed description, plus the number of observed steps spent there. Each visit is logged as a `detour` event. Success checks are unchanged: a detour never counts as reaching the destination. The planner is not told about detours, so the finding reflects what a user without inside knowledge would do. Use it when look-alike pages are a usability question rather than a test bug.
+
 ### Content readiness
 
 Route/page-shell checks prove arrival, not loaded content. Optionally add `contentReady` to a journey:

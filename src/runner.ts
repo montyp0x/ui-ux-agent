@@ -136,6 +136,8 @@ async function runJourney(
   const history: History = [];
   const repeats = new Map<string, number>();
   const replanned = new Set<string>();
+  // Steps observed on each configured detour, keyed by its index.
+  const detourSteps = new Map<number, number>();
   let revisitPending: string | null = null;
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
@@ -168,6 +170,28 @@ async function runJourney(
           viewport,
           ...observation,
         });
+        const pathname = new URL(observation.url).pathname;
+        for (const [index, detour] of (journey.detours ?? []).entries()) {
+          if (!new RegExp(detour.pattern).test(pathname)) continue;
+          const seen = (detourSteps.get(index) ?? 0) + 1;
+          detourSteps.set(index, seen);
+          await log('detour', {
+            journey: journey.id,
+            viewport,
+            step,
+            path: pathname,
+            description: detour.description,
+            visits: seen,
+          });
+          if (seen === 1)
+            result.findings.push({
+              kind: 'observed',
+              category: 'detour',
+              description: `Reached ${pathname}: ${detour.description}`,
+              step,
+              screenshot: observation.screenshot,
+            });
+        }
         if (session.unauthorized) {
           result.status = 'blocked';
           result.reason = 'An authenticated request returned 401';
@@ -494,6 +518,15 @@ async function runJourney(
       session.setTimeout(5000);
       const screenshot = join(directory, 'final.png');
       await session.screenshot(screenshot);
+      for (const [index, steps] of detourSteps) {
+        const finding = result.findings.find(
+          (entry) =>
+            entry.category === 'detour' &&
+            entry.description.endsWith(journey.detours![index]!.description),
+        );
+        if (finding)
+          finding.description += ` (${steps} observed step${steps === 1 ? '' : 's'} there)`;
+      }
       for (const block of new Set(session.policyBlocks ?? []))
         result.findings.push({
           kind: 'observed',

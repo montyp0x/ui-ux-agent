@@ -357,3 +357,138 @@ test('revisiting a state replans when a toggle reveals nothing the journey can u
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('a visited look-alike page is reported as a detour finding without telling the planner', async () => {
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      request.url === '/lookalike/1'
+        ? '<h1>Thread 1</h1><a href="/">Home</a> <button>Expand thread</button>'
+        : request.url === '/items/1'
+          ? '<h1>Item 1</h1>'
+          : '<h1>Directory</h1><a href="/lookalike/1">Thread 1</a> <a href="/items/1">Item 1</a>',
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-detour-')), 'run');
+  const plannerInputs: string[] = [];
+  const order = [
+    'Open Thread 1',
+    'Click button Expand thread',
+    'Open Home',
+    'Open Item 1',
+  ];
+  let next = 0;
+  const models: Models = {
+    async plan(journey, observation, history, _t, actions, context) {
+      plannerInputs.push(
+        JSON.stringify({
+          journey: journey.goal,
+          observation,
+          history,
+          actions,
+          context,
+        }),
+      );
+      return { objective: 'Find the item', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      const choice =
+        actions.find((action) => action.description === order[next])?.id ??
+        actions.at(-1)!.id;
+      next++;
+      return {
+        type: 'choice',
+        choice,
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, action.id === choice ? 1 : 0]),
+          ['no_match', 0],
+        ]),
+      };
+    },
+  };
+  const description = 'a thread view that resembles the item page';
+  try {
+    const [result] = await runSuite(
+      suiteSchema.parse({
+        name: 'Local detour regression',
+        baseURL: `http://127.0.0.1:${address.port}`,
+        viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+        journeys: [
+          {
+            id: 'detour',
+            goal: 'Open the item page',
+            persona: 'Visitor',
+            startPath: '/',
+            allowedPaths: ['/', '/lookalike', '/items'],
+            ready: { kind: 'path', pattern: '.*' },
+            success: [{ kind: 'path', pattern: '^/items/1$' }],
+            discoverRoles: ['button'],
+            detours: [{ pattern: '^/lookalike/', description }],
+            maxSteps: 8,
+          },
+        ],
+      }),
+      models,
+      { directory },
+    );
+    assert.equal(result!.status, 'passed');
+    const detours = result!.findings.filter(
+      (finding) => finding.category === 'detour',
+    );
+    assert.deepEqual(
+      detours.map((finding) => [
+        finding.kind,
+        finding.description,
+        finding.step,
+      ]),
+      [
+        [
+          'observed',
+          `Reached /lookalike/1: ${description} (2 observed steps there)`,
+          1,
+        ],
+      ],
+    );
+    assert.ok(plannerInputs.length > 0);
+    assert.ok(plannerInputs.every((input) => !input.includes(description)));
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === 'detour');
+    assert.deepEqual(
+      events.map((event) => event.data.visits),
+      [1, 2],
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('detour patterns must be valid regular expressions', () => {
+  assert.throws(
+    () =>
+      suiteSchema.parse({
+        name: 'Bad detour',
+        baseURL: 'https://app.example',
+        viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+        journeys: [
+          {
+            id: 'j',
+            goal: 'g',
+            persona: 'p',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: { kind: 'path', pattern: '.*' },
+            success: [{ kind: 'path', pattern: '^/done$' }],
+            detours: [{ pattern: '([', description: 'broken' }],
+          },
+        ],
+      }),
+    /Invalid regex/,
+  );
+});
