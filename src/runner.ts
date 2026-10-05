@@ -30,6 +30,8 @@ export type RunOptions = {
 };
 export type Logger = EventLogger;
 
+const STALL_STEPS = 5;
+
 // A stage that would start after the journey deadline; reported as budget exhaustion.
 class BudgetExpired extends Error {}
 
@@ -146,6 +148,8 @@ async function runJourney(
   // Steps observed on each configured detour, keyed by its index.
   const detourSteps = new Map<number, number>();
   let revisitPending: string | null = null;
+  // Consecutive executed actions that stayed on the same page path.
+  let dwellSteps = 0;
   let stage = 'start';
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const remaining = (next: string): number => {
@@ -291,6 +295,12 @@ async function runJourney(
         const revisitedAction = plan ? revisitPending : null;
         if (revisitedAction) reasons.push('revisited-state');
         revisitPending = null;
+        // Every STALL_STEPS actions that stayed on one page, ask the planner to
+        // reconsider whether this page can satisfy the goal. Only the count is
+        // shared: being asked again already implies the goal is not reached.
+        const stalled =
+          !!plan && dwellSteps > 0 && dwellSteps % STALL_STEPS === 0;
+        if (stalled) reasons.push('stalled');
         if (reasons.length) {
           plan = await models.plan(
             journey,
@@ -301,6 +311,7 @@ async function runJourney(
             {
               reasons,
               ...(revisitedAction ? { revisitedAction } : {}),
+              ...(stalled ? { stalledSteps: dwellSteps } : {}),
               ...(session.offeredControls
                 ? { offeredControls: session.offeredControls() }
                 : {}),
@@ -453,6 +464,10 @@ async function runJourney(
           join(directory, `step-${String(step + 1).padStart(3, '0')}.png`),
         );
         const changed = after.fingerprint !== observation.fingerprint;
+        dwellSteps =
+          new URL(after.url).pathname === new URL(observation.url).pathname
+            ? dwellSteps + 1
+            : 0;
         history.push({ action: action.description, changed, error });
         result.steps++;
         await log('action_result', {

@@ -492,3 +492,73 @@ test('detour patterns must be valid regular expressions', () => {
     /Invalid regex/,
   );
 });
+
+test('lingering on one page for five observations asks the planner to reconsider it', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      `<h1>Long page</h1>${Array.from({ length: 40 }, (_, i) => `<p style="height:300px">Section ${i}</p>`).join('')}`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-stall-')), 'run');
+  const contexts: { reasons: string[]; stalledSteps?: number }[] = [];
+  const models: Models = {
+    async plan(_j, _o, _h, _t, _a, context) {
+      contexts.push(context as never);
+      return { objective: 'Keep reading', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      const choice = actions.find(
+        (action) => action.kind === 'scroll' && action.direction === 'down',
+      )!.id;
+      return {
+        type: 'choice',
+        choice,
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, action.id === choice ? 1 : 0]),
+          ['no_match', 0],
+        ]),
+      };
+    },
+  };
+  try {
+    await runSuite(
+      suiteSchema.parse({
+        name: 'Stall regression',
+        baseURL: `http://127.0.0.1:${address.port}`,
+        viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        journeys: [
+          {
+            id: 'stall',
+            goal: 'Find the pricing table',
+            persona: 'Visitor',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: { kind: 'path', pattern: '.*' },
+            success: [{ kind: 'path', pattern: '^/never$' }],
+            maxSteps: 6,
+          },
+        ],
+      }),
+      models,
+      { directory },
+    );
+    const stalled = contexts.filter((context) =>
+      context.reasons.includes('stalled'),
+    );
+    assert.equal(stalled.length, 1);
+    assert.equal(stalled[0]!.stalledSteps, 5);
+    assert.ok(
+      contexts.every(
+        (context) =>
+          context.reasons.includes('stalled') === 'stalledSteps' in context,
+      ),
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
