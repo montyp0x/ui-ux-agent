@@ -227,7 +227,9 @@ export type Action =
       region: string;
       point: ScrollPoint;
     }
-  | { kind: 'wait'; id: string; description: string };
+  | { kind: 'wait'; id: string; description: string }
+  // Browser history back to an in-scope previous entry (url).
+  | { kind: 'back'; id: string; description: string; url: string };
 export type ScrollPoint = { x: number; y: number };
 export type ScrollRegion = {
   id: string;

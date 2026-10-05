@@ -88,7 +88,7 @@ Use [examples/website.json](examples/website.json) as a template. [schemas/suite
 
 A journey offers visible links within its configured paths and origins. `"/"` permits the homepage only; `/docs` permits `/docs` and its descendants. Paths apply to all permitted navigation origins. Auth/logout routes, new tabs and popups are excluded. `discoverRoles` optionally enables discovery of visible, uniquely named buttons, tabs or menu items. It defaults to an empty list.
 
-Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. Values and selectors come from reviewed suite configuration, never generated model code.
+Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code.
 
 ```json
 {

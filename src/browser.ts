@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   errors,
+  type CDPSession,
   type ElementHandle,
   type Locator,
   type Page,
@@ -22,6 +23,7 @@ import type { EventLogger } from './drivers/types.js';
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard =
   | { kind: 'wait'; url: string }
+  | { kind: 'back'; url: string; target: string; index: number }
   | {
       kind: 'control';
       url: string;
@@ -61,7 +63,7 @@ async function releaseActions(page: Page): Promise<void> {
   const elements = new Set<Element>(offered?.dialogs);
   for (const action of offered?.actions ?? []) {
     const guard = guards.get(action);
-    if (guard && guard.kind !== 'wait') {
+    if (guard && 'element' in guard) {
       elements.add(guard.element);
       guard.dialogs.forEach((element) => elements.add(element));
     }
@@ -69,6 +71,30 @@ async function releaseActions(page: Page): Promise<void> {
   }
   offeredActions.delete(page);
   await Promise.allSettled([...elements].map((element) => element.dispose()));
+}
+
+// The browser's own session history (including same-document entries). Only
+// Chromium exposes it, through CDP; other engines are offered no back action.
+const historySessions = new WeakMap<Page, Promise<CDPSession | null>>();
+async function navigationHistory(
+  page: Page,
+): Promise<{ index: number; previous: string | null } | null> {
+  if (!historySessions.has(page))
+    historySessions.set(
+      page,
+      page.context().browser()?.browserType().name() === 'chromium'
+        ? page.context().newCDPSession(page)
+        : Promise.resolve(null),
+    );
+  const session = await historySessions.get(page)!;
+  if (!session) return null;
+  const { currentIndex, entries } = await session.send(
+    'Page.getNavigationHistory',
+  );
+  return {
+    index: currentIndex,
+    previous: currentIndex > 0 ? entries[currentIndex - 1]!.url : null,
+  };
 }
 
 async function dialogs(page: Page): Promise<Element[]> {
@@ -229,6 +255,18 @@ async function bind(
   const url = page.url();
   if (action.kind === 'wait') {
     guards.set(action, { kind: 'wait', url });
+    return null;
+  }
+  if (action.kind === 'back') {
+    const history = await navigationHistory(page);
+    if (!history || history.previous !== action.url)
+      return { reason: 'replaced' };
+    guards.set(action, {
+      kind: 'back',
+      url,
+      target: action.url,
+      index: history.index,
+    });
     return null;
   }
   if (action.kind === 'scroll') {
@@ -688,6 +726,19 @@ export async function candidates(
       });
     }
   }
+  const history = await navigationHistory(page);
+  if (
+    history?.previous &&
+    allowedURL(history.previous, baseURL, journey.allowedPaths, origins)
+  ) {
+    const previous = new URL(history.previous);
+    out.push({
+      kind: 'back',
+      id: `a${out.length}`,
+      description: `Go back to the previous page (${previous.pathname}${previous.search})`,
+      url: history.previous,
+    });
+  }
   out.push({
     kind: 'wait',
     id: `a${out.length}`,
@@ -744,6 +795,13 @@ export async function repeatState(
       snapshot: visible ? (await target.ariaSnapshot()).slice(0, 20000) : null,
     });
   }
+  if (guard.kind === 'back')
+    return JSON.stringify({
+      url: guard.url,
+      recipient: { back: guard.target, index: guard.index },
+      dialogNames: [],
+      progress,
+    });
   const dialogNames = await Promise.all(
     guard.dialogs.map((dialog) =>
       dialog.evaluate((element) => ({
@@ -791,6 +849,24 @@ export async function execute(
     throw new Error('Stale observation: navigation changed during selection');
   if (action.kind === 'wait') {
     await page.waitForTimeout(500);
+    return;
+  }
+  if (action.kind === 'back') {
+    const history = await navigationHistory(page);
+    if (
+      guard.kind !== 'back' ||
+      !history ||
+      history.index !== guard.index ||
+      history.previous !== guard.target
+    )
+      throw new Error(
+        'Stale observation: browser history changed during selection',
+      );
+    if (!allowedURL(guard.target, baseURL, journey.allowedPaths, origins))
+      throw new Error('Selected history entry left the journey scope');
+    await page.goBack({ waitUntil: 'commit' });
+    if (!allowedURL(page.url(), baseURL, journey.allowedPaths, origins))
+      throw new Error('Navigation left the journey scope');
     return;
   }
   if (action.kind === 'scroll') {
