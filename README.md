@@ -101,6 +101,16 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 
 Checks support route patterns, visible content, any visible match, text patterns and absence. `anyRendered` accepts any Playwright-visible match, including below the viewport; it proves layout presence, not that the user inspected it. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
 
+### Setup
+
+Apps keep state between runs: a calculator still shows its last result, and a page may remember a dismissed banner. `setup` lists up to ten interactions run once after `ready` and before the first observation:
+
+```json
+{ "setup": [{ "kind": "click", "target": { "by": "testId", "value": "AllClear" }, "description": "Clear the calculator" }] }
+```
+
+Each step must match the target of an action the driver offers, either a discovered control or a configured interaction, so it gets the same guards and blocklist as any action. Steps are logged as `setup` events, never shown to the models, and not counted as journey actions. A step that is not offered, or fails, ends the run as `blocked` with the step named.
+
 ### Detours
 
 A journey can name pages that resemble its destination but are not it:
@@ -173,6 +183,7 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
       "goal": "Work out 7 multiplied by 6 and read the result",
       "persona": "Someone checking a quick sum",
       "ready": { "kind": "visible", "target": { "by": "testId", "value": "StandardInputView" } },
+      "setup": [{ "kind": "click", "target": { "by": "testId", "value": "AllClear" }, "description": "Clear the calculator" }],
       "success": [{ "kind": "text", "target": { "by": "testId", "value": "StandardInputView" }, "pattern": "^42$" }]
     }
   ]

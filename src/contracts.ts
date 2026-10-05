@@ -131,6 +131,10 @@ export const journeySchema = z
       .max(10)
       .optional(),
     interactions: z.array(interactionSchema).default([]),
+    // Steps run once after ready and before the first observation, to reach a
+    // known starting state (e.g. clear a calculator). Each must match the
+    // target of an offered action: a discovered control or an interaction.
+    setup: z.array(interactionSchema).max(10).optional(),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
     maxSteps: z.number().int().min(1).max(100).default(20),
     maxDurationMs: z.number().int().min(1000).max(900000).default(180000),

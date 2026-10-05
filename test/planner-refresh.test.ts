@@ -569,3 +569,96 @@ test('lingering on one page for five observations asks the planner to reconsider
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('setup steps run before the journey and block it when they are not offered', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      `<h1>Counter</h1><p id="count">Count: 5</p><button onclick="document.querySelector('#count').textContent = 'Count: 0'">Reset</button>`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  let modelCalls = 0;
+  const models: Models = {
+    async plan() {
+      modelCalls++;
+      return { objective: 'Wait', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      modelCalls++;
+      return {
+        type: 'choice',
+        choice: 'no_match',
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, 0]),
+          ['no_match', 1],
+        ]),
+      };
+    },
+  };
+  const reset = {
+    kind: 'click' as const,
+    target: { by: 'role' as const, role: 'button' as const, name: 'Reset' },
+    description: 'Reset the counter',
+  };
+  const journey = (setupTarget: typeof reset.target) => ({
+    id: 'setup',
+    goal: 'See a zero count',
+    persona: 'Visitor',
+    startPath: '/',
+    allowedPaths: ['/'],
+    ready: { kind: 'path', pattern: '.*' },
+    success: [
+      {
+        kind: 'text',
+        target: { by: 'css', value: '#count' },
+        pattern: '^Count: 0$',
+      },
+    ],
+    interactions: [reset],
+    setup: [{ ...reset, target: setupTarget }],
+    maxSteps: 2,
+  });
+  const run = async (target: typeof reset.target) => {
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-setup-')),
+      'run',
+    );
+    const [result] = await runSuite(
+      suiteSchema.parse({
+        name: 'Setup regression',
+        baseURL: `http://127.0.0.1:${address.port}`,
+        viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        journeys: [journey(target)],
+      }),
+      models,
+      { directory },
+    );
+    const setup = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === 'setup')
+      .map((event) => [event.data.description, event.data.error]);
+    return { result: result!, setup };
+  };
+  try {
+    const ran = await run(reset.target);
+    assert.equal(ran.result.status, 'passed');
+    assert.equal(ran.result.steps, 0);
+    assert.deepEqual(ran.setup, [['Reset the counter', null]]);
+    assert.equal(modelCalls, 0);
+    const missing = await run({ by: 'role', role: 'button', name: 'Clear' });
+    assert.equal(missing.result.status, 'blocked');
+    assert.match(
+      missing.result.reason,
+      /^Setup step 1 \(Reset the counter\) failed: not offered/,
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

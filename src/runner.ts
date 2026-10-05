@@ -174,10 +174,50 @@ async function runJourney(
       );
     await session.start(Math.min(15000, journey.maxDurationMs));
     stage = 'ready';
-    if (!(await ready(session, journey, deadline))) {
+    let setupProblem: string | null = null;
+    if (await ready(session, journey, deadline))
+      for (const [index, setup] of (journey.setup ?? []).entries()) {
+        stage = 'setup';
+        session.setTimeout(Math.max(1, Math.min(5000, deadline - Date.now())));
+        const before = await session.observe(
+          -1,
+          join(directory, `setup-${String(index).padStart(2, '0')}.png`),
+        );
+        const offered = (await session.candidates()).find(
+          (action) =>
+            action.kind === setup.kind &&
+            'target' in action &&
+            JSON.stringify(action.target) === JSON.stringify(setup.target),
+        );
+        let error: string | null = offered
+          ? null
+          : 'not offered (missing, hidden, disabled or blocked)';
+        if (offered)
+          try {
+            // The guarded object itself: guards are keyed by the offered action.
+            await session.execute(offered, before);
+          } catch (caught) {
+            error = caught instanceof Error ? caught.message : String(caught);
+          }
+        await log('setup', {
+          journey: journey.id,
+          viewport,
+          index,
+          description: setup.description,
+          error,
+        });
+        if (error) {
+          setupProblem = `Setup step ${index + 1} (${setup.description}) failed: ${error}`;
+          break;
+        }
+      }
+    else setupProblem = 'ready';
+    if (setupProblem) {
       result.status = 'blocked';
       result.reason =
-        'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector';
+        setupProblem === 'ready'
+          ? 'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector'
+          : setupProblem;
     } else {
       for (let step = 0; step <= journey.maxSteps; step++) {
         session.setTimeout(Math.max(1, Math.min(5000, deadline - Date.now())));

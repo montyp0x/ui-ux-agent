@@ -1,8 +1,17 @@
 {
-  "name": "Calculator (macOS) — basic arithmetic",
+  "name": "Calculator (macOS) \u2014 basic arithmetic",
   "platform": "macos",
-  "app": { "bundleId": "com.apple.calculator", "relaunch": true },
-  "viewports": [{ "name": "window", "width": 320, "height": 480 }],
+  "app": {
+    "bundleId": "com.apple.calculator",
+    "relaunch": true
+  },
+  "viewports": [
+    {
+      "name": "window",
+      "width": 320,
+      "height": 480
+    }
+  ],
   "journeys": [
     {
       "id": "multiply",
@@ -10,17 +19,33 @@
       "persona": "Someone checking a quick sum",
       "ready": {
         "kind": "visible",
-        "target": { "by": "testId", "value": "StandardInputView" }
+        "target": {
+          "by": "testId",
+          "value": "StandardInputView"
+        }
       },
       "success": [
         {
           "kind": "text",
-          "target": { "by": "testId", "value": "StandardInputView" },
+          "target": {
+            "by": "testId",
+            "value": "StandardInputView"
+          },
           "pattern": "^42$"
         }
       ],
       "maxSteps": 10,
-      "maxDurationMs": 120000
+      "maxDurationMs": 120000,
+      "setup": [
+        {
+          "kind": "click",
+          "target": {
+            "by": "testId",
+            "value": "AllClear"
+          },
+          "description": "Clear the calculator"
+        }
+      ]
     }
   ]
 }
