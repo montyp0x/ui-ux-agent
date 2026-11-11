@@ -360,7 +360,7 @@ Every offered action is bound to a guard (element identity plus control state, o
 
 ## Evidence and outcomes
 
-Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten.
+Each run uses a fresh private directory under `runs/`. `--out` can choose another new directory. Existing runs are never overwritten: a run refuses a directory that already exists. Each run directory starts with a `run.json` manifest (creation time, `deleteAfter` from `evidence.retentionDays`, `uploaded: false`). The runner never uploads or deletes evidence on its own; `npm run run -- --prune-runs runs [--dry-run]` deletes the run directories whose retention has passed, and only directories carrying a valid manifest (other directories, files and symlinks are skipped).
 
 Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N` (1–50) runs each selected journey and viewport N times in sequence, each with its own evidence directory (`<journey>-<viewport>-<n>`). The CLI prints `passed/runs` with median actions and duration per journey/viewport. Every result records its `attempt` and its `usage`: per role (planner, selector), the call count, total latency, and input/output tokens. Usage is taken from `model_call` events, from `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, and counts as zero when a provider omits it. Token counts are not converted to cost.
 
@@ -369,10 +369,36 @@ Once the suite, credentials and session are supplied, the CLI executes without i
 - `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, and evidence links.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 3`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`.
-- Per journey/viewport: screenshots, Playwright trace and optional video.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured.
+- Per journey/viewport: screenshots, Playwright trace and optional video, when the evidence policy allows them.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
+
+### Evidence protection
+
+`evidence` in the suite (strict; every field optional) decides what leaves the machine, what stays local, and how each format is protected:
+
+```json
+"evidence": {
+  "redact": [{ "pattern": "ACME-CASE-\\d{6}", "label": "case-id" }],
+  "redactEnv": ["APP_PASSWORD"],
+  "masks": [{ "by": "testId", "value": "account-number" }],
+  "providerScreenshots": true,
+  "trace": "auto",
+  "video": "auto",
+  "retentionDays": 30
+}
+```
+
+**Provider-visible** (sent to the planner and selector endpoints, after redaction): the journey goal and persona, the current URL, visible viewport text and control names and values, offered action descriptions and link destination paths, recent action history, the planner's objective, and the masked viewport screenshot (planner only; `providerScreenshots: false` withholds it). **Local-only** (the run directory): everything else, including the accessibility snapshot, selectors and configured values, the event log, results, the report, screenshots, audit findings and files, traces and videos.
+
+- **Text redaction** applies to model payloads, `events.jsonl`, `suite.json`, results, the summary, the report, CLI error output, and every text file a driver or audit writes in the run directory (a final sweep). It replaces matches with `[REDACTED:<label>]`: the suite's `redact` patterns (JavaScript regular expressions; a pattern that matches empty text is refused), the values of the variables in `redactEnv`, the values of every environment variable whose name marks it as a credential (`…_KEY`, `…_TOKEN`, `…_SECRET`, `…_PASSWORD`, … at least 8 characters, model gateway header values included), and built-in credential shapes (bearer tokens, JWTs, `sk-`/GitHub/AWS/Slack/Google keys, private key blocks, URL user info, credential-like URL parameters and `password=`-style assignments). String values under credential-named keys (`authorization`, `cookie`, `password`, …) are replaced whole. Patterns and secret values are never written to evidence; results record only their counts and the variable names.
+- **Screenshot masks** are applied before capture (Playwright `mask`): the configured `masks` targets, elements whose text matches a redaction pattern or secret value, and input fields whose value matches are covered with solid magenta while the image is rendered, so the written file and the image sent to the planner never contain them. Masks cannot reach text drawn into images or canvases, or content in cross-origin frames. macOS window captures cannot be masked: `masks` is refused for macOS suites, their screenshots are reported `not_sanitized`, and a macOS suite that declares `redact` or `redactEnv` does not send screenshots to the planner.
+- **Traces and videos** cannot be sanitized (a Playwright trace holds DOM snapshots, network traffic including cookies and bodies, and unmasked screenshots; a recording cannot be masked). With `auto` (the default), a suite that declares sensitive content (`redact`, `redactEnv` or `masks`) captures neither, even with `--video`, and an authenticated run (`--profile` or `--storage-state`) captures no trace. `off` never captures; `local` captures unsanitized and is refused for a suite that declares sensitive content. The macOS accessibility-tree `trace.json` is text and is redacted.
+
+Every result's `evidence` lists each format (`model_payloads`, `provider_screenshots`, `screenshots`, `trace`, `video`, `event_log`, `results`, `report`, `audit_files`) as enabled or disabled, with its protection (`redacted`, `masked`, `not_sanitized`), its destination (`provider` or `local`) and the reason; the report shows the same, and the run's first event is `evidence_policy`.
+
+**Redaction is not a guarantee.** It removes the patterns, values and elements it is given and well-known credential shapes; it cannot recognize arbitrary unknown sensitive content (names, addresses, free text, images). Declare what a suite's application shows, prefer test accounts and synthetic data, and keep run directories local.
 
 Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error. Exit codes follow the functional outcome only; the quality verdict is reported beside it and does not change the exit code.
 
@@ -422,6 +448,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: redaction covers declared patterns, credential environment values and known credential shapes only (see [Evidence protection](#evidence-protection)); no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

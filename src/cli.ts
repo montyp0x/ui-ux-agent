@@ -17,6 +17,8 @@ import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
 import { summarize } from './summary.js';
+import { pruneRuns } from './evidence/retention.js';
+import { Redactor } from './evidence/redact.js';
 
 const options = {
   suite: { type: 'string' },
@@ -39,6 +41,8 @@ const options = {
   from: { type: 'string' },
   profile: { type: 'string' },
   'sign-in': { type: 'boolean' },
+  'prune-runs': { type: 'string' },
+  'dry-run': { type: 'boolean' },
 } as const;
 // Unknown flags (including the removed --from-browser, which read sessions out
 // of an installed browser's personal profile) are rejected with exit code 2.
@@ -72,9 +76,27 @@ if (values.help) {
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
       'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]\n' +
       '\n' +
-      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.',
+      'npm run run -- --prune-runs runs [--dry-run]   (deletes run directories whose evidence.retentionDays have passed)\n' +
+      '\n' +
+      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.\n' +
+      'Runs are never overwritten, uploaded or deleted automatically.',
   );
+} else if (values['prune-runs']) {
+  // Explicit retention: only directories with this tool's run manifest whose
+  // retention has passed; anything else under the root is left alone.
+  try {
+    for (const entry of await pruneRuns(resolve(values['prune-runs']), {
+      dryRun: values['dry-run'],
+    }))
+      console.log(`${entry.action}: ${entry.directory} (${entry.reason})`);
+  } catch (caught) {
+    console.error(caught instanceof Error ? caught.message : String(caught));
+    process.exitCode = 2;
+  }
 } else {
+  // Error messages can quote page text; redact them like other evidence once
+  // the suite's patterns are known.
+  let redactor = new Redactor({ env: process.env });
   try {
     if (values.profile && (values['storage-state'] || values.login))
       throw new Error('Use --profile or --storage-state/--login, not both');
@@ -100,6 +122,11 @@ if (values.help) {
         await readFile(resolve(values.suite), 'utf8'),
       );
       const suite = suiteSchema.parse(raw);
+      redactor = new Redactor({
+        patterns: suite.evidence.redact,
+        envNames: suite.evidence.redactEnv,
+        env: process.env,
+      });
       if (values.url)
         suite.baseURL = suiteSchema.parse({
           ...suite,
@@ -187,6 +214,12 @@ if (values.help) {
         );
       } else {
         loadCredentials();
+        // Credentials loaded from .env are redacted too.
+        redactor = new Redactor({
+          patterns: suite.evidence.redact,
+          envNames: suite.evidence.redactEnv,
+          env: process.env,
+        });
         const options = modelOptionsFromEnv(process.env);
         const directory = resolve(
           values.out ??
@@ -234,7 +267,9 @@ if (values.help) {
       }
     }
   } catch (caught) {
-    console.error(caught instanceof Error ? caught.message : String(caught));
+    console.error(
+      redactor.text(caught instanceof Error ? caught.message : String(caught)),
+    );
     process.exitCode = 2;
   }
 }
