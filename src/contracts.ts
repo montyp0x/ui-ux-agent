@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
+import { evidencePolicySchema } from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
 
 export { targetSchema, type Target };
@@ -241,6 +242,9 @@ const suiteObject = z
     // Objective audits run at configured checkpoints (see src/audits/).
     // Default: the horizontal overflow audit at completion, fail on serious.
     audits: auditsConfigSchema.prefault({}),
+    // Provider-visible versus local-only data, redaction, screenshot masks,
+    // trace/video capture and retention (see src/evidence/policy.ts).
+    evidence: evidencePolicySchema.prefault({}),
   })
   .strict()
   .superRefine((suite, ctx) => {
@@ -287,6 +291,12 @@ const suiteObject = z
           ...(journey.states ?? []).map((state) => state.when),
         ].flatMap((check) => ('target' in check ? [check.target] : [])),
       ]);
+      if (suite.evidence.masks.length)
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'evidence.masks do not apply to macOS: native window captures cannot be masked; use evidence.providerScreenshots: false and keep screenshots local',
+        });
       if (targets.some((target) => target.by === 'css'))
         ctx.addIssue({
           code: 'custom',
