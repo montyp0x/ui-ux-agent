@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { modelOptionsFromEnv } from '../src/config.js';
 import {
   EndpointLimiter,
@@ -37,6 +37,147 @@ async function server(
     close: () => new Promise<void>((resolve) => http.close(() => resolve())),
   };
 }
+
+// Controlled time: setTimeout and Date are mocked, so these tests do not
+// depend on wall-clock scheduling. setImmediate stays real and flushes the
+// promise continuations a fired timer schedules.
+function fakeTime(t: TestContext) {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    flush,
+    async advance(ms: number, step = 10) {
+      for (let elapsed = 0; elapsed < ms; elapsed += step) {
+        t.mock.timers.tick(step);
+        await flush();
+      }
+    },
+  };
+}
+
+test('a queued request rechecks a cooldown applied while it waits', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 600, concurrency: 2 });
+  await limiter.acquire(5000);
+  let startedAt: number | null = null;
+  const queued = limiter.acquire(5000).then(() => (startedAt = Date.now()));
+  await time.flush();
+  // The queued request was scheduled for 100ms; a 429 now pauses the endpoint.
+  limiter.throttled(1000);
+  await time.advance(1500);
+  await queued;
+  assert.ok(startedAt !== null && startedAt >= 1000, `started at ${startedAt}`);
+});
+
+test('a request waiting for a slot is woken after an earlier waiter timed out', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+  await limiter.acquire(5000);
+  const expired = assert.rejects(limiter.acquire(100), RateLimitBudgetError);
+  let startedAt: number | null = null;
+  const later = limiter.acquire(5000).then(() => (startedAt = Date.now()));
+  await time.advance(200);
+  await expired;
+  limiter.release();
+  await time.advance(50);
+  assert.ok(startedAt !== null && startedAt <= 250, `started at ${startedAt}`);
+  await later;
+});
+
+test('overlapping cooldowns keep the latest expiry', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 2 });
+  limiter.throttled(1000);
+  // A shorter cooldown does not shorten the current one.
+  limiter.throttled(300);
+  let startedAt: number | null = null;
+  const queued = limiter.acquire(10000).then(() => (startedAt = Date.now()));
+  await time.advance(800);
+  assert.equal(startedAt, null);
+  // A cooldown that ends later extends it while the request waits.
+  limiter.throttled(500);
+  await time.advance(1000);
+  await queued;
+  assert.ok(startedAt !== null && startedAt >= 1300, `started at ${startedAt}`);
+  limiter.release();
+});
+
+test('requests released by a cooldown are still spaced by the rate', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 600, concurrency: 3 });
+  limiter.throttled(1000); // also halves the rate: one start per 200ms
+  const starts: number[] = [];
+  const queued = [1, 2].map(() =>
+    limiter.acquire(10000).then(() => starts.push(Date.now())),
+  );
+  await time.advance(1500);
+  await Promise.all(queued);
+  assert.ok(starts[0]! >= 1000, `first at ${starts[0]}`);
+  assert.ok(
+    starts[1]! - starts[0]! >= 200,
+    `spaced ${starts[1]! - starts[0]!}ms`,
+  );
+});
+
+test('a cooldown that passes the deadline fails a waiting request at once and frees its slot', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 60, concurrency: 2 });
+  await limiter.acquire(5000);
+  let outcome: unknown = null;
+  // Scheduled for 1000ms, inside its 3000ms deadline.
+  const queued = limiter.acquire(3000).catch((caught) => (outcome = caught));
+  await time.flush();
+  assert.equal(limiter.inFlight, 2);
+  limiter.throttled(10000);
+  await time.flush();
+  assert.ok(outcome instanceof RateLimitBudgetError);
+  assert.equal(Date.now(), 0, 'did not sleep before failing');
+  assert.equal(limiter.inFlight, 1);
+  await queued;
+});
+
+test('an aborted request never starts and gives back its slot', async (t) => {
+  const time = fakeTime(t);
+  const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+  // Already aborted: rejected without taking a slot.
+  await assert.rejects(
+    limiter.acquire(5000, AbortSignal.abort()),
+    (caught: Error) => caught.name === 'AbortError',
+  );
+  assert.equal(limiter.inFlight, 0);
+
+  // Aborted while waiting for a slot.
+  await limiter.acquire(5000);
+  const slot = new AbortController();
+  const forSlot = assert.rejects(
+    limiter.acquire(5000, slot.signal),
+    (caught: Error) => caught.name === 'AbortError',
+  );
+  await time.flush();
+  slot.abort();
+  await forSlot;
+  let nextStarted = false;
+  const next = limiter.acquire(5000).then(() => (nextStarted = true));
+  limiter.release();
+  await time.advance(50);
+  assert.equal(nextStarted, true, 'the slot went to the next live waiter');
+  await next;
+  limiter.release();
+  assert.equal(limiter.inFlight, 0);
+
+  // Aborted while holding a slot and waiting for its start.
+  limiter.throttled(1000);
+  const pacing = new AbortController();
+  const forStart = assert.rejects(
+    limiter.acquire(5000, pacing.signal),
+    (caught: Error) => caught.name === 'AbortError',
+  );
+  await time.advance(100);
+  assert.equal(limiter.inFlight, 1);
+  pacing.abort();
+  await forStart;
+  assert.equal(limiter.inFlight, 0);
+});
 
 test('requests to one endpoint are spaced by its requests-per-minute limit', async () => {
   const limiter = new EndpointLimiter({ rpm: 600, concurrency: 1 });

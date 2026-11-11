@@ -177,44 +177,63 @@ export type ModelWait = {
 // `concurrency` in flight, starts spaced by 60000/rpm ms. A 429 pauses the
 // endpoint until its Retry-After (or a backoff) has passed and halves the
 // rate; each success restores it by one request per minute up to the limit.
+//
+// A request holds its slot from acquire() until release(). Its start time is
+// recomputed from the latest pacing and cooldown right before it is granted,
+// so a cooldown applied while it waits always delays it, and a request whose
+// start would fall at or after its deadline, or whose signal aborts, gives its
+// slot back and never starts.
 export class EndpointLimiter {
   private nextStart = 0;
   private pausedUntil = 0;
   private active = 0;
-  private waiting: (() => void)[] = [];
+  // Callers waiting for a slot, in arrival order; release() hands its slot
+  // to the first one. Waiters remove themselves on timeout or abort.
+  private readonly waiting: (() => void)[] = [];
+  // Slot holders sleeping until their start; woken to recheck on throttled().
+  private readonly sleepers = new Set<() => void>();
   rpm: number;
   constructor(
     readonly limit: RateLimit,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => Date.now(),
   ) {
     this.rpm = limit.rpm;
   }
-  // Resolves when a request may start; the wait in ms. Throws when the start
-  // would fall after `deadline`.
-  async acquire(deadline: number): Promise<number> {
+  // Requests holding a slot: started, or granted a slot and waiting to start.
+  get inFlight(): number {
+    return this.active;
+  }
+  // Resolves with the wait in ms once a request may start; it then holds a
+  // slot until release(). Throws RateLimitBudgetError when the start would
+  // fall at or after `deadline`, and the signal's reason when it aborts; in
+  // both cases no slot is held.
+  async acquire(deadline: number, signal?: AbortSignal): Promise<number> {
     const started = this.now();
-    while (this.active >= this.limit.concurrency) {
-      const remaining = deadline - this.now();
-      if (remaining <= 0) throw new RateLimitBudgetError(0);
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, remaining);
-        this.waiting.push(() => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+    signal?.throwIfAborted();
+    if (this.active < this.limit.concurrency) this.active++;
+    else await this.waitForSlot(deadline, signal);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const now = this.now();
+        const at = Math.max(this.nextStart, this.pausedUntil, now);
+        if (at >= deadline) throw new RateLimitBudgetError(at - now);
+        if (at <= now) break;
+        await this.sleep(at - now, signal);
+      }
+      this.nextStart = this.now() + 60000 / this.rpm;
+      return this.now() - started;
+    } catch (caught) {
+      this.release();
+      throw caught;
     }
-    const at = Math.max(this.nextStart, this.pausedUntil, this.now());
-    if (at >= deadline) throw new RateLimitBudgetError(at - this.now());
-    this.active++;
-    this.nextStart = at + 60000 / this.rpm;
-    const delay = at - this.now();
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-    return this.now() - started;
   }
   release(): void {
-    this.active = Math.max(0, this.active - 1);
-    this.waiting.shift()?.();
+    const next = this.waiting.shift();
+    // Hand the slot straight to the next waiter, so a newer caller cannot
+    // take it between this release and the waiter resuming.
+    if (next) next();
+    else this.active = Math.max(0, this.active - 1);
   }
   succeeded(): void {
     this.rpm = Math.min(this.limit.rpm, this.rpm + 1);
@@ -222,6 +241,45 @@ export class EndpointLimiter {
   throttled(waitMs: number): void {
     this.pausedUntil = Math.max(this.pausedUntil, this.now() + waitMs);
     this.rpm = Math.max(1, this.rpm / 2);
+    for (const wake of [...this.sleepers]) wake();
+  }
+  private waitForSlot(deadline: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const done = (error?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', aborted);
+        const index = this.waiting.indexOf(grant);
+        if (index >= 0) this.waiting.splice(index, 1);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      // Called by release(), which keeps the slot counted for this waiter.
+      const grant = () => done();
+      const aborted = () => done(signal!.reason);
+      const timer = setTimeout(
+        () => done(new RateLimitBudgetError(0)),
+        Math.max(0, deadline - this.now()),
+      );
+      signal?.addEventListener('abort', aborted, { once: true });
+      this.waiting.push(grant);
+    });
+  }
+  // Sleeps up to `ms`, returning early when throttled() changes the schedule.
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const done = (error?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', aborted);
+        this.sleepers.delete(wake);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const wake = () => done();
+      const aborted = () => done(signal!.reason);
+      const timer = setTimeout(wake, ms);
+      signal?.addEventListener('abort', aborted, { once: true });
+      this.sleepers.add(wake);
+    });
   }
 }
 
