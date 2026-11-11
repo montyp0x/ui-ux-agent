@@ -184,6 +184,7 @@ Built-in audits:
 
 - `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
 - `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
+- `visual.baseline`: an opt-in screenshot comparison with reviewed baselines; see [Visual baselines](#visual-baselines).
 - `layout.responsive` (opt-in; default checkpoints `ready` and `completion`): deterministic layout measurement at the session's viewport, then at each extra `matrix.breakpoints` entry and a reflow case, resized in place and restored (viewport and scroll position) before the journey continues. Rules (`rules`, default all three):
   - `clipping`: text or a control cut off by an `overflow: hidden`/`clip` ancestor, by more than `clipping.tolerancePx` (default 1). Severity `serious` when a control is cut, `moderate` for text. Visually hidden (1px) and collapsed containers are skipped. Declared truncation (`text-overflow: ellipsis`, `-webkit-line-clamp`) is a `needs_review` item, never a violation.
   - `occlusion`: a control scrolled into view (block and inline centre) is hit-tested at a 3x3 grid; another element covering its centre or at least `occlusion.minCoveredFraction` (default 0.3) of the points is a violation, smaller overlaps are `needs_review`. Its own labels and descendants do not count; controls behind an open modal are skipped. Checks the `requiredControls` targets (severity `serious`; a target that matches nothing makes the run `incomplete`), or every rendered interactive control when none are configured (`moderate`). Elements with `pointer-events: none` are transparent to hit testing and are not reported.
@@ -225,6 +226,58 @@ What a scan does not establish (each run's `limitations` repeats the coverage li
 - Keyboard operation and focus order are not tested by the scan; keyboard and focus checks are planned separately.
 - Cross-origin frames are not scanned. The scan runs in the page itself, so it opens no second page in the browser context.
 - HTML snippets are excerpts of the page under test and can contain its data; treat results like other run evidence.
+
+### Visual baselines
+
+`visual.baseline` is an opt-in driver audit that captures each configured checkpoint (default `ready`, the state before any agent action; `states` gives one named capture per declared journey state) and compares it with an approved baseline from a local directory you supply. A run never writes a baseline: captures stay in the run directory until you review them and approve them explicitly.
+
+```json
+"audits": {
+  "checks": [
+    { "id": "visual.baseline", "at": ["ready", "states"], "mask": ["#last-synced", "[data-testid=avatar]"] }
+  ]
+}
+```
+
+```sh
+mkdir -p ~/ui-baselines            # outside Git (or a Git-ignored path such as .baselines/)
+npm run run -- --suite suite.json --baselines ~/ui-baselines
+# review visual-<checkpoint>-current.png in the run directory or report.html, then:
+npm run baseline -- approve --run runs/<run> --baselines ~/ui-baselines --journey ID [--viewport NAME] [--checkpoint ready]
+npm run baseline -- approve --run runs/<run> --baselines ~/ui-baselines --all          # after reviewing every capture
+npm run baseline -- approve --run runs/<later run> --baselines ~/ui-baselines --checkpoint ready --replace   # an intended change
+npm run baseline -- list --baselines ~/ui-baselines
+```
+
+| Option          | Purpose                                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `at`            | Checkpoints: `ready`, `states`, `completion`; default `ready`                                                    |
+| `mask`          | CSS selectors of dynamic regions (clocks, avatars, ads), painted over in every capture and not compared          |
+| `fullPage`      | Capture the whole scrollable page instead of the viewport; default false                                        |
+| `threshold`     | Per-pixel colour distance (pixelmatch, 0–1) below which a pixel is unchanged; default 0.1                       |
+| `maxDiffPixels` | Changed pixels allowed; default 0                                                                                |
+| `maxDiffRatio`  | Changed pixels allowed as a fraction of the compared pixels; default 0                                           |
+| `severity`      | Severity of a mismatch finding, gating at or above `failOn`; default `serious`                                   |
+| `maxCaptures`   | Screenshots taken, at most, until two consecutive ones are identical; default 5                                 |
+| `networkIdleMs` | Best-effort wait for network idle before capture; 0 skips it; default 2000                                      |
+
+Capture: after a best-effort network-idle wait and a wait for web fonts and images, screenshots are taken with CSS animations and transitions disabled (finite ones finished, infinite ones reset), the caret hidden and CSS-pixel scale, until two consecutive images are identical. Every capture goes through `protectedScreenshot` (`src/drivers/playwright-evidence.ts`) with the session's screenshot protection, so redacted text and evidence masks are painted before the image is rendered and never reach a baseline. The runner does not yet pass the run's evidence protection to driver audits (the integration point is marked in `src/drivers/playwright.ts`); until it does, only the audit's own `mask` selectors apply, and `capture.protected` is false in the environment. Masked areas are solid `#FF00FF`; the boxes of every masked element, in the baseline and in the current capture, are left out of the comparison, and everything outside them is compared. A mask hides only what it covers: a masked element that grows and pushes other content still shows as a change there, so mask a fixed-size container when content around it moves. A mask selector that matches nothing is listed in the run's limitations.
+
+Each run records a `visual` comparison with one status:
+
+- `match`: compared with the approved baseline for this environment and within tolerance (run `clean`).
+- `mismatch`: over tolerance, or the image size changed (run `findings`; one `visual.mismatch` finding whose targets are the changed regions and whose evidence files are the current, baseline and diff images).
+- `missing`: no approved baseline for this suite, journey, checkpoint and viewport, or no `--baselines` directory was given (run `incomplete`).
+- `incompatible`: baselines exist for the checkpoint and viewport, but none from this rendering environment; the report lists each differing field (run `incomplete`).
+- `unstable`: the page never rendered the same image twice in `maxCaptures` (run `incomplete`); mask or wait for the changing part.
+
+Only `match` passes: `missing`, `incompatible` and `unstable` make the check `inconclusive` and the verdict `not_evaluated`. The report shows baseline, current and diff images (red: changed, blue: darker now), the aggregate changed pixels against the tolerance, the changed regions (connected areas on a 16px grid, largest first) and the environment.
+
+The compatibility environment is part of every baseline: viewport size, browser name, version, build (bundled, channel or executable) and headless mode, OS platform, architecture and major release, device scale factor, locale, timezone, colour scheme, reduced motion and the capture settings (`fullPage`, masks, whether evidence protection applied). Its hash names the baseline file: `<dir>/<suite slug>/<journey>/<checkpoint>/<viewport>/<environment id>.png` with a `.json` beside it holding the environment, the image checksum, the masked boxes, when it was approved and from which run. A baseline whose image no longer matches its checksum is an audit `error`.
+
+Approval: `approve` reads the run's `results.json`, checks each selected capture against the checksum the run recorded and writes it as the baseline for the environment it was rendered in. Without `--journey`/`--viewport`/`--checkpoint` it requires `--all`. A capture that differs from an approved baseline is approved only with `--replace`; captures that already match or did not settle are skipped; captures from runs whose functional outcome did not pass need `--allow-failed-runs`. The run's `--baselines` directory must exist; `approve` creates it. Either refuses a directory inside a Git work tree unless Git ignores it (`.baselines/` is ignored in this repository). Baselines and diff images are run evidence and are never committed; shared storage needs an approved destination and privacy policy.
+
+Calibration (`test/visual-baseline.test.ts`, local Chromium, prints its numbers as test diagnostics): five fresh captures of each fixture page (gradients, shadows, SVG, a raster image, a focused field, a CSS transition and an infinite animation) differ by 0 pixels; seeded changes differ by about 700 pixels (one word on a button), 3,900 (an accent colour) and 7,600 (a 2px move). The default tolerance is therefore 0 changed pixels at colour threshold 0.1: comparisons are only made within one rendering environment, where rendering was deterministic. Raise `maxDiffPixels` per suite if a target shows nondeterministic rendering, after measuring it. Web only: unsupported on macOS.
 
 ## Authentication and browser selection
 
@@ -407,7 +460,7 @@ Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoi
 
 - `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
 
-The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. `visual.baseline` is listed as unsupported unless the opt-in [visual baseline](#visual-baselines) audit is configured. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 
@@ -422,6 +475,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: no Windows or mobile drivers, shared baseline storage (visual baselines are local only), complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).
