@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { modelOptionsFromEnv } from '../src/config.js';
 import {
   EndpointLimiter,
+  limiterFor,
   post,
   RateLimitBudgetError,
   retryAfterMs,
@@ -290,6 +291,284 @@ test('other HTTP errors are not retried', async () => {
       /Model HTTP 400/,
     );
     assert.equal(api.count(), 1);
+  } finally {
+    await api.close();
+  }
+});
+
+test('a 429 seen by one caller delays a request queued on the same endpoint', async () => {
+  const api = await server((n) =>
+    n === 1
+      ? { status: 429, headers: { 'Retry-After': '1' } }
+      : { status: 200 },
+  );
+  // Both callers resolve the same process-wide limiter for this URL.
+  const limiter = limiterFor(api.url, { rpm: 6000, concurrency: 1 });
+  assert.equal(limiterFor(api.url, { rpm: 1, concurrency: 1 }), limiter);
+  const waits: ModelWait[] = [];
+  const pacing = (role: 'planner' | 'selector') => ({
+    role,
+    limiter,
+    onWait: async (data: ModelWait) => {
+      waits.push(data);
+    },
+  });
+  try {
+    const results = await Promise.all([
+      post(api.url, 'key', {}, 10000, {}, pacing('planner')),
+      post(api.url, 'key', {}, 10000, {}, pacing('selector')),
+    ]);
+    assert.deepEqual(results, [{ ok: true }, { ok: true }]);
+    assert.equal(api.count(), 3);
+    // The selector was queued behind the planner's 429 and waited it out.
+    assert.ok(api.starts[1]! - api.starts[0]! >= 950, 'queued request waited');
+    const selectorWait = waits.find(
+      (wait) => wait.role === 'selector' && wait.reason === 'pacing',
+    );
+    assert.ok(selectorWait && selectorWait.waitMs >= 900);
+    assert.equal(limiter.inFlight, 0);
+  } finally {
+    await api.close();
+  }
+});
+
+test('retries stop after five attempts and release the slot', async () => {
+  const api = await server(() => ({
+    status: 503,
+    headers: { 'Retry-After': '0' },
+  }));
+  const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+  const waits: ModelWait[] = [];
+  try {
+    await assert.rejects(
+      post(
+        api.url,
+        'key',
+        {},
+        10000,
+        {},
+        {
+          role: 'selector',
+          limiter,
+          onWait: async (data) => {
+            waits.push(data);
+          },
+        },
+      ),
+      /Model HTTP 503 after 5 attempts \(rate limited\)/,
+    );
+    assert.equal(api.count(), 5);
+    assert.deepEqual(
+      waits
+        .filter((wait) => wait.reason === 'unavailable')
+        .map((wait) => wait.attempt),
+      [1, 2, 3, 4, 5],
+    );
+    assert.equal(limiter.inFlight, 0);
+  } finally {
+    await api.close();
+  }
+});
+
+test('expired or cancelled work is never dispatched', async () => {
+  const api = await server(() => ({ status: 200 }));
+  try {
+    const cooling = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+    cooling.throttled(5000);
+    const started = Date.now();
+    await assert.rejects(
+      post(api.url, 'key', {}, 500, {}, { role: 'planner', limiter: cooling }),
+      RateLimitBudgetError,
+    );
+    assert.ok(Date.now() - started < 200, 'failed without sleeping');
+    assert.equal(cooling.inFlight, 0);
+
+    const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+    await assert.rejects(
+      post(
+        api.url,
+        'key',
+        {},
+        5000,
+        {},
+        { role: 'planner', limiter },
+        AbortSignal.abort(),
+      ),
+      (caught: Error) => caught.name === 'AbortError',
+    );
+    // Cancelled while queued behind a cooldown.
+    limiter.throttled(1000);
+    const cancel = new AbortController();
+    const pending = post(
+      api.url,
+      'key',
+      {},
+      5000,
+      {},
+      { role: 'planner', limiter },
+      cancel.signal,
+    );
+    setTimeout(() => cancel.abort(), 100);
+    await assert.rejects(
+      pending,
+      (caught: Error) => caught.name === 'AbortError',
+    );
+    assert.equal(limiter.inFlight, 0);
+
+    // A pacing log that outlives the step budget does not dispatch either.
+    const slow = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+    slow.throttled(100);
+    await assert.rejects(
+      post(
+        api.url,
+        'key',
+        {},
+        300,
+        {},
+        {
+          role: 'planner',
+          limiter: slow,
+          onWait: () => new Promise((resolve) => setTimeout(resolve, 300)),
+        },
+      ),
+      (caught: Error) => caught.name === 'TimeoutError',
+    );
+    assert.equal(slow.inFlight, 0);
+
+    // Cancelled while its pacing wait is being logged.
+    const logged = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+    logged.throttled(100);
+    const during = new AbortController();
+    await assert.rejects(
+      post(
+        api.url,
+        'key',
+        {},
+        5000,
+        {},
+        {
+          role: 'planner',
+          limiter: logged,
+          onWait: async () => during.abort(),
+        },
+        during.signal,
+      ),
+      (caught: Error) => caught.name === 'AbortError',
+    );
+    assert.equal(logged.inFlight, 0);
+    assert.equal(api.count(), 0);
+  } finally {
+    await api.close();
+  }
+});
+
+test('the endpoint slot is released on every exit path', async () => {
+  const hanging = createServer(() => {
+    // Never answers, so only the caller's signal ends the request.
+  });
+  await new Promise<void>((resolve) => hanging.listen(0, '127.0.0.1', resolve));
+  const address = hanging.address();
+  assert.ok(address && typeof address !== 'string');
+  const hangingURL = `http://127.0.0.1:${address.port}/`;
+  const invalid = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end('{not json');
+  });
+  await new Promise<void>((resolve) => invalid.listen(0, '127.0.0.1', resolve));
+  const invalidAddress = invalid.address();
+  assert.ok(invalidAddress && typeof invalidAddress !== 'string');
+  const ok = await server(() => ({ status: 200 }));
+  const failing = await server(() => ({ status: 500 }));
+  const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
+  const pacing = { role: 'selector' as const, limiter };
+  try {
+    await post(ok.url, 'key', {}, 5000, {}, pacing);
+    assert.equal(limiter.inFlight, 0, 'success');
+    await assert.rejects(
+      post(failing.url, 'key', {}, 5000, {}, pacing),
+      /HTTP 500/,
+    );
+    assert.equal(limiter.inFlight, 0, 'HTTP error');
+    await assert.rejects(
+      post(
+        `http://127.0.0.1:${invalidAddress.port}/`,
+        'key',
+        {},
+        5000,
+        {},
+        pacing,
+      ),
+      SyntaxError,
+    );
+    assert.equal(limiter.inFlight, 0, 'invalid JSON body');
+    const abort = new AbortController();
+    const pending = post(hangingURL, 'key', {}, 5000, {}, pacing, abort.signal);
+    setTimeout(() => abort.abort(), 100);
+    await assert.rejects(
+      pending,
+      (caught: Error) => caught.name === 'AbortError',
+    );
+    assert.equal(limiter.inFlight, 0, 'aborted in flight');
+    await assert.rejects(
+      post(hangingURL, 'key', {}, 200, {}, pacing),
+      (caught: Error) => caught.name === 'TimeoutError',
+    );
+    assert.equal(limiter.inFlight, 0, 'timed out in flight');
+    // A cooldown makes the next attempt wait, so its pacing log is called.
+    limiter.throttled(100);
+    await assert.rejects(
+      post(
+        ok.url,
+        'key',
+        {},
+        5000,
+        {},
+        {
+          ...pacing,
+          onWait: async () => {
+            throw new Error('log sink failed');
+          },
+        },
+      ),
+      /log sink failed/,
+    );
+    assert.equal(limiter.inFlight, 0, 'diagnostics callback threw');
+  } finally {
+    hanging.closeAllConnections();
+    await new Promise<void>((resolve) => hanging.close(() => resolve()));
+    await new Promise<void>((resolve) => invalid.close(() => resolve()));
+    await ok.close();
+    await failing.close();
+  }
+});
+
+test('wait diagnostics and errors never carry the key or headers', async () => {
+  const api = await server(() => ({
+    status: 429,
+    headers: { 'Retry-After': '0' },
+  }));
+  const secret = 'sk-test-secret-0b';
+  const waits: ModelWait[] = [];
+  let message = '';
+  try {
+    await post(
+      api.url,
+      secret,
+      {},
+      5000,
+      { 'X-Gateway-Token': secret },
+      {
+        role: 'planner',
+        limiter: new EndpointLimiter({ rpm: 6000, concurrency: 1 }),
+        onWait: async (data) => {
+          waits.push(data);
+        },
+      },
+    ).catch((caught: Error) => (message = `${caught.message} ${caught.stack}`));
+    assert.match(message, /after 5 attempts/);
+    assert.ok(waits.length >= 5);
+    assert.ok(!JSON.stringify(waits).includes(secret));
+    assert.ok(!message.includes(secret));
   } finally {
     await api.close();
   }

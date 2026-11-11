@@ -316,6 +316,11 @@ const MAX_ATTEMPTS = 5;
 const backoffMs = (attempt: number) =>
   Math.min(20000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
 
+// POSTs JSON to a model endpoint within `timeoutMs`. With `pacing`, every
+// attempt holds an endpoint slot from just before dispatch until its response
+// body is consumed or the attempt fails, and 429/503 replies are retried after
+// the endpoint's cooldown. Nothing is dispatched once `signal` aborts or the
+// deadline has passed; diagnostics never include the key or headers.
 export async function post(
   url: string,
   key: string,
@@ -327,12 +332,16 @@ export async function post(
     limiter: EndpointLimiter;
     onWait?: (data: ModelWait) => Promise<void>;
   },
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   for (let attempt = 1; ; attempt++) {
-    if (pacing) {
-      const waited = await pacing.limiter.acquire(deadline);
-      if (waited >= 50)
+    signal?.throwIfAborted();
+    // From here the attempt holds an endpoint slot; finally releases it.
+    const waited = pacing ? await pacing.limiter.acquire(deadline, signal) : 0;
+    let retry: { wait: number; status: 429 | 503 } | undefined;
+    try {
+      if (pacing && waited >= 50)
         await pacing.onWait?.({
           role: pacing.role,
           reason: 'pacing',
@@ -340,10 +349,19 @@ export async function post(
           attempt,
           rpm: pacing.limiter.rpm,
         });
-    }
-    let response: Response;
-    try {
-      response = await fetch(url, {
+      // Recheck after the wait and its diagnostics: never dispatch expired or
+      // cancelled work.
+      signal?.throwIfAborted();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        throw new DOMException(
+          'Model request deadline passed before dispatch',
+          'TimeoutError',
+        );
+      const timeout = AbortSignal.timeout(
+        Math.max(1, Math.min(60000, remaining)),
+      );
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           ...headers,
@@ -351,35 +369,40 @@ export async function post(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(
-          Math.max(1, Math.min(60000, deadline - Date.now())),
-        ),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
+      if (pacing && (response.status === 429 || response.status === 503)) {
+        const wait =
+          retryAfterMs(response.headers.get('retry-after')) ??
+          backoffMs(attempt);
+        // Before release, so the caller handed this slot sees the cooldown.
+        pacing.limiter.throttled(wait);
+        retry = { wait, status: response.status };
+        await response.body?.cancel().catch(() => undefined);
+      } else if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`Model HTTP ${response.status}`);
+      } else {
+        const payload: unknown = await response.json();
+        pacing?.limiter.succeeded();
+        return payload;
+      }
     } finally {
       pacing?.limiter.release();
     }
-    if (pacing && (response.status === 429 || response.status === 503)) {
-      const wait =
-        retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt);
-      pacing.limiter.throttled(wait);
-      await pacing.onWait?.({
-        role: pacing.role,
-        reason: response.status === 429 ? 'rate_limited' : 'unavailable',
-        status: response.status,
-        waitMs: Math.round(wait),
-        attempt,
-        rpm: pacing.limiter.rpm,
-      });
-      await response.body?.cancel();
-      if (attempt >= MAX_ATTEMPTS || Date.now() + wait >= deadline)
-        throw new Error(
-          `Model HTTP ${response.status} after ${attempt} attempts (rate limited)`,
-        );
-      continue;
-    }
-    if (!response.ok) throw new Error(`Model HTTP ${response.status}`);
-    pacing?.limiter.succeeded();
-    return response.json();
+    // Only a paced 429/503 reaches here; the retry waits outside the slot.
+    await pacing!.onWait?.({
+      role: pacing!.role,
+      reason: retry.status === 429 ? 'rate_limited' : 'unavailable',
+      status: retry.status,
+      waitMs: Math.round(retry.wait),
+      attempt,
+      rpm: pacing!.limiter.rpm,
+    });
+    if (attempt >= MAX_ATTEMPTS || Date.now() + retry.wait >= deadline)
+      throw new Error(
+        `Model HTTP ${retry.status} after ${attempt} attempts (rate limited)`,
+      );
   }
 }
 
