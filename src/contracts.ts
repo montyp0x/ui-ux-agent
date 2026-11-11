@@ -215,20 +215,40 @@ const suiteObject = z
     blockedControls: z.array(z.string().min(1)).max(50).default([]),
     // macOS: offer menu-bar commands (opt-in; see MENU_BLOCKED_CONTROLS).
     menus: z.boolean().default(false),
+    // macOS: allow the two synthetic inputs, for apps whose controls cannot be
+    // pressed through accessibility (web views such as Electron apps): a click
+    // on an element the driver found, sent only while its app is frontmost and
+    // a hit-test finds that element under the pointer; and `press` keys, posted
+    // to the app's process only while the target element has focus.
+    syntheticInput: z.boolean().default(false),
     baseURL: z.url(),
     browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
+    // An installed browser build for chromium (e.g. 'chrome'): uses the
+    // system's proxy settings and certificate trust like a user's browser.
+    browserChannel: z.enum(['chrome', 'chrome-beta', 'msedge']).optional(),
+    // Absolute path to another Chromium-based browser's executable (e.g.
+    // /Applications/Dia.app/Contents/MacOS/Dia). Launched with a fresh
+    // profile, never the user's own.
+    browserExecutable: z.string().regex(/^\//).optional(),
     requiresAuth: z.boolean().default(false),
     allowedOrigins: z.array(originSchema).default([]),
     applicationOrigins: z.array(originSchema).default([]),
+    // Reviewed write requests. Use an exact path, or a pathPattern (regex on
+    // the URL path) for endpoints with ids, such as chat message routes.
     allowedRequests: z
       .array(
         z
           .object({
             origin: originSchema,
-            path: relativePath,
+            path: relativePath.optional(),
+            pathPattern: z.string().min(2).optional(),
             method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
           })
-          .strict(),
+          .strict()
+          .refine(
+            (rule) => !!rule.path !== !!rule.pathPattern,
+            'allowedRequests entries need exactly one of path or pathPattern',
+          ),
       )
       .default([]),
     viewports: z
@@ -297,13 +317,48 @@ const suiteObject = z
           message:
             'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
         });
-    } else if (suite.menus)
+      if (
+        !suite.syntheticInput &&
+        suite.journeys.some((journey) =>
+          [...journey.interactions, ...(journey.setup ?? [])].some(
+            (interaction) => interaction.kind === 'press',
+          ),
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'press interactions on macOS need syntheticInput: true',
+        });
+    } else if (suite.menus || suite.syntheticInput)
       ctx.addIssue({
         code: 'custom',
-        message: 'menus applies to macOS suites only',
+        message: 'menus and syntheticInput apply to macOS suites only',
       });
     else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
+    for (const rule of suite.allowedRequests)
+      if (rule.pathPattern)
+        try {
+          new RegExp(rule.pathPattern);
+        } catch {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Invalid pathPattern ${rule.pathPattern}`,
+          });
+        }
+    if (
+      (suite.browserChannel || suite.browserExecutable) &&
+      suite.browser !== 'chromium'
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'browserChannel and browserExecutable apply to chromium only',
+      });
+    if (suite.browserChannel && suite.browserExecutable)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Use browserChannel or browserExecutable, not both',
+      });
     for (const journey of suite.journeys) {
       for (const check of [
         journey.ready,
@@ -424,6 +479,8 @@ export type Result = {
   attempt: number;
   // Model calls, latency and tokens for this run, from model_call events.
   usage: Usage;
+  // The {{marker}} value used in this run, when the journey has one.
+  marker?: string;
   status: 'passed' | 'failed' | 'blocked' | 'error';
   reason: string;
   steps: number;

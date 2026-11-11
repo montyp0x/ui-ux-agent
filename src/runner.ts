@@ -1,6 +1,7 @@
 import { mkdir, appendFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import type { StorageState } from './auth.js';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
@@ -19,7 +20,9 @@ import { actionSignature, refreshReasons, type PlanState } from './planning.js';
 
 export type RunOptions = {
   directory: string;
-  storageState?: string;
+  storageState?: string | StorageState;
+  // Persistent browser profile directory, signed in once with --sign-in.
+  profile?: string;
   headless?: boolean;
   video?: boolean;
   journey?: string;
@@ -31,6 +34,14 @@ export type RunOptions = {
 export type Logger = EventLogger;
 
 const STALL_STEPS = 5;
+
+// Replaces {{marker}} anywhere in the journey; returns the same object when the
+// journey has no placeholder.
+export function withMarker(journey: Journey, marker: string): Journey {
+  const text = JSON.stringify(journey);
+  if (!text.includes('{{marker}}')) return journey;
+  return JSON.parse(text.replaceAll('{{marker}}', marker)) as Journey;
+}
 
 // A stage that would start after the journey deadline; reported as budget exhaustion.
 class BudgetExpired extends Error {}
@@ -641,9 +652,9 @@ export async function runSuite(
   models: Models | ((log: Logger) => Models),
   options: RunOptions,
 ): Promise<Result[]> {
-  if (suite.requiresAuth && !options.storageState)
+  if (suite.requiresAuth && !options.storageState && !options.profile)
     throw new Error(
-      'This suite requires an approved Playwright storage-state path',
+      'This suite requires a signed-in --profile, a storage-state path, or --from-browser',
     );
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,
@@ -679,7 +690,12 @@ export async function runSuite(
     options.driver ??
     (suite.platform === 'macos'
       ? await (await import('./drivers/macos.js')).macosDriver()
-      : await playwrightDriver(suite.browser, options.headless ?? true));
+      : await playwrightDriver(
+          suite.browser,
+          options.headless ?? true,
+          suite,
+          options.profile,
+        ));
   const results: Result[] = [];
   try {
     for (const journey of journeys) {
@@ -692,9 +708,20 @@ export async function runSuite(
               : `${journey.id}-${viewport.name}`,
           );
           await mkdir(directory, { mode: 0o700 });
+          // A unique marker per run, substituted for {{marker}} in the journey
+          // (typed values, checks), so a run's own effects can be traced.
+          const marker =
+            `UIUX-${journey.id}-${attempt}-${Date.now().toString(36)}`.toUpperCase();
+          const runJourneyConfig = withMarker(journey, marker);
+          await log('journey_start', {
+            journey: journey.id,
+            viewport: viewport.name,
+            attempt,
+            ...(runJourneyConfig !== journey ? { marker } : {}),
+          });
           const session = await driver.openSession({
             suite,
-            journey,
+            journey: runJourneyConfig,
             viewport,
             directory,
             storageState: options.storageState,
@@ -704,19 +731,19 @@ export async function runSuite(
           const usage = emptyUsage();
           currentUsage = usage;
           try {
-            results.push(
-              await runJourney(
-                session,
-                suite,
-                journey,
-                viewport.name,
-                directory,
-                engine,
-                log,
-                attempt,
-                usage,
-              ),
+            const result = await runJourney(
+              session,
+              suite,
+              runJourneyConfig,
+              viewport.name,
+              directory,
+              engine,
+              log,
+              attempt,
+              usage,
             );
+            if (runJourneyConfig !== journey) result.marker = marker;
+            results.push(result);
           } finally {
             currentUsage = null;
           }

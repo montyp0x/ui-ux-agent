@@ -48,8 +48,12 @@ Credentials are read from environment variables, never from suite files. The CLI
 | `PLANNER_MODEL` | Planner model | `openai/gpt-6-astra` |
 | `PLANNER_API_HEADERS` | Optional JSON object of extra headers for gateways | none |
 | `SELECTOR_PROTOCOL` | `typesafe` (TypeSafe Jev choice API) or `chat` (any Chat Completions endpoint) | `typesafe` |
+| `PLANNER_MAX_RPM`, `PLANNER_MAX_CONCURRENCY` | Client-side cap on planner requests per minute and in flight, shared by the whole process | `60`, `2` |
+| `SELECTOR_MAX_RPM`, `SELECTOR_MAX_CONCURRENCY` | The same for the selector endpoint (one limiter per endpoint URL, so a shared `chat` endpoint has one budget) | `300`, `4` |
 | `JEV_API_KEY` (or `TYPESAFE_API_KEY`) | Jev selector key, for `typesafe` | required for `typesafe` |
 | `SELECTOR_API_URL`, `SELECTOR_API_KEY`, `SELECTOR_MODEL`, `SELECTOR_API_HEADERS` | Selector overrides; with `chat` each defaults to the planner's value | see left |
+
+A model endpoint that answers 429 (or 503) is retried after its `Retry-After`, or an exponential backoff with jitter, as long as the step's time budget allows (up to 5 attempts). The endpoint's rate is halved after each 429 and recovers by one request per minute per success. Every wait is logged as a `model_wait` event with its reason, status and the endpoint's current rate.
 
 With `SELECTOR_PROTOCOL=chat`, one provider key runs everything. Point `SELECTOR_MODEL` at a smaller, faster model than the planner's. The chat selector constrains its output to the offered action ids plus `no_match` through `json_schema`. It asks for a probability per option and normalizes the distribution before the same validation the Jev selector gets.
 

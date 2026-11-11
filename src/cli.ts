@@ -5,8 +5,14 @@ import { createInterface } from 'node:readline/promises';
 import { chromium, firefox, webkit } from 'playwright';
 import { scopeStorageState, storageStateSchema, suiteOrigins } from './auth.js';
 import { parseArgs } from 'node:util';
+import {
+  importBrowserSession,
+  isBrowserSourceName,
+  type BrowserSourceName,
+} from './browser-session.js';
 import { modelOptionsFromEnv } from './config.js';
-import { suiteSchema } from './contracts.js';
+import { browserLaunchOptions } from './drivers/playwright.js';
+import { suiteSchema, type Suite } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
@@ -32,6 +38,10 @@ const { values } = parseArgs({
     login: { type: 'string' },
     repeat: { type: 'string' },
     from: { type: 'string' },
+    'from-browser': { type: 'string' },
+    'browser-profile': { type: 'string' },
+    profile: { type: 'string' },
+    'sign-in': { type: 'boolean' },
   },
 });
 
@@ -47,11 +57,40 @@ function loadCredentials(): void {
   process.loadEnvFile(path);
   console.log(`Loaded environment from ${path}`);
 }
+// --from-browser: the suite's session from the user's own browser profile,
+// read fresh on each run so it never goes stale and never touches disk.
+const fromBrowser = ((): BrowserSourceName | undefined => {
+  const name = values['from-browser'];
+  if (name === undefined) return undefined;
+  if (!isBrowserSourceName(name))
+    throw new Error(`--from-browser must be one of: dia, chrome`);
+  if (values['storage-state'] || values.from || values.profile)
+    throw new Error(
+      'Use one of --from-browser, --profile, --storage-state or --from',
+    );
+  return name;
+})();
+if (values.profile && values['storage-state'])
+  throw new Error('Use --profile or --storage-state, not both');
+async function sessionFromBrowser(name: BrowserSourceName, suite: Suite) {
+  const hosts = suiteOrigins(suite).map((origin) => new URL(origin).hostname);
+  const { state, report } = await importBrowserSession(
+    name,
+    hosts,
+    values['browser-profile'],
+  );
+  console.log(
+    `Using the ${report.browser} "${report.profile}" session: ${report.cookies} cookies for ${report.hosts.join(', ')}`,
+  );
+  return state;
+}
+
 if (values.help) {
   console.log(
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
-      'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]',
+      'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
+      'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json | --from-browser dia|chrome [--browser-profile NAME]] [--url URL]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH | --from-browser dia|chrome [--browser-profile NAME]] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]',
   );
 } else {
   try {
@@ -87,16 +126,51 @@ if (values.help) {
           ...suite,
           browser: values.browser,
         }).browser;
-      if (values.login) {
+      if (values['sign-in']) {
+        // One-time sign-in into a persistent profile; runs with the same
+        // --profile reuse it, with no further login or Keychain access.
+        if (!values.profile)
+          throw new Error('--sign-in requires --profile DIR');
+        const profile = resolve(values.profile);
+        await mkdir(profile, { recursive: true, mode: 0o700 });
+        const context = await { chromium, firefox, webkit }[
+          suite.browser
+        ].launchPersistentContext(profile, {
+          headless: false,
+          ...browserLaunchOptions(suite),
+        });
+        try {
+          const page = context.pages()[0] ?? (await context.newPage());
+          await page.goto(suite.baseURL);
+          const prompt = createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          await prompt.question(
+            `Sign in to ${suite.baseURL} in the opened browser, then press Enter here to keep the profile. `,
+          );
+          prompt.close();
+        } finally {
+          await context.close();
+        }
+        await chmod(profile, 0o700);
+        console.log(
+          `Saved profile ${profile}. Run with --profile ${values.profile} to reuse this sign-in.`,
+        );
+      } else if (values.login) {
         // Capture (or import with --from) a session, scoped to the suite's origins.
         let raw: unknown;
         if (values.from)
           raw = JSON.parse(await readFile(resolve(values.from), 'utf8'));
+        else if (fromBrowser)
+          raw = await sessionFromBrowser(fromBrowser, suite);
         else {
           const browser = await { chromium, firefox, webkit }[
             suite.browser
           ].launch({
             headless: false,
+            // Sign in with the same browser build the runs use.
+            ...browserLaunchOptions(suite),
           });
           try {
             const context = await browser.newContext();
@@ -141,12 +215,19 @@ if (values.help) {
         const results = await runSuite(
           suite,
           (log) =>
-            models({ ...options, onCall: (data) => log('model_call', data) }),
+            models({
+              ...options,
+              onCall: (data) => log('model_call', data),
+              onWait: (data) => log('model_wait', data),
+            }),
           {
             directory,
-            storageState: values['storage-state']
-              ? resolve(values['storage-state'])
-              : undefined,
+            storageState: fromBrowser
+              ? await sessionFromBrowser(fromBrowser, suite)
+              : values['storage-state']
+                ? resolve(values['storage-state'])
+                : undefined,
+            profile: values.profile ? resolve(values.profile) : undefined,
             headless: !values.headed,
             video: values.video,
             journey: values.journey,

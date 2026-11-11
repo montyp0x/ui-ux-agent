@@ -473,7 +473,7 @@ test('menus is rejected for web suites', () => {
           },
         ],
       }),
-    /menus applies to macOS suites only/,
+    /menus and syntheticInput apply to macOS suites only/,
   );
 });
 
@@ -538,3 +538,205 @@ test(
     assert.equal(result!.steps, 0);
   },
 );
+
+// Picks the first offered action matching `want`, in order; no_match otherwise.
+const scripted = (want: ((action: Action) => boolean)[]): Models => ({
+  async plan() {
+    return { objective: 'Follow the scripted steps', concerns: [] };
+  },
+  async choose(_j, _o, _p, actions) {
+    const choice =
+      want.map((match) => actions.find(match)).find(Boolean)?.id ?? 'no_match';
+    return {
+      type: 'choice',
+      choice,
+      confidence: 1,
+      probabilities: Object.fromEntries([
+        ...actions.map((action) => [action.id, action.id === choice ? 1 : 0]),
+        ['no_match', choice === 'no_match' ? 1 : 0],
+      ]),
+    };
+  },
+});
+
+const inboxSuite = (
+  app: string,
+  syntheticInput: boolean,
+  journey: Record<string, unknown>,
+) =>
+  suiteSchema.parse({
+    name: 'Native fixture, synthetic input',
+    platform: 'macos',
+    syntheticInput,
+    app: { bundleId: FIXTURE_BUNDLE_ID, path: app, relaunch: true },
+    viewports: [{ name: 'window', width: 900, height: 600 }],
+    journeys: [
+      {
+        persona: 'A reader',
+        ready: {
+          kind: 'visible',
+          target: { by: 'testId', value: 'inbox-empty' },
+        },
+        maxSteps: 4,
+        maxDurationMs: 60000,
+        ...journey,
+      },
+    ],
+  });
+
+const markRead = {
+  id: 'mark-read',
+  goal: 'Mark all messages read',
+  success: [
+    { kind: 'visible', target: { by: 'testId', value: 'marked-read' } },
+  ],
+};
+const isMarkRead = (action: Action) =>
+  'target' in action &&
+  action.target.by === 'testId' &&
+  action.target.value === 'click-only';
+
+test(
+  'a control without AXPress is not offered unless syntheticInput is on',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const offered: string[] = [];
+    const models = scripted([isMarkRead]);
+    const choose = models.choose.bind(models);
+    models.choose = async (...args) => {
+      offered.push(...args[3].map((action) => action.description));
+      return choose(...args);
+    };
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-')),
+      'run',
+    );
+    const [result] = await runSuite(
+      inboxSuite(app, false, { ...markRead, maxSteps: 1 }),
+      models,
+      { directory },
+    );
+    assert.notEqual(result!.status, 'passed');
+    assert.ok(
+      !offered.some((d) => d.includes('Mark all read')),
+      offered.join(', '),
+    );
+  },
+);
+
+test(
+  'syntheticInput clicks a control without AXPress after a verified hit-test',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-')),
+      'run',
+    );
+    const [result] = await runSuite(
+      inboxSuite(app, true, markRead),
+      scripted([isMarkRead]),
+      { directory },
+    );
+    assert.equal(result!.status, 'passed', result!.reason);
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const click = events.find((event) => event.event === 'synthetic_click');
+    assert.ok(click, 'synthetic_click event');
+    assert.equal(click.data.result.accepted, true);
+    assert.ok(['self', 'inside'].includes(click.data.result.relation));
+  },
+);
+
+test(
+  'syntheticInput press sends Enter to the focused field of the app only',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-')),
+      'run',
+    );
+    const field = { by: 'testId', value: 'search-field' };
+    const [result] = await runSuite(
+      inboxSuite(app, true, {
+        id: 'search',
+        goal: 'Search for atlas',
+        interactions: [
+          {
+            kind: 'fill',
+            target: field,
+            value: 'atlas',
+            description: 'Type atlas',
+          },
+          {
+            kind: 'press',
+            target: field,
+            key: 'Enter',
+            description: 'Submit the search',
+          },
+        ],
+        success: [
+          {
+            kind: 'text',
+            target: { by: 'testId', value: 'searched' },
+            pattern: '^Searched: atlas$',
+          },
+        ],
+      }),
+      scripted([
+        (action) => action.kind === 'fill',
+        (action) => action.kind === 'press',
+      ]),
+      { directory },
+    );
+    assert.equal(result!.status, 'passed', result!.reason);
+  },
+);
+
+test('press on macOS needs syntheticInput, and syntheticInput is macOS only', () => {
+  const press = {
+    id: 'p',
+    goal: 'g',
+    persona: 'p',
+    ready: { kind: 'path', pattern: '.' },
+    success: [{ kind: 'path', pattern: '.' }],
+    interactions: [
+      {
+        kind: 'press',
+        target: { by: 'testId', value: 'x' },
+        key: 'Enter',
+        description: 'Submit',
+      },
+    ],
+  };
+  const macos = {
+    name: 'n',
+    platform: 'macos',
+    app: { bundleId: 'com.example.app' },
+    viewports: [{ name: 'w', width: 800, height: 600 }],
+  };
+  assert.throws(
+    () => suiteSchema.parse({ ...macos, journeys: [press] }),
+    /press interactions on macOS need syntheticInput: true/,
+  );
+  assert.doesNotThrow(() =>
+    suiteSchema.parse({ ...macos, syntheticInput: true, journeys: [press] }),
+  );
+  assert.throws(
+    () =>
+      suiteSchema.parse({
+        name: 'n',
+        baseURL: 'https://example.com',
+        syntheticInput: true,
+        viewports: [{ name: 'd', width: 800, height: 600 }],
+        journeys: [
+          { ...press, interactions: [], startPath: '/', allowedPaths: ['/'] },
+        ],
+      }),
+    /menus and syntheticInput apply to macOS suites only/,
+  );
+});

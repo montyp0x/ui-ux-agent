@@ -229,6 +229,15 @@ const CHROME = new Set([
 ]);
 const isChrome = (node: AXNode) => CHROME.has(node.subrole ?? '');
 
+// press interaction keys, as the helper names them.
+const KEYS: Record<string, string> = {
+  Enter: 'return',
+  Escape: 'escape',
+  Tab: 'tab',
+  ArrowDown: 'down',
+  ArrowUp: 'up',
+};
+
 const PRESSABLE = new Set([
   'button',
   'link',
@@ -250,6 +259,11 @@ type Guard =
       select?: boolean;
       // Menu commands are re-checked by title instead of the full signature.
       menu?: string;
+      // syntheticInput: click through the helper's verified click (the control
+      // has no AXPress, e.g. a web-view button).
+      synthetic?: boolean;
+      // syntheticInput: a configured press interaction's key.
+      key?: string;
     }
   | {
       kind: 'scroll';
@@ -324,8 +338,41 @@ export async function macosDriver(): Promise<UIDriver> {
       ].map((pattern) => new RegExp(pattern, 'i'));
       const urlOf = (title: string) =>
         `${suite.baseURL}/${encodeURIComponent(title)}`;
+      // Electron/Chromium apps expose their web content only after an assistive
+      // client asks (AXManualAccessibility), and the tree can go dormant again;
+      // a near-empty snapshot re-asks, at most every 5s.
+      let lastEnable = 0;
+      const enableTree = async (enhanced: boolean) => {
+        lastEnable = Date.now();
+        const result = await helper
+          .call({ cmd: 'enableAccessibility', pid, enhanced })
+          .catch((error: Error) => ({ error: error.message }));
+        await log('accessibility_enabled', {
+          journey: journey.id,
+          enhanced,
+          result,
+        });
+      };
       const snapshot = async () => {
         last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+        if (last.elements.length < 30 && Date.now() - lastEnable > 5000) {
+          const before = last.elements.length;
+          await enableTree(false);
+          for (let i = 0; i < 10 && last.elements.length < 30; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+          }
+          if (last.elements.length < 30) {
+            await enableTree(true);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+          }
+          await log('accessibility_tree', {
+            journey: journey.id,
+            before,
+            after: last.elements.length,
+          });
+        }
         for (const node of last.elements)
           if (node.role === 'AXRow' && !node.title && !node.description)
             node.rowText = textOf(last, node);
@@ -529,8 +576,8 @@ export async function macosDriver(): Promise<UIDriver> {
           for (const interaction of journey.interactions) {
             const found = find(snap, interaction.target).visible;
             if (found.length !== 1 || found[0]!.enabled === false) continue;
-            if (interaction.kind === 'select' || interaction.kind === 'press')
-              continue;
+            if (interaction.kind === 'select') continue;
+            if (interaction.kind === 'press' && !suite.syntheticInput) continue;
             const node = found[0]!;
             offer(
               { ...interaction, id: `a${out.length}` },
@@ -540,6 +587,13 @@ export async function macosDriver(): Promise<UIDriver> {
                 signature: signature(node),
                 title: snap.window.title,
                 select: node.role === 'AXRow',
+                synthetic:
+                  suite.syntheticInput &&
+                  interaction.kind === 'click' &&
+                  !node.actions.includes('AXPress'),
+                ...(interaction.kind === 'press'
+                  ? { key: interaction.key }
+                  : {}),
               },
               nameOf(node),
             );
@@ -550,7 +604,7 @@ export async function macosDriver(): Promise<UIDriver> {
               visible.has(node.ref) &&
               !isChrome(node) &&
               node.enabled !== false &&
-              node.actions.includes('AXPress') &&
+              (node.actions.includes('AXPress') || suite.syntheticInput) &&
               PRESSABLE.has(roleOf(node)) &&
               nameOf(node),
           );
@@ -596,6 +650,7 @@ export async function macosDriver(): Promise<UIDriver> {
                 ref: node.ref,
                 signature: signature(node),
                 title: snap.window.title,
+                synthetic: !node.actions.includes('AXPress'),
               },
               name,
             );
@@ -891,6 +946,40 @@ export async function macosDriver(): Promise<UIDriver> {
             });
             if (after.selected !== true)
               throw new Error('The row did not become selected');
+          } else if (guard.key) {
+            // press: the key goes to this process only, and only while the
+            // target element holds keyboard focus.
+            if (!current.focused) {
+              await helper.call({ cmd: 'focusElement', ref: guard.ref });
+              const focused = await helper.call<AXNode>({
+                cmd: 'inspect',
+                ref: guard.ref,
+              });
+              if (!focused.focused)
+                throw new Error(
+                  `Cannot send ${guard.key}: the target element does not take keyboard focus`,
+                );
+            }
+            await helper.call({ cmd: 'key', pid, key: KEYS[guard.key] });
+          } else if (guard.synthetic) {
+            try {
+              const clicked = await helper.call({
+                cmd: 'click',
+                ref: guard.ref,
+              });
+              await log('synthetic_click', {
+                journey: journey.id,
+                action: action.description,
+                result: clicked,
+              });
+            } catch (caught) {
+              await log('synthetic_click_refused', {
+                journey: journey.id,
+                action: action.description,
+                error: (caught as Error).message,
+              });
+              throw caught;
+            }
           } else await helper.call({ cmd: 'press', ref: guard.ref });
           await new Promise((resolve) => setTimeout(resolve, 300));
           const frontAfter = await frontmost();

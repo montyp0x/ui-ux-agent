@@ -269,3 +269,85 @@ test('blocked requests to the suite origins are reported as harness findings, fo
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('a persistent profile carries a one-time sign-in into every run', async () => {
+  const seen: string[] = [];
+  const server = createServer((request, response) => {
+    if (request.url === '/sign-in')
+      response.setHeader('Set-Cookie', 'signed=1; Max-Age=3600; Path=/');
+    else seen.push(request.headers.cookie ?? '');
+    response.setHeader('Content-Type', 'text/html');
+    response.end('<h1>Profile fixture</h1>');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-profile-'));
+  const profile = join(directory, 'profile');
+  const baseURL = `http://127.0.0.1:${address.port}`;
+  // The one-time sign-in, as --sign-in does it.
+  const { chromium } = await import('playwright');
+  const signIn = await chromium.launchPersistentContext(profile, {
+    headless: true,
+  });
+  await (signIn.pages()[0] ?? (await signIn.newPage())).goto(
+    `${baseURL}/sign-in`,
+  );
+  await signIn.close();
+  const models: Models = {
+    async plan() {
+      return { objective: 'Wait', concerns: [] };
+    },
+    async choose(_j, _o, _p, actions) {
+      return {
+        type: 'choice',
+        choice: 'no_match',
+        confidence: 1,
+        probabilities: Object.fromEntries([
+          ...actions.map((action) => [action.id, 0]),
+          ['no_match', 1],
+        ]),
+      };
+    },
+  };
+  try {
+    await runSuite(
+      suiteSchema.parse({
+        name: 'Profile session',
+        baseURL,
+        requiresAuth: true,
+        viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        journeys: [
+          {
+            id: 'profile',
+            goal: 'g',
+            persona: 'p',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: {
+              kind: 'visible',
+              target: { by: 'role', role: 'heading', name: 'Profile fixture' },
+            },
+            success: [{ kind: 'path', pattern: '^/never$' }],
+            maxSteps: 1,
+          },
+        ],
+      }),
+      models,
+      { directory: join(directory, 'run'), profile, repeat: 2 },
+    );
+    // Both runs, each opening the profile afresh, arrive signed in.
+    const visits = (
+      await readFile(join(directory, 'run', 'events.jsonl'), 'utf8')
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.event === 'journey_start');
+    assert.equal(visits.length, 2);
+    assert.ok(seen.length >= 2);
+    assert.ok(seen.every((header) => header.includes('signed=1')));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

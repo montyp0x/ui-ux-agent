@@ -1,9 +1,12 @@
 // ui-ux-agent macOS accessibility helper.
 //
 // Reads one JSON request per line on stdin and writes one JSON response per
-// line on stdout. It only reads the accessibility tree of the requested
-// process and performs the few actions the driver offers (press, set value,
-// scroll a scroll bar, raise). It never synthesizes keyboard or mouse events.
+// line on stdout. It reads the accessibility tree of the requested process and
+// performs the few actions the driver offers (press, set value, scroll a scroll
+// bar, raise). Synthetic input is limited to two commands the driver sends only
+// for suites with syntheticInput: `click` (an element from the latest snapshot,
+// clicked only while its app is frontmost and a hit-test finds that element
+// under the pointer) and `key` (an allowlisted key posted to one process).
 import AppKit
 import ApplicationServices
 import Foundation
@@ -174,6 +177,119 @@ func menus(pid: pid_t) -> [String: Any] {
   return ["items": items]
 }
 
+
+// ---- Synthetic input support (driver uses these only with syntheticInput) ----
+
+func pidOf(_ element: AXUIElement) -> pid_t {
+  var pid: pid_t = 0
+  AXUIElementGetPid(element, &pid)
+  return pid
+}
+
+func ancestors(_ element: AXUIElement, limit: Int = 80) -> [AXUIElement] {
+  var out: [AXUIElement] = []
+  var current = element
+  while out.count < limit, let parent = attribute(current, kAXParentAttribute) {
+    let next = parent as! AXUIElement
+    out.append(next)
+    current = next
+  }
+  return out
+}
+
+func label(_ element: AXUIElement) -> String {
+  [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)]
+    .compactMap { $0 }.first { !$0.isEmpty } ?? ""
+}
+
+// Where a click at the element's centre would land, and how the element under
+// that point relates to the element: itself, inside it, or a container of it.
+// Chromium web views often hit-test to a container; a container is accepted
+// only when it is close (a few levels) and not much larger than the element,
+// so an overlay or the whole page never counts as the element.
+func hitTest(_ target: AXUIElement) -> [String: Any] {
+  guard let box = frame(target), box["width"]! > 0, box["height"]! > 0 else {
+    return ["accepted": false, "reason": "element has no on-screen frame"]
+  }
+  let point = CGPoint(x: box["x"]! + box["width"]! / 2, y: box["y"]! + box["height"]! / 2)
+  var hit: AXUIElement?
+  guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success,
+    let found = hit
+  else { return ["accepted": false, "reason": "nothing under the element's centre"] }
+  var out: [String: Any] = [
+    "point": ["x": point.x, "y": point.y], "hitRole": string(found, kAXRoleAttribute) ?? "",
+    "hitLabel": label(found), "hitPid": Int(pidOf(found)),
+  ]
+  if pidOf(found) != pidOf(target) {
+    out["accepted"] = false; out["relation"] = "other-app"; return out
+  }
+  if CFEqual(found, target) { out["accepted"] = true; out["relation"] = "self"; return out }
+  if let level = ancestors(found).firstIndex(where: { CFEqual($0, target) }) {
+    out["accepted"] = true; out["relation"] = "inside"; out["levels"] = level + 1; return out
+  }
+  if let level = ancestors(target).firstIndex(where: { CFEqual($0, found) }) {
+    let area = { (f: [String: Double]?) in (f?["width"] ?? 0) * (f?["height"] ?? 0) }
+    let ratio = area(frame(found)) / max(1, area(box))
+    out["relation"] = "container"; out["levels"] = level + 1; out["areaRatio"] = ratio
+    out["accepted"] = level + 1 <= 3 && ratio <= 4
+    if !(out["accepted"] as! Bool) { out["reason"] = "the element under the pointer is a larger container" }
+    return out
+  }
+  out["accepted"] = false; out["relation"] = "unrelated"; out["reason"] = "another element covers it"
+  return out
+}
+
+// Brings the process to the front and waits until it is frontmost.
+func focus(pid: pid_t, timeout: Double) -> [String: Any] {
+  guard let app = NSRunningApplication(processIdentifier: pid) else { return ["error": "Process not running"] }
+  let deadline = Date().addingTimeInterval(timeout)
+  var attempts = 0
+  while Date() < deadline {
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+      return ["ok": true, "attempts": attempts]
+    }
+    if attempts % 4 == 0 { app.activate(options: [.activateAllWindows]) }
+    attempts += 1
+    RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+  }
+  return ["error": "Another application keeps the focus", "frontmost": frontmost()]
+}
+
+let keyCodes: [String: CGKeyCode] = [
+  "return": 36, "enter": 76, "escape": 53, "tab": 48, "space": 49,
+  "up": 126, "down": 125, "left": 123, "right": 124, "pageup": 116, "pagedown": 121,
+  "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "k": 40, "l": 37, "n": 45,
+  "o": 31, "p": 35, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "x": 7, "y": 16, "z": 6,
+]
+// Shortcuts that quit, close, hide or force-quit are never sent.
+let blockedShortcuts: Set<String> = ["cmd+q", "cmd+w", "cmd+shift+q", "cmd+option+escape", "cmd+h", "cmd+option+h", "cmd+m"]
+
+func postKey(pid: pid_t, key: String, modifiers: [String]) -> [String: Any] {
+  guard let code = keyCodes[key] else { return ["error": "Key not allowed: \(key)"] }
+  let mods = modifiers.sorted()
+  let combo = (["cmd", "control", "option", "shift"].filter { mods.contains($0) } + [key]).joined(separator: "+")
+  if blockedShortcuts.contains(combo) { return ["error": "Shortcut blocked: \(combo)"] }
+  var flags: CGEventFlags = []
+  for modifier in mods {
+    switch modifier {
+    case "cmd": flags.insert(.maskCommand)
+    case "shift": flags.insert(.maskShift)
+    case "option": flags.insert(.maskAlternate)
+    case "control": flags.insert(.maskControl)
+    default: return ["error": "Unknown modifier: \(modifier)"]
+    }
+  }
+  for down in [true, false] {
+    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else {
+      return ["error": "Could not create key event"]
+    }
+    event.flags = flags
+    event.postToPid(pid)
+    usleep(30_000)
+  }
+  return ["ok": true, "combo": combo]
+}
+
 func element(_ request: [String: Any]) throws -> AXUIElement {
   guard let ref = request["ref"] as? Int, let found = elements[ref] ?? menuElements[ref] else {
     throw NSError(domain: "helper", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown element ref"])
@@ -239,6 +355,53 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     let windows = (value as? [AXUIElement]) ?? []
     let focused = attribute(element, kAXFocusedWindowAttribute) != nil
     return ["alive": !windows.isEmpty || focused, "running": true]
+  case "enableAccessibility":
+    // Electron/Chromium apps build their tree only for assistive clients that ask.
+    guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
+    let app = AXUIElementCreateApplication(pid_t(pid))
+    var out: [String: Any] = [:]
+    let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    out["manual"] = manual.rawValue
+    if request["enhanced"] as? Bool == true {
+      out["enhanced"] = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue).rawValue
+    }
+    out["ok"] = true
+    return out
+  case "focus":
+    guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
+    return focus(pid: pid_t(pid), timeout: request["timeoutSeconds"] as? Double ?? 3)
+  case "focusElement":
+    // Keyboard focus for a press interaction's target (no input is sent).
+    let result = AXUIElementSetAttributeValue(try element(request), kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    return result == .success ? ["ok": true] : ["error": "Focus failed (\(result.rawValue))"]
+  case "hitTest":
+    return hitTest(try element(request))
+  case "click":
+    let target = try element(request)
+    let pid = pidOf(target)
+    let focused = focus(pid: pid, timeout: request["focusTimeoutSeconds"] as? Double ?? 3)
+    if focused["error"] != nil { return focused }
+    let check = hitTest(target)
+    guard check["accepted"] as? Bool == true, let point = check["point"] as? [String: Double] else {
+      var out = check; out["error"] = "Click refused: \(check["reason"] as? String ?? "element not under the pointer")"; return out
+    }
+    // Re-check focus immediately before posting: another app may have taken it.
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+      return ["error": "Click refused: focus moved to another application", "frontmost": frontmost()]
+    }
+    let location = CGPoint(x: point["x"]!, y: point["y"]!)
+    for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+      guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: .left)
+      else { return ["error": "Could not create mouse event"] }
+      event.post(tap: .cghidEventTap)
+      usleep(50_000)
+    }
+    var out = check; out["ok"] = true
+    return out
+  case "key":
+    guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
+    return postKey(pid: pid_t(pid), key: (request["key"] as? String ?? "").lowercased(),
+                   modifiers: (request["modifiers"] as? [String]) ?? [])
   case "frontmost":
     return frontmost()
   case "menus":

@@ -39,6 +39,9 @@ struct ContentView: View {
   @State private var displayName = ""
   @State private var deleted = false
   @State private var theme: String? = "Light"
+  @State private var markedRead = false
+  @State private var query = ""
+  @State private var searched = ""
 
   var body: some View {
     HStack(spacing: 0) {
@@ -93,7 +96,46 @@ struct ContentView: View {
       VStack(alignment: .leading, spacing: 12) {
         Text("Inbox").font(.title)
         Text("No new messages").accessibilityIdentifier("inbox-empty")
+        // A button that only a real click activates (no AXPress), like web-view
+        // buttons in Electron apps; exercised by syntheticInput tests.
+        ClickOnlyButton(title: "Mark all read") { markedRead = true }
+          .frame(width: 140, height: 28)
+        if markedRead { Text("All marked read").accessibilityIdentifier("marked-read") }
+        TextField("Search messages", text: $query)
+          .accessibilityIdentifier("search-field")
+          .onSubmit { searched = query }
+        if !searched.isEmpty { Text("Searched: \(searched)").accessibilityIdentifier("searched") }
       }
     }
   }
+}
+
+// Accessible as a button but offers no AXPress: only a mouse click works.
+struct ClickOnlyButton: NSViewRepresentable {
+  let title: String
+  let action: () -> Void
+  func makeNSView(context: Context) -> ClickOnlyView {
+    let view = ClickOnlyView()
+    view.title = title
+    view.action = action
+    return view
+  }
+  func updateNSView(_ view: ClickOnlyView, context: Context) { view.action = action }
+}
+
+final class ClickOnlyView: NSView {
+  var title = ""
+  var action: () -> Void = {}
+  override func draw(_ dirtyRect: NSRect) {
+    NSColor.controlAccentColor.setFill()
+    NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+    let text = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 13)])
+    text.draw(at: NSPoint(x: 10, y: (bounds.height - text.size().height) / 2))
+  }
+  override func mouseDown(with event: NSEvent) { action() }
+  override func isAccessibilityElement() -> Bool { true }
+  override func accessibilityRole() -> NSAccessibility.Role? { .button }
+  override func accessibilityLabel() -> String? { title }
+  override func accessibilityIdentifier() -> String { "click-only" }
+  override func accessibilityActionNames() -> [NSAccessibility.Action] { [] }
 }

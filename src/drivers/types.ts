@@ -1,3 +1,4 @@
+import type { StorageState } from '../auth.js';
 import type {
   Action,
   Check,
@@ -12,7 +13,9 @@ export type SessionOptions = {
   journey: Journey;
   viewport: { width: number; height: number };
   directory: string;
-  storageState?: string;
+  // A storage-state file path, or a state already in memory (e.g. imported
+  // from the user's browser with --from-browser).
+  storageState?: string | StorageState;
   video?: boolean;
   log: EventLogger;
 };

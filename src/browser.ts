@@ -472,7 +472,9 @@ export function allowedRequest(
       (rule) =>
         request.method() === rule.method &&
         url.origin === new URL(rule.origin).origin &&
-        url.pathname === rule.path,
+        (rule.path
+          ? url.pathname === rule.path
+          : new RegExp(rule.pathPattern!).test(url.pathname)),
     )
   )
     return true;
