@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import type { Journey, Observation } from '../src/contracts.js';
 import { modelOptionsFromEnv } from '../src/config.js';
 import {
   EndpointLimiter,
   limiterFor,
+  models,
   post,
   RateLimitBudgetError,
   retryAfterMs,
@@ -582,6 +586,74 @@ test('wait diagnostics and errors never carry the key or headers', async () => {
     assert.ok(!message.includes(secret));
   } finally {
     await api.close();
+  }
+});
+
+test('plan and choose pass the caller signal to the endpoint request', async () => {
+  let requests = 0;
+  const hanging = createServer(() => {
+    // Never answers, so only the caller's signal ends the request.
+    requests++;
+  });
+  await new Promise<void>((resolve) => hanging.listen(0, '127.0.0.1', resolve));
+  const address = hanging.address();
+  assert.ok(address && typeof address !== 'string');
+  const url = `http://127.0.0.1:${address.port}/signal`;
+  const client = models({
+    plannerURL: url,
+    plannerKey: 'key',
+    plannerModel: 'local',
+    selectorURL: url,
+    selectorKey: 'key',
+    selectorModel: 'local',
+  });
+  // models() reads only the goal and persona from the journey.
+  const journey = {
+    goal: 'Reach Done',
+    persona: 'A first-time user',
+  } as unknown as Journey;
+  const observation = {
+    step: 0,
+    url: 'http://127.0.0.1/',
+    screenshot: join(tmpdir(), 'ui-ux-signal-missing.png'),
+    fingerprint: 'f',
+    visibleViewport: { text: [], controls: [] },
+    scroll: { x: 0, y: 0, maxX: 0, maxY: 0 },
+    horizontalOverflow: false,
+  } as unknown as Observation;
+  const isAbort = (caught: Error) => caught.name === 'AbortError';
+  try {
+    // Already aborted: the planner neither reads the screenshot nor sends.
+    await assert.rejects(
+      client.plan(
+        journey,
+        observation,
+        [],
+        5000,
+        [],
+        { reasons: [] },
+        AbortSignal.abort(),
+      ),
+      isAbort,
+    );
+    // Aborted in flight: the selector request is cancelled and its slot freed.
+    const abort = new AbortController();
+    const pending = client.choose(
+      journey,
+      observation,
+      { objective: 'Open Next', concerns: [] },
+      [],
+      [],
+      5000,
+      abort.signal,
+    );
+    setTimeout(() => abort.abort(), 100);
+    await assert.rejects(pending, isAbort);
+    assert.equal(requests, 1);
+    assert.equal(limiterFor(url, { rpm: 1, concurrency: 1 }).inFlight, 0);
+  } finally {
+    hanging.closeAllConnections();
+    await new Promise<void>((resolve) => hanging.close(() => resolve()));
   }
 });
 

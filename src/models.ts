@@ -66,6 +66,9 @@ export interface Models {
     timeoutMs: number,
     actions?: Action[],
     context?: PlanContext,
+    // Aborts when the journey's deadline is reached; an implementation should
+    // stop waiting and never start a request after it fires.
+    signal?: AbortSignal,
   ): Promise<Plan>;
   choose(
     journey: Journey,
@@ -74,6 +77,7 @@ export interface Models {
     actions: Action[],
     history: History,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<Choice>;
 }
 
@@ -455,6 +459,7 @@ export function models(options: ModelOptions): Models {
       timeoutMs,
       actions = [],
       context = { reasons: [] },
+      signal,
     ) {
       const { offeredControls, ...refresh } = context;
       const scoped = offeredControls
@@ -470,9 +475,9 @@ export function models(options: ModelOptions): Models {
           }
         : modelObservation(observation);
       const started = Date.now();
-      const screenshot = (await readFile(observation.screenshot)).toString(
-        'base64',
-      );
+      const screenshot = (
+        await readFile(observation.screenshot, { signal })
+      ).toString('base64');
       const request = {
         model: options.plannerModel,
         messages: [
@@ -535,6 +540,7 @@ export function models(options: ModelOptions): Models {
           Math.max(1, timeoutMs - (callStarted - started)),
           options.plannerHeaders,
           planner,
+          signal,
         );
         await options.onCall?.({
           role: 'planner',
@@ -567,7 +573,15 @@ export function models(options: ModelOptions): Models {
         }
       }
     },
-    async choose(journey, observation, plan, actions, history, timeoutMs) {
+    async choose(
+      journey,
+      observation,
+      plan,
+      actions,
+      history,
+      timeoutMs,
+      signal,
+    ) {
       const started = Date.now();
       const state = {
         goal: journey.goal,
@@ -627,6 +641,7 @@ export function models(options: ModelOptions): Models {
           timeoutMs,
           options.selectorHeaders,
           selector,
+          signal,
         );
         await options.onCall?.({
           role: 'selector',
@@ -698,6 +713,7 @@ export function models(options: ModelOptions): Models {
         timeoutMs,
         options.selectorHeaders,
         selector,
+        signal,
       );
       await options.onCall?.({
         role: 'selector',
