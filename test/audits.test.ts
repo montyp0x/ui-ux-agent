@@ -934,3 +934,28 @@ test('a violation with no severity fails quality at every threshold but none', a
     false,
   );
 });
+
+test('failOn is one suite-wide threshold; an audit entry cannot set its own', () => {
+  const suite = suiteWith({
+    audits: {
+      failOn: 'moderate',
+      checks: [
+        { id: 'layout.horizontal-overflow' },
+        { id: 'accessibility.axe' },
+        { id: 'layout.responsive' },
+      ],
+    },
+  });
+  assert.equal(suite.audits.failOn, 'moderate');
+  for (const id of [
+    'layout.horizontal-overflow',
+    'accessibility.axe',
+    'layout.responsive',
+  ])
+    assert.throws(
+      () =>
+        suiteWith({ audits: { checks: [{ id, failOn: 'critical' }] } }),
+      /failOn|Unrecognized key/,
+      id,
+    );
+});
