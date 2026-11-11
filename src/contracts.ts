@@ -284,7 +284,10 @@ const suiteObject = z
           journey.ready,
           ...journey.success,
           ...(journey.contentReady?.checks ?? []),
-          ...(journey.states ?? []).map((state) => state.when),
+          ...(journey.states ?? []).flatMap((state) => [
+            state.when,
+            ...(state.expect ?? []),
+          ]),
         ].flatMap((check) => ('target' in check ? [check.target] : [])),
       ]);
       if (targets.some((target) => target.by === 'css'))
@@ -352,11 +355,22 @@ const suiteObject = z
           code: 'custom',
           message: `${journey.id} declares states but no audit runs at 'states'`,
         });
+      if (
+        (journey.states ?? []).some((state) => state.expect?.length) &&
+        !suite.audits.checks.some((check) => check.id === 'journey.state-checks')
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id} declares state expect checks; add the journey.state-checks audit so they are evaluated`,
+        });
       for (const check of [
         journey.ready,
         ...journey.success,
         ...(journey.contentReady?.checks ?? []),
-        ...(journey.states ?? []).map((state) => state.when),
+        ...(journey.states ?? []).flatMap((state) => [
+          state.when,
+          ...(state.expect ?? []),
+        ]),
         ...(journey.detours ?? []).map((detour) => ({
           kind: 'path' as const,
           pattern: detour.pattern,

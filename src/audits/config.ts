@@ -2,7 +2,7 @@
 // which finding severity fails the quality verdict. Audits run only at the
 // checkpoints listed here, never after every action.
 import { z } from 'zod';
-import { failOnSchema } from './contract.js';
+import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
@@ -80,10 +80,23 @@ const layoutResponsiveConfig = z
   })
   .strict();
 
+// Each declared journey state's own `expect` checks, evaluated once at the
+// state's checkpoint (src/audits/state-checks.ts). Runs at `states` only.
+const stateChecksConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('journey.state-checks'),
+    at: z.array(z.literal('states')).length(1).default(['states']),
+    // The severity of a failed expectation, against audits.failOn.
+    severity: severitySchema.default('serious'),
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
   layoutResponsiveConfig,
+  stateChecksConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];
@@ -114,10 +127,14 @@ export const auditsConfigSchema = z
 export type AuditsConfig = z.infer<typeof auditsConfigSchema>;
 
 // A journey state to audit: the first observed state where `when` holds.
+// `expect` lists checks that must also hold in that state, independently of
+// the journey's success checks (for example an error state that offers a
+// retry). They are evaluated by the journey.state-checks audit.
 export const journeyStateSchema = <T extends z.ZodType>(check: T) =>
   z
     .object({
       name: z.string().regex(/^[a-z0-9-]+$/),
       when: check,
+      expect: z.array(check).min(1).max(10).optional(),
     })
     .strict();
