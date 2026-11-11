@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
+import { targetSchema, type Target } from './target.js';
+
+export { targetSchema, type Target };
 
 const relativePath = z
   .string()
@@ -16,34 +19,6 @@ const originSchema = z.url().refine((value) => {
     !url.hash
   );
 }, 'Origins must be HTTP(S) origins without credentials, paths, queries or fragments');
-export const targetSchema = z.discriminatedUnion('by', [
-  z
-    .object({
-      by: z.literal('role'),
-      role: z.enum([
-        'button',
-        'link',
-        'textbox',
-        'searchbox',
-        'tab',
-        'combobox',
-        'heading',
-        'dialog',
-        'region',
-        'checkbox',
-        'radio',
-        'menuitem',
-        'option',
-      ]),
-      name: z.string().min(1),
-    })
-    .strict(),
-  z.object({ by: z.literal('testId'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('label'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('placeholder'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('css'), value: z.string().min(1) }).strict(),
-]);
-export type Target = z.infer<typeof targetSchema>;
 export const checkSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('path'), pattern: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('visible'), target: targetSchema }).strict(),

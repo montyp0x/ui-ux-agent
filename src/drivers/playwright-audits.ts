@@ -9,6 +9,7 @@ import type { AuditOutput } from '../audits/contract.js';
 import type { AuditId } from '../audits/config.js';
 import { axeAuditOutput } from '../audits/accessibility.js';
 import { scanAccessibility } from './playwright-axe.js';
+import { layoutResponsivePlaywrightAudit } from './playwright-layout.js';
 import type { DriverAuditRequest } from './types.js';
 
 export type PlaywrightAudit = (
@@ -33,6 +34,7 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
       }),
     );
   },
+  'layout.responsive': layoutResponsivePlaywrightAudit,
 };
 
 export async function runPlaywrightAudit(
