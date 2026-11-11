@@ -442,6 +442,8 @@ test('a per-check timeoutMs overrides audits.timeoutMs for the scan', async () =
         },
         viewport: { name: 'desktop', width: 1280, height: 800 },
         directory: tmpdir(),
+        scope: { suite: 'accessibility', journey: 'scan' },
+        baselines: null,
         timeoutMs: 251,
       }),
       /axe-core scan error \(timeout\): Accessibility scan did not finish within 1 ms/,

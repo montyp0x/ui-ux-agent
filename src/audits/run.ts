@@ -21,6 +21,8 @@ export type JourneyAuditOptions = {
   journey: Journey;
   viewport: { name: string; width: number; height: number };
   directory: string;
+  // The user-supplied visual baseline directory, or null.
+  baselines?: string | null;
   session: UISession;
   log: EventLogger;
   // The audit registry; tests substitute their own definitions.
@@ -240,6 +242,8 @@ export class JourneyAudits {
             checkpoint,
             viewport: { ...this.options.viewport },
             directory,
+            scope: { suite: suite.name, journey: this.options.journey.id },
+            baselines: this.options.baselines ?? null,
             timeoutMs,
           }),
           timeoutMs,
@@ -378,6 +382,7 @@ export class JourneyAudits {
       limitations: output?.limitations ?? [],
       exemptions: output?.exemptions ?? [],
       findings,
+      visual: output?.visual ?? null,
     });
     await log('audit_run', {
       journey: journey.id,

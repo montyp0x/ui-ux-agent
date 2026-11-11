@@ -15,6 +15,7 @@ import type { AuditCheckpoint, AuditOutput, DriverKind } from './contract.js';
 import { axeAudit } from './accessibility.js';
 import { horizontalOverflowAudit } from './horizontal-overflow.js';
 import { layoutResponsiveAudit } from './layout-output.js';
+import { visualBaselineAudit } from './visual.js';
 
 export type AuditContext<C extends AuditConfig = AuditConfig> = {
   checkpoint: AuditCheckpoint;
@@ -43,6 +44,7 @@ export const AUDITS: Registry = {
   'layout.horizontal-overflow': horizontalOverflowAudit,
   'accessibility.axe': axeAudit,
   'layout.responsive': layoutResponsiveAudit,
+  'visual.baseline': visualBaselineAudit,
 };
 
 export const auditDefinition = (id: AuditId): AuditDefinition =>
