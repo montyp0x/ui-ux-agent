@@ -75,7 +75,11 @@ export const auditTargetSchema = z
     // Human-readable element or region (role and name, an HTML snippet ...).
     description: z.string().min(1),
     // A selector the analyzer reported, for reproduction; null when none.
+    // One string: frames joined by ' >>> ', shadow roots by ' >> '.
     selector: z.string().min(1).nullable(),
+    // Why this element was flagged or exempted, in the analyzer's words
+    // (for example "background gradient"); null when none.
+    reason: z.string().min(1).max(2000).nullable().default(null),
     // A short markup or accessibility-tree excerpt of the element.
     snippet: z.string().max(2000).nullable().default(null),
   })
@@ -90,6 +94,19 @@ export const analyzerSchema = z
   })
   .strict();
 export type Analyzer = z.infer<typeof analyzerSchema>;
+
+// An item the audit deliberately did not report, under a configured
+// exception (for example an intentional carousel overflow). Shown in the
+// report; never a finding and never gating. Measurements belong in evidence
+// files.
+export const auditExemptionSchema = z
+  .object({
+    ruleId: z.string().min(1),
+    target: auditTargetSchema,
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
+export type AuditExemption = z.infer<typeof auditExemptionSchema>;
 
 // One finding as an audit reports it. The runner adds the audit id, source,
 // checkpoint and reproduction context.
@@ -140,6 +157,7 @@ export const auditOutputSchema = z
     // automated scan does not prove WCAG conformance; cross-origin frames
     // were not scanned).
     limitations: z.array(z.string().min(1)).max(20).default([]),
+    exemptions: z.array(auditExemptionSchema).max(200).default([]),
     findings: z.array(auditOutputFindingSchema).max(500),
   })
   .strict();
@@ -200,6 +218,7 @@ export const auditRunSchema = z
     // Observed states the run evaluated (0 when unsupported or errored).
     observations: count,
     limitations: z.array(z.string().min(1)),
+    exemptions: z.array(auditExemptionSchema),
     // Indices into audits.findings.
     findings: z.array(count),
   })

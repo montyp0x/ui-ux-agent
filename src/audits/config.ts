@@ -17,10 +17,17 @@ export const auditAtSchema = z
   );
 export type AuditAt = z.infer<typeof auditAtSchema>[number];
 
+// Fields every audit entry has; spread into each member.
+export const auditCheckFields = {
+  // Overrides audits.timeoutMs for this audit's runs.
+  timeoutMs: z.number().int().min(1000).max(120000).optional(),
+};
+
 // One entry per audit. Audits with options add their own member; the id is
 // the discriminator, so an unknown audit is a configuration error.
 const horizontalOverflowConfig = z
   .object({
+    ...auditCheckFields,
     id: z.literal('layout.horizontal-overflow'),
     // Reads every state observed since its previous checkpoint, so the
     // default single completion run covers the whole journey.
@@ -53,6 +60,7 @@ export const auditsConfigSchema = z
     // results never do. none reports findings without failing quality.
     failOn: failOnSchema.default('serious'),
     // Bound on one audit run at one checkpoint; a run past it is an error.
+    // An audit entry's own timeoutMs overrides it.
     timeoutMs: z.number().int().min(1000).max(120000).default(15000),
   })
   .strict();

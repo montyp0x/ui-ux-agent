@@ -210,6 +210,15 @@ test('audit configuration is validated at the boundary', () => {
       /unique/,
     ],
     [{ audits: { failOn: 'severe' } }, {}, /failOn/],
+    [
+      {
+        audits: {
+          checks: [{ id: 'layout.horizontal-overflow', timeoutMs: 500 }],
+        },
+      },
+      {},
+      /timeoutMs/,
+    ],
     // A declared state with no audit at 'states' would never run anything.
     [
       {},
@@ -619,6 +628,10 @@ test('the runner records audit runs in results.json and the report', async () =>
     /Audits: 3 run\(s\), 2 violation\(s\), 0 needing manual review/,
   );
   assert.match(report, /Audit violations/);
+  assert.match(
+    report,
+    /Automated audits ran at configured checkpoints \(layout\.horizontal-overflow\); an automated scan does not establish accessibility or standards conformance/,
+  );
   assert.match(report, /document-wider-than-viewport/);
 });
 
@@ -680,6 +693,10 @@ test('a macOS run reports the overflow audit as unsupported, not clean', async (
     [['layout.horizontal-overflow', 'completion', 'unsupported']],
   );
   assert.equal(result!.quality.verdict, 'not_evaluated');
+  assert.match(
+    reportHTML(suite.name, [result!], directory),
+    /No automated audit ran; this is not an accessibility audit/,
+  );
 });
 
 test('a journey stopped before ready lists its audit checkpoints as not reached', async () => {
@@ -772,4 +789,65 @@ test('the overflow audit measures a real Chromium page end to end', async () => 
   } finally {
     server.close();
   }
+});
+
+test('driver audits get the session viewport, a per-audit timeout and report exemptions', async () => {
+  const requests: DriverAuditRequest[] = [];
+  const suite = suiteWith({ audits: { timeoutMs: 1000 } });
+  const { runner } = audits(
+    suite,
+    {
+      runAudit: async (request) => {
+        requests.push(request);
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        return {
+          complete: true,
+          exemptions: [
+            {
+              ruleId: 'overlap',
+              target: { description: 'Hero carousel', selector: '.carousel' },
+              reason: 'Configured exception: intentional carousel overflow',
+            },
+          ],
+          findings: [
+            finding({
+              certainty: 'needs_review',
+              ruleId: 'color-contrast',
+              targets: [
+                {
+                  description: 'Sign up link',
+                  selector: 'iframe#promo >>> a.cta',
+                  reason: 'background gradient',
+                },
+              ],
+            }),
+          ],
+        };
+      },
+    },
+    [{ ...testCheck(['ready']), timeoutMs: 3000 } as AuditConfig],
+  );
+  runner.record(state(0));
+  await runner.afterObservation(state(0));
+  const result = runner.finish();
+  // The entry's own timeout overrode the suite's 1000ms.
+  assert.equal(result.runs[0]!.status, 'clean', result.runs[0]!.detail ?? '');
+  assert.equal(requests[0]!.timeoutMs, 3000);
+  assert.deepEqual(requests[0]!.viewport, {
+    name: 'desktop',
+    width: 800,
+    height: 600,
+  });
+  assert.equal(result.runs[0]!.exemptions[0]!.target.selector, '.carousel');
+  assert.equal(result.runs[0]!.exemptions[0]!.target.reason, null);
+  assert.equal(result.findings[0]!.targets[0]!.reason, 'background gradient');
+  assert.equal(result.findings[0]!.targets[0]!.description, 'Sign up link');
+  assert.equal(
+    suiteWith({
+      audits: {
+        checks: [{ id: 'layout.horizontal-overflow', timeoutMs: 60000 }],
+      },
+    }).audits.checks[0]!.timeoutMs,
+    60000,
+  );
 });

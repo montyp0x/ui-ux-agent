@@ -622,6 +622,81 @@
                   "minLength": 1
                 }
               },
+              "exemptions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ruleId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "description": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "selector": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "snippet": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 2000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "description",
+                        "selector",
+                        "reason",
+                        "snippet"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2000
+                    }
+                  },
+                  "required": [
+                    "ruleId",
+                    "target",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "findings": {
                 "type": "array",
                 "items": {
@@ -641,6 +716,7 @@
               "durationMs",
               "observations",
               "limitations",
+              "exemptions",
               "findings"
             ],
             "additionalProperties": false
@@ -765,6 +841,19 @@
                         }
                       ]
                     },
+                    "reason": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "snippet": {
                       "default": null,
                       "anyOf": [
@@ -781,6 +870,7 @@
                   "required": [
                     "description",
                     "selector",
+                    "reason",
                     "snippet"
                   ],
                   "additionalProperties": false

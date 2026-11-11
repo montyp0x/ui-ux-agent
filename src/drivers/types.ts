@@ -23,6 +23,8 @@ export type SessionOptions = {
 export type DriverAuditRequest = {
   config: AuditConfig;
   checkpoint: AuditCheckpoint;
+  // The session's configured viewport (suite viewport name and size).
+  viewport: { name: string; width: number; height: number };
   // The run directory: evidence files the audit writes go here.
   directory: string;
   // The audit must finish within this; the runner also enforces it.

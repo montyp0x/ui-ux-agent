@@ -217,7 +217,7 @@ export class JourneyAudits {
     let output: ParsedAuditOutput;
     try {
       const { session, directory, suite } = this.options;
-      const timeoutMs = suite.audits.timeoutMs;
+      const timeoutMs = config.timeoutMs ?? suite.audits.timeoutMs;
       let raw: unknown;
       if (definition.evaluate)
         raw = definition.evaluate({ checkpoint, config, observations });
@@ -227,7 +227,13 @@ export class JourneyAudits {
         );
       else
         raw = await within(
-          session.runAudit({ config, checkpoint, directory, timeoutMs }),
+          session.runAudit({
+            config,
+            checkpoint,
+            viewport: { ...this.options.viewport },
+            directory,
+            timeoutMs,
+          }),
           timeoutMs,
         );
       const parsed = auditOutputSchema.safeParse(raw);
@@ -318,6 +324,7 @@ export class JourneyAudits {
           ? 0
           : (output?.observations ?? 0),
       limitations: output?.limitations ?? [],
+      exemptions: output?.exemptions ?? [],
       findings,
     });
     await log('audit_run', {
