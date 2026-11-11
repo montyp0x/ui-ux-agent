@@ -900,3 +900,37 @@ test('audit time counts against the journey deadline and the report shows it', a
     /Audits took 1\.\d s of this run's \d+\.\d s \(\d+%\); audit time counts against the journey deadline/,
   );
 });
+
+test('a violation with no severity fails quality at every threshold but none', async () => {
+  for (const failOn of ['minor', 'moderate', 'serious', 'critical', 'none'] as const) {
+    const { runner } = audits(
+      suiteWith({ audits: { failOn } }),
+      {
+        runAudit: async () => ({
+          complete: true,
+          findings: [finding({ severity: null })],
+        }),
+      },
+      [testCheck(['ready'])],
+    );
+    runner.record(state(0));
+    await runner.afterObservation(state(0));
+    const result = runner.finish();
+    assert.equal(result.findings[0]!.severity, null);
+    assert.equal(result.findings[0]!.gating, failOn !== 'none', failOn);
+    const quality = evaluateQuality({
+      platform: 'web',
+      observations: 1,
+      findings: [],
+      policyBlocks: 0,
+      evidenceComplete: true,
+      audits: result,
+    });
+    assert.equal(quality.verdict, failOn === 'none' ? 'pass' : 'fail', failOn);
+  }
+  // A needs-review item without severity still never gates.
+  assert.equal(
+    isGating({ severity: null, certainty: 'needs_review' }, 'minor'),
+    false,
+  );
+});
