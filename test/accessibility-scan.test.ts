@@ -222,7 +222,7 @@ test('large results keep counts and a bounded sample', async () => {
   assert.equal(imageAlt!.nodes.length, MAX_NODES_PER_RULE);
   assert.equal(imageAlt!.nodesTruncated, true);
   // axe-core shortens snippets itself; the parser's bound is the backstop.
-  assert.ok(imageAlt!.nodes[0]!.html.length <= MAX_HTML_LENGTH + 1);
+  assert.ok(imageAlt!.nodes[0]!.html.length <= MAX_HTML_LENGTH);
 });
 
 const context = { scope: { include: [], exclude: [] }, tags: [], durationMs: 5 };
@@ -279,7 +279,8 @@ test('the parser bounds HTML snippets the analyzer did not shorten', () => {
   );
   const [node] = scan.violations[0]!.nodes;
   assert.equal(node!.htmlTruncated, true);
-  assert.equal(node!.html, `${html.slice(0, MAX_HTML_LENGTH)}…`);
+  assert.equal(node!.html, `${html.slice(0, MAX_HTML_LENGTH - 1)}…`);
+  assert.equal(node!.html.length, MAX_HTML_LENGTH);
 });
 
 test('analyzer output that does not match its documented shape is an error, never clean', () => {

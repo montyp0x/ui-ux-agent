@@ -7,6 +7,9 @@
 // automatically", never conformance with WCAG or any other standard. Keyboard
 // and focus behaviour is outside this scan.
 import { z } from 'zod';
+import type { AuditConfig } from './config.js';
+import type { AuditOutput, AuditOutputFinding } from './contract.js';
+import type { AuditDefinition } from './registry.js';
 
 // Read on every result, so a report built from one cannot be read as more
 // than the scan it is.
@@ -172,9 +175,10 @@ export type ScanContext = {
   durationMs: number;
 };
 
+// At most `max` characters, the last an ellipsis when shortened.
 const truncate = (value: string, max: number) =>
   value.length > max
-    ? { text: `${value.slice(0, max)}…`, truncated: true }
+    ? { text: `${value.slice(0, max - 1)}…`, truncated: true }
     : { text: value, truncated: false };
 
 // WCAG tags as axe-core names them: levels ("wcag2a", "wcag21aa") and
@@ -271,5 +275,83 @@ export function parseAxeResults(
     inapplicableRules: results.inapplicable.length,
     durationMs: context.durationMs,
     limitations: [...ACCESSIBILITY_SCAN_LIMITATIONS],
+  };
+}
+
+type AxeConfig = Extract<AuditConfig, { id: 'accessibility.axe' }>;
+
+// A driver audit: the web driver runs it (src/drivers/playwright-audits.ts).
+export const axeAudit: AuditDefinition<AxeConfig> = {
+  id: 'accessibility.axe',
+  source: 'axe-core',
+  title: 'Automated accessibility scan (axe-core)',
+  drivers: ['playwright'],
+  unsupported:
+    'axe-core scans web pages; the macOS accessibility driver has no accessibility analyzer',
+};
+
+// Frame levels in an audit target selector, outermost first.
+export const FRAME_SEPARATOR = ' >>> ';
+
+const httpURL = (value: string): string | null => {
+  if (!URL.canParse(value)) return null;
+  const { protocol } = new URL(value);
+  return protocol === 'http:' || protocol === 'https:' ? value : null;
+};
+
+function auditFinding(
+  rule: AccessibilityRuleResult,
+  certainty: AuditOutputFinding['certainty'],
+): AuditOutputFinding {
+  return {
+    ruleId: rule.ruleId,
+    severity: rule.impact,
+    certainty,
+    description: rule.help || rule.description || rule.ruleId,
+    helpUrl: httpURL(rule.helpUrl),
+    tags: rule.tags.slice(0, 50),
+    nodeCount: rule.nodeCount,
+    targets: rule.nodes.map((node) => {
+      const selector = node.target.join(FRAME_SEPARATOR);
+      return {
+        // Why the analyzer flagged the element, or where it is.
+        description:
+          truncate(node.messages.join('; '), MAX_MESSAGE_LENGTH).text ||
+          selector ||
+          'element',
+        selector: selector || null,
+        snippet: node.html || null,
+      };
+    }),
+  };
+}
+
+// Maps a scan onto the audit contract: violations are `violation` findings,
+// incomplete results `needs_review` findings (never gating). A failed scan
+// throws, so the runner records an `error` run that names the error kind.
+export function axeAuditOutput(scan: AccessibilityScan): AuditOutput {
+  if (scan.status === 'error')
+    throw new Error(
+      `axe-core scan error (${scan.error.kind}): ${scan.error.message.replace(/\s+/g, ' ')}`,
+    );
+  const limitations: string[] = [...scan.limitations];
+  if (scan.scope.include.length)
+    limitations.push(
+      `Only the configured regions were scanned: ${scan.scope.include.join(', ')}`,
+    );
+  if (scan.scope.exclude.length)
+    limitations.push(
+      `Excluded regions were not scanned: ${scan.scope.exclude.join(', ')}`,
+    );
+  return {
+    complete: true,
+    detail: `${scan.violations.length} rule(s) violated, ${scan.incomplete.length} needing manual review, ${scan.passedRules} passed, ${scan.inapplicableRules} inapplicable (tags: ${scan.tags.join(', ') || 'axe default'})`,
+    observations: 1,
+    analyzer: { name: 'axe-core', version: scan.analyzer.version },
+    limitations,
+    findings: [
+      ...scan.violations.map((rule) => auditFinding(rule, 'violation')),
+      ...scan.incomplete.map((rule) => auditFinding(rule, 'needs_review')),
+    ],
   };
 }
