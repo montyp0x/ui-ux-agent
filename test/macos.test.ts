@@ -16,6 +16,7 @@ import {
   FIXTURE_BUNDLE_ID,
 } from '../src/drivers/macos-fixture.js';
 import type { Models } from '../src/models.js';
+import { parseResults } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
 
 // Native tests need macOS plus Accessibility and Screen Recording permission
@@ -107,6 +108,21 @@ test(
     const [result] = await runSuite(suite(app), models, { directory });
     assert.equal(result!.status, 'passed', result!.reason);
     assert.deepEqual(result!.checks, [true, true]);
+    // The real native driver produces a valid version-2 result: the outcome
+    // is decided by the assertions, and the quality verdict stays
+    // not_evaluated because no built-in quality check runs on macOS.
+    const [stored] = parseResults(
+      await readFile(join(directory, 'results.json'), 'utf8'),
+    );
+    assert.equal(stored!.outcome.code, 'assertions_passed');
+    assert.equal(stored!.outcome.source, 'assertion');
+    assert.equal(stored!.quality.verdict, 'not_evaluated');
+    assert.deepEqual(stored!.quality.executed, []);
+    assert.ok(
+      stored!.quality.unsupported.some(
+        (gap) => gap.id === 'layout.horizontal-overflow',
+      ),
+    );
     const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
       .trim()
       .split('\n')
@@ -623,6 +639,10 @@ test(
       { directory },
     );
     assert.notEqual(result!.status, 'passed', result!.reason);
+    // Not offering a control is a driver policy, not a product defect or a
+    // harness failure: the selector ran out of steps without the outcome.
+    assert.equal(result!.outcome.code, 'budget_max_steps');
+    assert.notEqual(result!.outcome.source, 'assertion');
     assert.ok(offered.length > 0, 'the selector saw the offered actions');
     assert.ok(
       !offered.some(
