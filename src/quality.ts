@@ -125,7 +125,7 @@ export function auditQuality(audits: AuditsResult): {
     const below = all.length - gating.length;
     const detail = [
       gating.length
-        ? `${gating.length} finding(s) at or above ${audits.failOn} at ${[...new Set(gating.map((index) => audits.findings[index]!.reproduction.checkpoint))].join(', ')}`
+        ? `${gating.length} finding(s) at or above ${audits.failOn} at ${[...new Set(gating.flatMap((index) => audits.findings[index]!.checkpoints))].join(', ')}`
         : '',
       errored
         ? `audit error at ${errored.checkpoint.id}: ${errored.detail ?? 'unknown'}`

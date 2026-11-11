@@ -56,10 +56,16 @@ export class JourneyAudits {
   // States recorded since each audit's previous run.
   private readonly pending = new Map<AuditId, Observation[]>();
   private last: Observation | null = null;
+  // The observed state of the checkpoint being audited.
+  private current: Observation | null = null;
   private observed = 0;
   private readyDone = false;
   private completionDone = false;
   private readonly statesDone = new Set<string>();
+  // Fingerprint of each recorded observation, by step.
+  private readonly fingerprints = new Map<number, string>();
+  // Finding identity (see findingKey) to its index in result.findings.
+  private readonly seen = new Map<string, number>();
 
   constructor(private readonly options: JourneyAuditOptions) {
     const { suite, session } = options;
@@ -82,6 +88,7 @@ export class JourneyAudits {
   record(observation: Observation): void {
     this.observed++;
     this.last = observation;
+    this.fingerprints.set(observation.step, observation.fingerprint);
     for (const states of this.pending.values()) states.push(observation);
   }
 
@@ -200,6 +207,7 @@ export class JourneyAudits {
     checkpoint: AuditCheckpoint,
     current: Observation | null,
   ): Promise<void> {
+    this.current = current;
     const definition = (this.options.definitions ?? auditDefinition)(config.id);
     const started = Date.now();
     const recorded = this.pending.get(config.id) ?? [];
@@ -267,6 +275,36 @@ export class JourneyAudits {
     );
   }
 
+  // Identity of a finding in one page state: audit, rule, certainty,
+  // severity, description, the sampled targets, URL and the fingerprint of
+  // the observed state. Null (never deduplicated) when the state has no
+  // recorded fingerprint.
+  private findingKey(
+    auditId: AuditId,
+    checkpoint: AuditCheckpoint,
+    finding: ParsedAuditOutput['findings'][number],
+  ): string | null {
+    const fingerprint = finding.at
+      ? this.fingerprints.get(finding.at.step)
+      : this.current?.fingerprint;
+    if (fingerprint === undefined) return null;
+    return JSON.stringify([
+      auditId,
+      finding.ruleId,
+      finding.certainty,
+      finding.severity,
+      finding.description,
+      finding.nodeCount ?? null,
+      finding.targets.map((target) => [
+        target.selector,
+        target.description,
+        target.snippet,
+      ]),
+      finding.at?.url ?? checkpoint.url,
+      fingerprint,
+    ]);
+  }
+
   private async push(
     config: AuditConfig,
     checkpoint: AuditCheckpoint,
@@ -279,7 +317,20 @@ export class JourneyAudits {
     const definition = (this.options.definitions ?? auditDefinition)(config.id);
     const run = this.result.runs.length;
     const findings: number[] = [];
+    let repeated = 0;
     for (const finding of output?.findings ?? []) {
+      const key = this.findingKey(config.id, checkpoint, finding);
+      const earlier = key === null ? undefined : this.seen.get(key);
+      if (earlier !== undefined) {
+        // Already reported at an earlier checkpoint in the same page state.
+        const entry = this.result.findings[earlier]!;
+        if (!entry.checkpoints.includes(checkpoint.id))
+          entry.checkpoints.push(checkpoint.id);
+        if (!findings.includes(earlier)) findings.push(earlier);
+        repeated++;
+        continue;
+      }
+      if (key !== null) this.seen.set(key, this.result.findings.length);
       findings.push(this.result.findings.length);
       this.result.findings.push({
         auditId: config.id,
@@ -294,6 +345,7 @@ export class JourneyAudits {
         nodeCount: Math.max(finding.nodeCount ?? 0, finding.targets.length),
         targets: finding.targets,
         run,
+        checkpoints: [checkpoint.id],
         gating: isGating(finding, this.result.failOn),
         evidence: {
           screenshot: finding.at
@@ -337,6 +389,8 @@ export class JourneyAudits {
       status,
       detail,
       findings: findings.length,
+      // Findings already reported at an earlier checkpoint in the same state.
+      repeated,
       gating: findings.filter((index) => this.result.findings[index]!.gating)
         .length,
       durationMs,

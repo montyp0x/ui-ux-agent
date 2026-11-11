@@ -180,8 +180,13 @@ export const auditFindingSchema = z
     nodeCount: count,
     // A sample of the affected elements.
     targets: z.array(auditTargetSchema),
-    // Index into audits.runs of the run that produced it.
+    // Index into audits.runs of the run that first produced it.
     run: count,
+    // Every checkpoint that reported this finding, first one first. The same
+    // finding seen again in the same page state (same audit, rule, targets,
+    // URL and observed state; for example the last declared state and then
+    // completion) is kept once, and the later run lists its index.
+    checkpoints: z.array(z.string().min(1)).min(1),
     // Whether it fails the quality verdict under the configured threshold.
     gating: z.boolean(),
     evidence: z

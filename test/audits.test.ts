@@ -78,6 +78,7 @@ function session(
     driver?: DriverKind;
     holds?: (condition: Check) => boolean;
     runAudit?: (request: DriverAuditRequest) => Promise<unknown>;
+    location?: () => string;
   } = {},
 ): UISession {
   return {
@@ -86,7 +87,7 @@ function session(
     unauthorized: false,
     async start() {},
     setTimeout() {},
-    location: () => 'https://app.example/final',
+    location: options.location ?? (() => 'https://app.example/final'),
     async check(condition) {
       return options.holds?.(condition) ?? false;
     },
@@ -622,11 +623,19 @@ test('the runner records audit runs in results.json and the report', async () =>
     ],
   );
   assert.equal(result!.quality.verdict, 'fail');
+  // Completion saw the same overflow in the same state: reported once.
+  assert.equal(result!.audits.findings.length, 1);
+  assert.deepEqual(result!.audits.findings[0]!.checkpoints, [
+    'state:arrived',
+    'completion',
+  ]);
+  assert.deepEqual(result!.audits.runs[2]!.findings, [0]);
   const report = reportHTML(suite.name, results, directory);
   assert.match(
     report,
-    /Audits: 3 run\(s\), 2 violation\(s\), 0 needing manual review/,
+    /Audits: 3 run\(s\), 1 violation\(s\), 0 needing manual review/,
   );
+  assert.match(report, /also seen unchanged at completion/);
   assert.match(report, /Audit violations/);
   assert.match(
     report,
@@ -1031,4 +1040,106 @@ test('an audit that fails at a declared state is an error run and the journey co
   );
   // An errored audit keeps the verdict from passing; it is not a UI defect.
   assert.equal(result!.quality.verdict, 'not_evaluated');
+});
+
+test('a finding seen again in the same state is kept once with every checkpoint', async () => {
+  const withState = () =>
+    suiteWith(
+      { audits: { checks: [{ id: 'layout.horizontal-overflow', at: ['states'] }] } },
+      { states: [{ name: 'done', when: { kind: 'path', pattern: '^/done$' } }] },
+    );
+  const sameState = state(3);
+  let page = 'unchanged';
+  let at = 0;
+  const { runner, events } = audits(
+    withState(),
+    {
+      holds: () => at >= 3,
+      // The page has not moved since the last observation.
+      location: () => sameState.url,
+      runAudit: async () => ({
+        complete: true,
+        findings:
+          page === 'unchanged'
+            ? [finding()]
+            : [finding(), finding({ ruleId: 'image-alt' })],
+      }),
+    },
+    [testCheck(['ready', 'states', 'completion'])],
+  );
+  // ready at step 0; the declared state holds at step 3 and the journey
+  // ends there without another observation.
+  runner.record(state(0));
+  await runner.afterObservation(state(0));
+  at = 3;
+  runner.record(sameState);
+  await runner.afterObservation(sameState);
+  await runner.completion(4, 'final.png');
+  const result = auditsResultSchema.parse(runner.finish());
+  assert.deepEqual(
+    result.runs.map((run) => [run.checkpoint.id, run.status, run.findings]),
+    [
+      // A different state (other fingerprint and URL): its own finding.
+      ['ready', 'findings', [0]],
+      ['state:done', 'findings', [1]],
+      // Same rule, targets, URL and observed state as state:done: one finding.
+      ['completion', 'findings', [1]],
+    ],
+  );
+  assert.equal(result.findings.length, 2);
+  assert.deepEqual(result.findings[0]!.checkpoints, ['ready']);
+  assert.deepEqual(result.findings[1]!.checkpoints, ['state:done', 'completion']);
+  assert.equal(result.findings[1]!.reproduction.checkpoint, 'state:done');
+  assert.deepEqual(
+    events.map((entry) => (entry.data as { repeated: number }).repeated),
+    [0, 0, 1],
+  );
+  const quality = evaluateQuality({
+    platform: 'web',
+    observations: 2,
+    findings: [],
+    policyBlocks: 0,
+    evidenceComplete: true,
+    audits: result,
+  });
+  assert.match(
+    quality.executed[0]!.detail ?? '',
+    /2 finding\(s\) at or above serious at ready, state:done, completion/,
+  );
+
+  // A new finding, or the same one in a changed state, is not merged.
+  const changed = audits(
+    withState(),
+    {
+      holds: () => true,
+      location: () => state(0).url,
+      runAudit: async () => ({
+        complete: true,
+        findings:
+          page === 'unchanged'
+            ? [finding()]
+            : [finding(), finding({ ruleId: 'image-alt' })],
+      }),
+    },
+    [testCheck(['states', 'completion'])],
+  );
+  changed.runner.record(state(0));
+  await changed.runner.afterObservation(state(0));
+  page = 'changed';
+  // Same URL, new observed state before completion.
+  changed.runner.record({ ...state(0), step: 1, fingerprint: 'other' });
+  await changed.runner.completion(2, 'final.png');
+  const after = changed.runner.finish();
+  assert.deepEqual(
+    after.runs.map((run) => run.findings),
+    [[0], [1, 2]],
+  );
+  assert.deepEqual(
+    after.findings.map((entry) => [entry.ruleId, entry.checkpoints]),
+    [
+      ['button-name', ['state:done']],
+      ['button-name', ['completion']],
+      ['image-alt', ['completion']],
+    ],
+  );
 });
