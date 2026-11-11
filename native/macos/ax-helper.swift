@@ -227,18 +227,35 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     return ["ok": true]
   case "alive":
     // Cheap scope probe: the process runs and still has an accessible window.
-    guard let pid = request["pid"] as? Int, let app = NSRunningApplication(processIdentifier: pid_t(pid)),
-      !app.isTerminated
-    else { return ["alive": false, "running": false] }
+    guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }
+    // Whether the process runs comes from the kernel (signal 0 sends nothing).
+    // LaunchServices' view (NSRunningApplication) can briefly miss a running
+    // app, e.g. while another bundle with the same id is registered; it is
+    // reported for diagnosis but never decides on its own that the app quit.
+    let exists = kill(pid_t(pid), 0) == 0 || errno == EPERM
+    let registered = NSRunningApplication(processIdentifier: pid_t(pid)).map { !$0.isTerminated } ?? false
+    if !exists { return ["alive": false, "running": false, "registered": registered] }
     let element = AXUIElementCreateApplication(pid_t(pid))
     // The windows list intermittently comes back empty while the focused
     // window is still readable; an error from a running app means "unknown".
+    // (An app that is quitting errors too: it then needs a window on screen.)
     var value: CFTypeRef?
     let result = AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &value)
-    if result != .success && result != .noValue { return ["alive": true, "running": true, "uncertain": true] }
+    if result != .success && result != .noValue && registered {
+      return ["alive": true, "running": true, "registered": registered, "uncertain": true]
+    }
     let windows = (value as? [AXUIElement]) ?? []
     let focused = attribute(element, kAXFocusedWindowAttribute) != nil
-    return ["alive": !windows.isEmpty || focused, "running": true]
+    if !windows.isEmpty || focused { return ["alive": true, "running": true, "registered": registered] }
+    // Accessibility can answer with no windows while a window is rebuilt (a
+    // title change, a busy machine); the window server still lists it.
+    let onScreen = ((CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+      as? [[String: Any]]) ?? []).contains {
+      ($0[kCGWindowOwnerPID as String] as? Int32) == Int32(pid) && ($0[kCGWindowLayer as String] as? Int) == 0
+    }
+    return onScreen
+      ? ["alive": true, "running": true, "registered": registered, "source": "windowServer"]
+      : ["alive": false, "running": true, "registered": registered]
   case "enableAccessibility":
     // Electron/Chromium apps build their tree only for assistive clients that ask.
     guard let pid = request["pid"] as? Int else { return ["error": "pid required"] }

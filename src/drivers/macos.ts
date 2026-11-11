@@ -326,13 +326,23 @@ export async function macosDriver(): Promise<UIDriver> {
         `${suite.baseURL}/${encodeURIComponent(title)}`;
       // Electron/Chromium apps expose their web content only after an assistive
       // client asks (AXManualAccessibility), and the tree can go dormant again;
-      // a near-empty snapshot re-asks, at most every 5s.
+      // a near-empty snapshot re-asks, at most every 5s. Other apps reject the
+      // attribute: they are asked once and never waited on, so a small native
+      // window is not delayed or switched into AXEnhancedUserInterface mode.
       let lastEnable = 0;
+      let manualAccessibility: boolean | undefined;
       const enableTree = async (enhanced: boolean) => {
         lastEnable = Date.now();
         const result = await helper
-          .call({ cmd: 'enableAccessibility', pid, enhanced })
+          .call<{ manual?: number; enhanced?: number }>({
+            cmd: 'enableAccessibility',
+            pid,
+            enhanced,
+          })
           .catch((error: Error) => ({ error: error.message }));
+        // 0 is kAXErrorSuccess: the app supports the attribute.
+        if (!enhanced)
+          manualAccessibility = 'manual' in result && result.manual === 0;
         await log('accessibility_enabled', {
           journey: journey.id,
           enhanced,
@@ -341,23 +351,29 @@ export async function macosDriver(): Promise<UIDriver> {
       };
       const snapshot = async () => {
         last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
-        if (last.elements.length < 30 && Date.now() - lastEnable > 5000) {
+        if (
+          last.elements.length < 30 &&
+          manualAccessibility !== false &&
+          Date.now() - lastEnable > 5000
+        ) {
           const before = last.elements.length;
           await enableTree(false);
-          for (let i = 0; i < 10 && last.elements.length < 30; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+          if (manualAccessibility) {
+            for (let i = 0; i < 10 && last.elements.length < 30; i++) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+            }
+            if (last.elements.length < 30) {
+              await enableTree(true);
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+              last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
+            }
+            await log('accessibility_tree', {
+              journey: journey.id,
+              before,
+              after: last.elements.length,
+            });
           }
-          if (last.elements.length < 30) {
-            await enableTree(true);
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            last = await helper.call<Snapshot>({ cmd: 'snapshot', pid });
-          }
-          await log('accessibility_tree', {
-            journey: journey.id,
-            before,
-            after: last.elements.length,
-          });
         }
         for (const node of last.elements)
           if (node.role === 'AXRow' && !node.title && !node.description)
@@ -376,14 +392,40 @@ export async function macosDriver(): Promise<UIDriver> {
         // A quit app is gone at once. A running app may have no window for a
         // moment (one closes before the next opens, or accessibility answers
         // empty under load), so wait up to 2s for a window to appear.
-        const until = Date.now() + 2000;
-        for (;;) {
-          const { alive, running } = await helper.call<{
+        // Accessibility may also list no window while the window server still
+        // shows one (the helper then answers source "windowServer").
+        const started = Date.now();
+        for (let probes = 1; ; probes++) {
+          const probe = await helper.call<{
             alive: boolean;
             running: boolean;
+            source?: string;
+            uncertain?: boolean;
+            registered?: boolean;
           }>({ cmd: 'alive', pid });
-          if (alive) return true;
-          if (!running || Date.now() > until) return false;
+          if (probe.alive) {
+            if (probes > 1 || probe.source || probe.registered === false)
+              await log('scope_probe', {
+                journey: journey.id,
+                inScope: true,
+                probes,
+                waitedMs: Date.now() - started,
+                source: probe.source ?? 'accessibility',
+                registered: probe.registered,
+              });
+            return true;
+          }
+          if (!probe.running || Date.now() - started > 2000) {
+            await log('scope_probe', {
+              journey: journey.id,
+              inScope: false,
+              probes,
+              waitedMs: Date.now() - started,
+              running: probe.running,
+              registered: probe.registered,
+            });
+            return false;
+          }
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
       };

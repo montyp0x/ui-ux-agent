@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import {
   DEFAULT_BLOCKED_CONTROLS,
@@ -707,3 +708,46 @@ test('press interactions and syntheticInput are rejected for macOS suites', () =
     }),
   );
 });
+
+test(
+  'the scope probe follows the app process and its on-screen window',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const helper = spawn(await ensureHelper(), [], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    const replies: ((reply: Record<string, unknown>) => void)[] = [];
+    createInterface({ input: helper.stdout! }).on('line', (line) =>
+      replies.shift()!(JSON.parse(line)),
+    );
+    const call = (request: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        replies.push(resolve);
+        helper.stdin!.write(JSON.stringify(request) + '\n');
+      });
+    try {
+      await call({ cmd: 'terminate', bundleId: FIXTURE_BUNDLE_ID });
+      const { pid } = await call({ cmd: 'launch', path: app });
+      let probe: Record<string, unknown> = {};
+      for (let i = 0; i < 50 && probe.alive !== true; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        probe = await call({ cmd: 'alive', pid });
+      }
+      assert.equal(probe.alive, true, JSON.stringify(probe));
+      assert.equal(probe.running, true);
+      await call({ cmd: 'terminate', bundleId: FIXTURE_BUNDLE_ID });
+      probe = await call({ cmd: 'alive', pid });
+      assert.deepEqual(
+        [probe.alive, probe.running],
+        [false, false],
+        JSON.stringify(probe),
+      );
+      // A pid with no process is never in scope.
+      probe = await call({ cmd: 'alive', pid: 99999 });
+      assert.equal(probe.running, false);
+    } finally {
+      helper.stdin!.end();
+    }
+  },
+);
