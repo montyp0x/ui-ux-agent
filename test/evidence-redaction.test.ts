@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
-import { suiteSchema } from '../src/contracts.js';
+import {
+  suiteSchema,
+  type Action,
+  type Journey,
+  type Observation,
+} from '../src/contracts.js';
+import { models, type Models } from '../src/models.js';
+import { providerModels } from '../src/evidence/provider.js';
+import { pruneRuns, writeRunManifest } from '../src/evidence/retention.js';
+import { sanitizeTextFiles } from '../src/evidence/sweep.js';
 import {
   evidencePolicySchema,
   evidenceFormats,
@@ -243,4 +263,241 @@ test('screenshot masks are applied before capture: masked targets, page text and
   } finally {
     await browser.close();
   }
+});
+
+const observation = (screenshot: string): Observation => ({
+  step: 0,
+  url: `http://127.0.0.1/case?access_token=abc123&id=${SUITE_SECRET}`,
+  snapshot: `- heading "${SUITE_SECRET}"`,
+  screenshot,
+  visibleViewport: {
+    width: 800,
+    height: 600,
+    text: `Case ${SUITE_SECRET}`,
+    textTruncated: false,
+    controls: [
+      {
+        role: 'textbox',
+        name: `Note ${SUITE_SECRET}`,
+        value: ENV_SECRET,
+        disabled: false,
+      },
+    ],
+    canScrollUp: false,
+    canScrollDown: false,
+    scrollRegions: [],
+  },
+  fingerprint: 'f',
+  scroll: { x: 0, y: 0, containers: [] },
+  horizontalOverflow: 0,
+});
+
+test('the provider view redacts every model input, keeps action ids, and withholds screenshots when configured', async () => {
+  const seen: unknown[] = [];
+  const stub: Models = {
+    async plan(...args) {
+      seen.push(args);
+      return { objective: 'o', concerns: [] };
+    },
+    async choose(...args) {
+      seen.push(args);
+      return {
+        type: 'choice',
+        choice: 'a0',
+        confidence: 1,
+        probabilities: { a0: 1, no_match: 0 },
+      };
+    },
+  };
+  const protection = evidenceProtection(
+    evidencePolicySchema.parse({
+      redact: [{ pattern: 'ACME-CASE-\\d{6}' }],
+      redactEnv: ['APP_LOGIN'],
+      providerScreenshots: false,
+    }),
+    { APP_LOGIN: ENV_SECRET },
+    { platform: 'web', authenticated: false, videoRequested: false },
+  );
+  const provider = providerModels(stub, protection);
+  const actions: Action[] = [
+    {
+      kind: 'link',
+      id: 'a0',
+      description: `Open ${SUITE_SECRET}`,
+      target: { by: 'role', role: 'link', name: `Open ${SUITE_SECRET}` },
+      href: `http://127.0.0.1/c/${SUITE_SECRET}?token=abc123`,
+    },
+    {
+      kind: 'fill',
+      id: 'a1',
+      description: 'Type',
+      target: { by: 'label', value: 'Note' },
+      value: ENV_SECRET,
+    },
+  ];
+  const journey = {
+    id: 'j',
+    goal: `Find ${SUITE_SECRET}`,
+    persona: 'p',
+  } as unknown as Journey;
+  const history = [
+    { action: `Open ${SUITE_SECRET}`, changed: false, error: ENV_SECRET },
+  ];
+  await provider.plan(
+    journey,
+    observation('/tmp/shot.png'),
+    history,
+    1000,
+    actions,
+    {
+      reasons: ['initial'],
+      offeredControls: [`Note ${SUITE_SECRET}`],
+    },
+  );
+  await provider.choose(
+    journey,
+    observation('/tmp/shot.png'),
+    { objective: SUITE_SECRET, concerns: [] },
+    actions,
+    history,
+    1000,
+  );
+  const sent = JSON.stringify(seen);
+  for (const secret of [SUITE_SECRET, ENV_SECRET, 'abc123'])
+    assert.ok(!sent.includes(secret), `${secret} reached the adapter`);
+  assert.ok(!sent.includes('/tmp/shot.png'), 'the screenshot was withheld');
+  const [planArgs] = seen as [unknown[]];
+  const offered = planArgs[4] as Action[];
+  assert.deepEqual(
+    offered.map((action) => [action.id, action.kind]),
+    [
+      ['a0', 'link'],
+      ['a1', 'fill'],
+    ],
+  );
+  // The redacted link destination still parses for the adapter.
+  assert.doesNotThrow(() => new URL((offered[0] as { href: string }).href));
+});
+
+test('the planner adapter sends no image when the provider view withholds screenshots', async () => {
+  const bodies: string[] = [];
+  const server = createServer(async (request, response) => {
+    let data = '';
+    for await (const chunk of request) data += String(chunk);
+    bodies.push(data);
+    response.setHeader('Content-Type', 'application/json');
+    response.end(
+      JSON.stringify({
+        choices: [{ message: { content: '{"objective":"o","concerns":[]}' } }],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address() as { port: number };
+    const adapter = models({
+      plannerURL: `http://127.0.0.1:${address.port}/planner`,
+      plannerKey: 'k',
+      plannerModel: 'm',
+      selectorURL: `http://127.0.0.1:${address.port}/selector`,
+      selectorKey: 'k',
+      selectorModel: 'm',
+    });
+    await adapter.plan(
+      { goal: 'g', persona: 'p' } as Journey,
+      observation(''),
+      [],
+      5000,
+    );
+    assert.equal(bodies.length, 1);
+    assert.ok(!bodies[0]!.includes('image_url'));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('the text sweep redacts files drivers and audits wrote, skips binaries and never follows symlinks', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-sweep-'));
+  const outside = await mkdtemp(join(tmpdir(), 'ui-ux-sweep-outside-'));
+  await mkdir(join(directory, 'journey'));
+  await writeFile(
+    join(directory, 'journey', 'layout.json'),
+    JSON.stringify({ text: `a "${SUITE_SECRET}"` }),
+  );
+  await writeFile(
+    join(directory, 'journey', 'clean.json'),
+    '{\n  "kept": "as written"\n}',
+  );
+  await writeFile(
+    join(directory, 'events.jsonl'),
+    `${JSON.stringify({ m: SUITE_SECRET })}\n`,
+  );
+  await writeFile(join(directory, 'shot.png'), SUITE_SECRET);
+  await writeFile(join(outside, 'secret.txt'), SUITE_SECRET);
+  await symlink(outside, join(directory, 'link'));
+  const redactor = new Redactor({
+    patterns: [{ pattern: 'ACME-CASE-\\d{6}' }],
+  });
+  const rewritten = await sanitizeTextFiles(directory, redactor);
+  assert.deepEqual(
+    rewritten.map((path) => path.slice(directory.length + 1)).sort(),
+    ['events.jsonl', 'journey/layout.json'],
+  );
+  assert.ok(
+    !(
+      await readFile(join(directory, 'journey', 'layout.json'), 'utf8')
+    ).includes(SUITE_SECRET),
+  );
+  assert.equal(
+    await readFile(join(directory, 'journey', 'clean.json'), 'utf8'),
+    '{\n  "kept": "as written"\n}',
+  );
+  assert.equal(
+    await readFile(join(outside, 'secret.txt'), 'utf8'),
+    SUITE_SECRET,
+  );
+  // A second pass finds nothing left to do.
+  assert.deepEqual(await sanitizeTextFiles(directory, redactor), []);
+});
+
+test('pruning deletes only expired run directories that carry a run manifest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ui-ux-prune-'));
+  const now = new Date('2026-11-11T00:00:00Z');
+  for (const [name, created] of [
+    ['old', new Date('2026-09-01T00:00:00Z')],
+    ['fresh', new Date('2026-11-10T00:00:00Z')],
+  ] as const) {
+    await mkdir(join(root, name));
+    await writeRunManifest(join(root, name), 30, created);
+  }
+  await mkdir(join(root, 'not-a-run'));
+  await writeFile(join(root, 'not-a-run', 'notes.txt'), 'keep me');
+  await mkdir(join(root, 'forged'));
+  await writeFile(
+    join(root, 'forged', 'run.json'),
+    JSON.stringify({ tool: 'other' }),
+  );
+  // A manifest is never replaced.
+  await assert.rejects(writeRunManifest(join(root, 'fresh'), 1), /EEXIST/);
+  const dry = await pruneRuns(root, { dryRun: true, now });
+  assert.deepEqual(
+    dry.map((entry) => [entry.directory.slice(root.length + 1), entry.action]),
+    [
+      ['forged', 'skipped'],
+      ['fresh', 'kept'],
+      ['not-a-run', 'skipped'],
+      ['old', 'would_delete'],
+    ],
+  );
+  assert.ok((await readdir(root)).includes('old'));
+  const pruned = await pruneRuns(root, { now });
+  assert.equal(
+    pruned.find((entry) => entry.action === 'deleted')?.directory,
+    join(root, 'old'),
+  );
+  assert.deepEqual((await readdir(root)).sort(), [
+    'forged',
+    'fresh',
+    'not-a-run',
+  ]);
 });

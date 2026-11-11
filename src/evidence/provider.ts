@@ -27,11 +27,9 @@ export function providerModels(
 ): Models {
   const { redactor } = protection;
   const screenshots = formatEnabled(protection.formats, 'provider_screenshots');
-  const journey = (value: Journey): Journey => ({
-    ...value,
-    goal: redactor.text(value.goal),
-    persona: redactor.text(value.persona),
-  });
+  // Adapters read the goal and persona; the rest of the journey (configured
+  // values, targets) is redacted too, for adapters that read more.
+  const journey = (value: Journey): Journey => redactor.deep(value);
   const observation = (value: Observation): Observation => ({
     ...redactor.deep(value),
     // A local path the adapter reads (the image is masked before capture);
@@ -42,9 +40,9 @@ export function providerModels(
     list.map(
       (action) =>
         ({
-          ...action,
-          description: redactor.text(action.description),
-          ...('value' in action ? { value: redactor.text(action.value) } : {}),
+          ...redactor.deep(action),
+          id: action.id,
+          kind: action.kind,
           ...(action.kind === 'link'
             ? { href: redactHref(action.href, redactor) }
             : {}),
