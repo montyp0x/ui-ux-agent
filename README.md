@@ -293,17 +293,51 @@ Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N
 
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: a summary table per journey/viewport (pass rate, other outcomes, median actions and duration, model calls and tokens), then each run's outcome and evidence links.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, and evidence links.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json`: checks, statuses and findings.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts and findings. The contract is `resultVersion: 2`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 keeps every version-1 field (`status`, `reason`, `checks`, `findings`, …) unchanged and adds `resultVersion`, `outcome` and `quality`.
 - Per journey/viewport: screenshots, Playwright trace and optional video.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
 
-Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error.
+Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error. Exit codes follow the functional outcome only; the quality verdict is reported beside it and does not change the exit code.
 
-The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage` or `timeout`), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
+### Outcome codes
+
+Every result's `outcome` names why the journey ended with a stable `code`, its `category` and its `source`. Each code fixes its status, category and source, so the same failure always classifies the same way:
+
+| Status | Code | Category | Source |
+| --- | --- | --- | --- |
+| passed | `assertions_passed` | passed | assertion |
+| failed | `content_readiness_timeout` | assertion_failure | assertion |
+| failed | `repeated_action` | agent_loop | agent |
+| failed | `selector_no_path`, `recovery_scroll_stalled` | agent_no_path | agent |
+| failed | `budget_max_steps`, `budget_deadline`, `budget_deadline_before_stage`, `budget_stage_timeout` | budget_exhausted | unknown |
+| failed | `budget_model_rate_limit` | budget_exhausted | model |
+| blocked | `ready_not_reached`, `setup_not_offered`, `setup_action_failed` | precondition_failure | unknown |
+| blocked | `setup_stale_action` | stale_action | harness |
+| blocked | `scope_exit` | policy_block | harness |
+| blocked | `unauthorized_response` | auth_failure | environment |
+| error | `model_call_failed`, `model_invalid_output` | model_error | model |
+| error | `driver_capability_missing` | infrastructure_error | harness |
+| error | `driver_error`, `evidence_capture_failed`, `session_cleanup_failed` | infrastructure_error | unknown |
+| error | `journey_not_finished`, `unclassified_error` | unknown | unknown |
+
+Only `source: "assertion"` is evidence about the application: an independent outcome assertion was evaluated. A loop, a missing path or an exhausted budget describes the agent's run, not a product defect, and causes the tests cannot tell apart stay `unknown`. A content wait cut short by the journey deadline is `budget_deadline`, not `content_readiness_timeout`. The outcome also records the deciding `stage` and `step`, a `detail` (first error line), and `evidence`: the deciding screenshot, the `events.jsonl` event names that record the decision, and the indices of `checks` that were false. `signals` counts stale actions, action errors, request-policy blocks and browser errors during the run; they may explain an outcome without being its cause.
+
+### Quality verdict
+
+`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed and every executed check passed; any failed check is `fail`; no executed check, or an `inconclusive`/`errored` check without a failure, is `not_evaluated`, which is not a pass. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
+
+Built-in checks, measured on every observed state on the web:
+
+- `layout.horizontal-overflow`: the document is wider than the viewport.
+- `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
+
+The macOS driver measures neither, so native results are `not_evaluated`. Accessibility audits, visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+
+The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 
 ## Development
 

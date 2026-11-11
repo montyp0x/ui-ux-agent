@@ -1,14 +1,7 @@
 import { z } from 'zod';
-import type { Result } from './contracts.js';
+import type { OutcomeCategory, Quality, Result, Usage } from './results.js';
 
-export type CallStats = {
-  calls: number;
-  durationMs: number;
-  inputTokens: number;
-  outputTokens: number;
-};
-export type Usage = { planner: CallStats; selector: CallStats };
-
+export type { CallStats, Usage } from './results.js';
 export const emptyUsage = (): Usage => ({
   planner: { calls: 0, durationMs: 0, inputTokens: 0, outputTokens: 0 },
   selector: { calls: 0, durationMs: 0, inputTokens: 0, outputTokens: 0 },
@@ -54,6 +47,10 @@ export type JourneySummary = {
   passed: number;
   statuses: Record<Result['status'], number>;
   reasons: Record<string, number>;
+  // Non-passing runs per outcome category (see results.ts).
+  categories: Partial<Record<OutcomeCategory, number>>;
+  // Quality verdicts, counted separately from the functional outcome.
+  quality: Record<Quality['verdict'], number>;
   medianSteps: number;
   medianDurationMs: number;
   tokens: { input: number; output: number };
@@ -78,10 +75,16 @@ export function summarize(results: Result[]): JourneySummary[] {
   return [...groups.values()].map((runs) => {
     const statuses = { passed: 0, failed: 0, blocked: 0, error: 0 };
     const reasons: Record<string, number> = {};
+    const categories: JourneySummary['categories'] = {};
+    const quality = { pass: 0, fail: 0, not_evaluated: 0 };
     for (const run of runs) {
       statuses[run.status]++;
-      if (run.status !== 'passed')
+      quality[run.quality.verdict]++;
+      if (run.status !== 'passed') {
         reasons[run.reason] = (reasons[run.reason] ?? 0) + 1;
+        const category = run.outcome.category;
+        categories[category] = (categories[category] ?? 0) + 1;
+      }
     }
     const sum = (pick: (usage: Usage) => number) =>
       runs.reduce((total, run) => total + pick(run.usage), 0);
@@ -92,6 +95,8 @@ export function summarize(results: Result[]): JourneySummary[] {
       passed: statuses.passed,
       statuses,
       reasons,
+      categories,
+      quality,
       medianSteps: median(runs.map((run) => run.steps)),
       medianDurationMs: median(runs.map((run) => run.durationMs)),
       tokens: {

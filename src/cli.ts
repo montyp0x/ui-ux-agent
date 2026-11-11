@@ -216,9 +216,11 @@ if (values.help) {
             repeat: values.repeat ? Number(values.repeat) : 1,
           },
         );
+        // The exit code follows the functional outcome only; the quality
+        // verdict is reported beside it and does not gate yet.
         for (const result of results)
           console.log(
-            `${result.status}: ${result.journey}/${result.viewport}: ${result.reason}`,
+            `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport}: ${result.reason} · quality ${result.quality.verdict}`,
           );
         for (const row of summarize(results))
           if (row.runs > 1)

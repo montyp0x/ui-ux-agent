@@ -1,0 +1,462 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "resultVersion": {
+      "type": "number",
+      "const": 2
+    },
+    "journey": {
+      "type": "string"
+    },
+    "viewport": {
+      "type": "string"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "planner": {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "durationMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "calls",
+            "durationMs",
+            "inputTokens",
+            "outputTokens"
+          ],
+          "additionalProperties": false
+        },
+        "selector": {
+          "type": "object",
+          "properties": {
+            "calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "durationMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "calls",
+            "durationMs",
+            "inputTokens",
+            "outputTokens"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "planner",
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "marker": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "blocked",
+        "error"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "assertions_passed",
+            "content_readiness_timeout",
+            "ready_not_reached",
+            "setup_not_offered",
+            "setup_action_failed",
+            "setup_stale_action",
+            "scope_exit",
+            "unauthorized_response",
+            "repeated_action",
+            "selector_no_path",
+            "recovery_scroll_stalled",
+            "budget_max_steps",
+            "budget_deadline",
+            "budget_deadline_before_stage",
+            "budget_stage_timeout",
+            "budget_model_rate_limit",
+            "model_call_failed",
+            "model_invalid_output",
+            "driver_capability_missing",
+            "driver_error",
+            "evidence_capture_failed",
+            "session_cleanup_failed",
+            "journey_not_finished",
+            "unclassified_error"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "assertion_failure",
+            "precondition_failure",
+            "policy_block",
+            "stale_action",
+            "agent_loop",
+            "agent_no_path",
+            "budget_exhausted",
+            "auth_failure",
+            "model_error",
+            "infrastructure_error",
+            "unknown"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "assertion",
+            "agent",
+            "model",
+            "harness",
+            "environment",
+            "unknown"
+          ]
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "step": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "screenshot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "failedChecks": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "required": [
+            "screenshot",
+            "events",
+            "failedChecks"
+          ],
+          "additionalProperties": false
+        },
+        "signals": {
+          "type": "object",
+          "properties": {
+            "staleActions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "actionErrors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "policyBlocks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "browserErrors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "staleActions",
+            "actionErrors",
+            "policyBlocks",
+            "browserErrors"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "source",
+        "stage",
+        "step",
+        "detail",
+        "evidence",
+        "signals"
+      ],
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "not_evaluated"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "builtin"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "failed",
+                  "inconclusive",
+                  "errored"
+                ]
+              },
+              "observations": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "source",
+              "status",
+              "observations",
+              "findings",
+              "detail"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unsupported": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "verdict",
+        "reason",
+        "executed",
+        "skipped",
+        "unsupported"
+      ],
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "durationMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "boolean"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "observed",
+              "hypothesis"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "step": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "screenshot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "category",
+          "description",
+          "step",
+          "screenshot"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "trace": {
+      "type": "string"
+    },
+    "video": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "resultVersion",
+    "journey",
+    "viewport",
+    "attempt",
+    "usage",
+    "status",
+    "reason",
+    "outcome",
+    "quality",
+    "steps",
+    "durationMs",
+    "checks",
+    "findings",
+    "trace",
+    "video"
+  ],
+  "additionalProperties": false
+}

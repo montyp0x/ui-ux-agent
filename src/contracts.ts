@@ -1,4 +1,3 @@
-import type { Usage } from './summary.js';
 import { z } from 'zod';
 
 const relativePath = z
@@ -461,28 +460,5 @@ export const choiceSchema = z.object({
   probabilities: z.record(z.string(), z.number().min(0).max(1)),
 });
 export type Choice = z.infer<typeof choiceSchema>;
-export type Finding = {
-  kind: 'observed' | 'hypothesis';
-  category: string;
-  description: string;
-  step: number;
-  screenshot: string;
-};
-export type Result = {
-  journey: string;
-  viewport: string;
-  // 1-based repetition number when a journey/viewport is run several times.
-  attempt: number;
-  // Model calls, latency and tokens for this run, from model_call events.
-  usage: Usage;
-  // The {{marker}} value used in this run, when the journey has one.
-  marker?: string;
-  status: 'passed' | 'failed' | 'blocked' | 'error';
-  reason: string;
-  steps: number;
-  durationMs: number;
-  checks: boolean[];
-  findings: Finding[];
-  trace: string;
-  video: string | null;
-};
+// The run result contract lives in results.ts; re-exported for existing imports.
+export type { Finding, Result } from './results.js';

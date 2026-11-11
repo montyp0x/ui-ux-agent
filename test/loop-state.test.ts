@@ -250,14 +250,19 @@ test('custom drivers without recipient state still normalize candidate IDs in th
   );
 });
 
-for (const [scenario, reason] of [
-  ['unsupported-progress', /implement repeatState/],
-  ['ambiguous-progress', /ambiguous/],
+for (const [scenario, reason, code] of [
+  [
+    'unsupported-progress',
+    /implement repeatState/,
+    'driver_capability_missing',
+  ],
+  ['ambiguous-progress', /ambiguous/, 'driver_error'],
 ] as const) {
   test(`${scenario} is reported rather than silently discarding configured progress`, async () => {
     const { result } = await fixtureRun(scenario);
     assert.equal(result.status, 'error');
     assert.match(result.reason, reason);
+    assert.equal(result.outcome.code, code);
   });
 }
 

@@ -8,29 +8,64 @@ import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { suiteSchema, type Result } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
+import { evaluateQuality } from '../src/quality.js';
+import {
+  OUTCOME_CODES,
+  RESULT_VERSION,
+  emptySignals,
+  type OutcomeCode,
+} from '../src/results.js';
 import { runSuite } from '../src/runner.js';
 import { addModelCall, emptyUsage, summarize } from '../src/summary.js';
 
+const CODES: Record<Result['status'], OutcomeCode> = {
+  passed: 'assertions_passed',
+  failed: 'budget_max_steps',
+  blocked: 'ready_not_reached',
+  error: 'model_call_failed',
+};
 const run = (
   status: Result['status'],
   steps: number,
   durationMs: number,
   viewport = 'desktop',
   reason = status === 'passed' ? 'ok' : 'Task budget exhausted',
-): Result => ({
-  journey: 'find',
-  viewport,
-  attempt: 1,
-  usage: emptyUsage(),
-  status,
-  reason,
-  steps,
-  durationMs,
-  checks: [],
-  findings: [],
-  trace: 't',
-  video: null,
-});
+  observations = 1,
+): Result => {
+  const [, category, source] = OUTCOME_CODES[CODES[status]];
+  return {
+    resultVersion: RESULT_VERSION,
+    journey: 'find',
+    viewport,
+    attempt: 1,
+    usage: emptyUsage(),
+    status,
+    reason,
+    outcome: {
+      code: CODES[status],
+      category,
+      source,
+      stage: 'observe',
+      step: 0,
+      detail: null,
+      evidence: { screenshot: null, events: [], failedChecks: [] },
+      signals: emptySignals(),
+    },
+    quality: evaluateQuality({
+      platform: 'web',
+      observations,
+      findings: [],
+      policyBlocks: 0,
+      evidenceComplete: true,
+    }),
+    steps,
+    durationMs,
+    checks: [],
+    findings: [],
+    trace: 't',
+    video: null,
+  };
+};
 
 test('summaries group by journey and viewport with pass rate, reasons and medians', () => {
   const [desktop, narrow] = summarize([
@@ -61,6 +96,22 @@ test('summaries group by journey and viewport with pass rate, reasons and median
     'Task budget exhausted': 1,
     'Model HTTP 500': 1,
   });
+  assert.deepEqual(desktop!.categories, { budget_exhausted: 1 });
+  assert.deepEqual(narrow!.categories, {
+    budget_exhausted: 1,
+    model_error: 1,
+  });
+});
+
+test('summaries count quality verdicts apart from the functional outcome', () => {
+  const [row] = summarize([
+    run('passed', 4, 1000),
+    run('passed', 4, 1000, 'desktop', 'ok', 0),
+    run('failed', 4, 1000, 'desktop', 'Task budget exhausted', 0),
+  ]);
+  assert.equal(row!.passed, 2);
+  // A run with no observed state has no executed checks: never a pass.
+  assert.deepEqual(row!.quality, { pass: 1, fail: 0, not_evaluated: 2 });
 });
 
 test('model usage reads OpenAI-style and input/output token fields', () => {
