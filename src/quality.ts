@@ -1,5 +1,6 @@
 // The quality verdict: measured checks of the observed UI, kept separate from
 // the functional outcome. Model concerns (hypothesis findings) never count.
+import type { AuditsResult } from './audits/contract.js';
 import type { Finding, Quality, QualityCheck, QualityGap } from './results.js';
 
 export type QualityInputs = {
@@ -11,6 +12,8 @@ export type QualityInputs = {
   policyBlocks: number;
   // False when evidence capture failed before run-wide findings were recorded.
   evidenceComplete: boolean;
+  // The run's audit record; omitted when no audit was configured.
+  audits?: AuditsResult;
 };
 
 // Checks this engine version does not perform, listed on every result so a
@@ -45,26 +48,6 @@ type BuiltIn = {
 
 const BUILT_IN: BuiltIn[] = [
   {
-    id: 'layout.horizontal-overflow',
-    unsupported: {
-      macos:
-        'The macOS accessibility driver does not measure document overflow',
-    },
-    evaluate(inputs) {
-      const findings = findingIndices(inputs.findings, 'overflow');
-      return {
-        id: this.id,
-        source: 'builtin',
-        status: findings.length ? 'failed' : 'passed',
-        observations: inputs.observations,
-        findings,
-        detail: findings.length
-          ? 'Document wider than the viewport in an observed state'
-          : null,
-      };
-    },
-  },
-  {
     id: 'runtime.browser-errors',
     unsupported: {
       macos: 'The macOS accessibility driver does not collect runtime errors',
@@ -76,6 +59,7 @@ const BUILT_IN: BuiltIn[] = [
         source: 'builtin' as const,
         observations: inputs.observations,
         findings,
+        audit: null,
       };
       if (!inputs.evidenceComplete)
         return {
@@ -100,8 +84,83 @@ const BUILT_IN: BuiltIn[] = [
   },
 ];
 
+// One quality check per configured audit, from its runs. An audit that never
+// ran, or that the driver does not support, is a gap that blocks a pass.
+export function auditQuality(audits: AuditsResult): {
+  executed: QualityCheck[];
+  skipped: QualityGap[];
+  unsupported: QualityGap[];
+} {
+  const executed: QualityCheck[] = [];
+  const skipped: QualityGap[] = [];
+  const unsupported: QualityGap[] = [];
+  for (const id of audits.configured) {
+    const runs = audits.runs.flatMap((run, index) =>
+      run.auditId === id ? [index] : [],
+    );
+    const notReached = audits.notReached
+      .filter((gap) => gap.auditId === id)
+      .map((gap) => gap.at);
+    if (!runs.length) {
+      skipped.push({
+        id,
+        reason: notReached.length
+          ? `No UI state was observed at its checkpoints (${notReached.join(', ')} not reached)`
+          : 'No UI state was observed',
+      });
+      continue;
+    }
+    const records = runs.map((index) => audits.runs[index]!);
+    const ran = records.filter((run) => run.status !== 'unsupported');
+    if (!ran.length) {
+      unsupported.push({ id, reason: records[0]!.detail ?? 'Unsupported' });
+      continue;
+    }
+    const all = audits.findings.flatMap((finding, index) =>
+      finding.auditId === id ? [index] : [],
+    );
+    const gating = all.filter((index) => audits.findings[index]!.gating);
+    const errored = ran.find((run) => run.status === 'error');
+    const incomplete = ran.find((run) => run.status === 'incomplete');
+    const below = all.length - gating.length;
+    const detail = [
+      gating.length
+        ? `${gating.length} finding(s) at or above ${audits.failOn} at ${[...new Set(gating.map((index) => audits.findings[index]!.reproduction.checkpoint))].join(', ')}`
+        : '',
+      errored
+        ? `audit error at ${errored.checkpoint.id}: ${errored.detail ?? 'unknown'}`
+        : '',
+      incomplete
+        ? `incomplete at ${incomplete.checkpoint.id}: ${incomplete.detail ?? 'not all of the state was covered'}`
+        : '',
+      below
+        ? `${below} other finding(s) below the ${audits.failOn} threshold or needing review`
+        : '',
+      notReached.length ? `not reached: ${notReached.join(', ')}` : '',
+    ].filter(Boolean);
+    executed.push({
+      id,
+      source: 'audit',
+      status: gating.length
+        ? 'failed'
+        : errored
+          ? 'errored'
+          : incomplete
+            ? 'inconclusive'
+            : 'passed',
+      observations: ran.reduce((sum, run) => sum + run.observations, 0),
+      findings: [],
+      audit: { runs, findings: gating },
+      detail: detail.length ? detail.join('; ') : null,
+    });
+  }
+  return { executed, skipped, unsupported };
+}
+
 export function verdict(
   executed: QualityCheck[],
+  // Configured audits that were unsupported or never ran.
+  gaps: QualityGap[] = [],
 ): Pick<Quality, 'verdict' | 'reason'> {
   const failed = executed.filter((check) => check.status === 'failed');
   const unclear = executed.filter(
@@ -117,10 +176,13 @@ export function verdict(
       verdict: 'not_evaluated',
       reason: 'No quality checks were executed',
     };
-  if (unclear.length)
+  if (unclear.length || gaps.length)
     return {
       verdict: 'not_evaluated',
-      reason: `No check failed, but ${unclear.map((check) => `${check.id} was ${check.status}`).join(', ')}`,
+      reason: `No check failed, but ${[
+        ...unclear.map((check) => `${check.id} was ${check.status}`),
+        ...gaps.map((gap) => `configured audit ${gap.id} did not run (${gap.reason})`),
+      ].join(', ')}`,
     };
   return {
     verdict: 'pass',
@@ -129,9 +191,15 @@ export function verdict(
 }
 
 export function evaluateQuality(inputs: QualityInputs): Quality {
-  const executed: QualityCheck[] = [];
-  const skipped: QualityGap[] = [];
-  const unsupported: QualityGap[] = [...NOT_IMPLEMENTED_CHECKS];
+  const audits = inputs.audits
+    ? auditQuality(inputs.audits)
+    : { executed: [], skipped: [], unsupported: [] };
+  const executed: QualityCheck[] = [...audits.executed];
+  const skipped: QualityGap[] = [...audits.skipped];
+  const unsupported: QualityGap[] = [
+    ...NOT_IMPLEMENTED_CHECKS,
+    ...audits.unsupported,
+  ];
   for (const check of BUILT_IN) {
     const reason = check.unsupported[inputs.platform];
     if (reason) unsupported.push({ id: check.id, reason });
@@ -139,5 +207,10 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
       skipped.push({ id: check.id, reason: 'No UI state was observed' });
     else executed.push(check.evaluate(inputs));
   }
-  return { ...verdict(executed), executed, skipped, unsupported };
+  return {
+    ...verdict(executed, [...audits.unsupported, ...audits.skipped]),
+    executed,
+    skipped,
+    unsupported,
+  };
 }

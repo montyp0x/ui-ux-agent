@@ -15,6 +15,7 @@ import {
   emptySignals,
   type OutcomeCode,
 } from '../src/results.js';
+import { emptyAudits } from '../src/audits/contract.js';
 import { runSuite } from '../src/runner.js';
 import { addModelCall, emptyUsage, summarize } from '../src/summary.js';
 
@@ -62,6 +63,7 @@ const run = (
     durationMs,
     checks: [],
     findings: [],
+    audits: emptyAudits(),
     trace: 't',
     video: null,
   };

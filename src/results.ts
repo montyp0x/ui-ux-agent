@@ -1,10 +1,13 @@
 // The machine-readable run result contract (result.json, results.json and the
-// journey_finished event). Version 2 keeps every version-1 field (status,
-// reason, checks, findings ...) and adds a typed functional `outcome` and a
-// separate `quality` verdict.
+// journey_finished event). Version 2 kept every version-1 field (status,
+// reason, checks, findings ...) and added a typed functional `outcome` and a
+// separate `quality` verdict. Version 3 adds `audits` (checkpoint audit runs
+// and their findings, see src/audits/contract.ts); the horizontal overflow
+// check moved there from `findings`.
 import { z } from 'zod';
+import { auditsResultSchema } from './audits/contract.js';
 
-export const RESULT_VERSION = 2;
+export const RESULT_VERSION = 3;
 
 const count = z.number().int().nonnegative();
 
@@ -160,20 +163,26 @@ export const outcomeSchema = z
 export type Outcome = z.infer<typeof outcomeSchema>;
 
 // Quality checks run independently of the functional outcome. Built-in checks
-// measure every observed state; Phase 1 audits will add checkpoint checks with
-// other sources through the same record.
+// cover the whole run; audit checks summarize one configured audit's runs at
+// its checkpoints.
 export const qualityCheckSchema = z
   .object({
     id: z.string().min(1),
-    source: z.enum(['builtin']),
+    source: z.enum(['builtin', 'audit']),
     // inconclusive: the check ran but harness interference (for example
     // request-policy blocks) could explain what it measured. errored: the
     // check itself failed to run.
     status: z.enum(['passed', 'failed', 'inconclusive', 'errored']),
     // Observed states the check evaluated.
     observations: count,
-    // Indices into `findings` that the check produced.
+    // Indices into `findings` that the check produced (built-in checks).
     findings: z.array(count),
+    // Audit checks: indices into audits.runs and into audits.findings (the
+    // ones at or above the failOn threshold). Null for built-in checks.
+    audit: z
+      .object({ runs: z.array(count), findings: z.array(count) })
+      .strict()
+      .nullable(),
     detail: z.string().nullable(),
   })
   .strict();
@@ -185,7 +194,8 @@ export type QualityGap = z.infer<typeof qualityGapSchema>;
 export const qualitySchema = z
   .object({
     // pass needs at least one executed check, every executed check passed and
-    // none inconclusive or errored. Zero executed checks is not_evaluated.
+    // none inconclusive or errored, and every configured audit run and
+    // supported. Zero executed checks is not_evaluated.
     verdict: z.enum(['pass', 'fail', 'not_evaluated']),
     reason: z.string().min(1),
     executed: z.array(qualityCheckSchema),
@@ -218,6 +228,9 @@ export const resultSchema = z
     durationMs: z.number().nonnegative(),
     checks: z.array(z.boolean()),
     findings: z.array(findingSchema),
+    // Objective audits at configured checkpoints; model hypotheses stay in
+    // `findings`.
+    audits: auditsResultSchema,
     trace: z.string(),
     video: z.string().nullable(),
   })

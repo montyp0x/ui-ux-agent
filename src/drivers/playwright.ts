@@ -23,6 +23,7 @@ import {
 } from '../browser.js';
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
+import { runPlaywrightAudit } from './playwright-audits.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -176,6 +177,7 @@ export async function playwrightDriver(
         sources: false,
       });
       return {
+        driver: 'playwright' as const,
         browserErrors,
         policyBlocks,
         get unauthorized() {
@@ -235,6 +237,9 @@ export async function playwrightDriver(
         },
         async screenshot(path) {
           await page.screenshot({ path });
+        },
+        runAudit(request) {
+          return runPlaywrightAudit(page, request);
         },
         async finish(trace) {
           const recording = page.video();
