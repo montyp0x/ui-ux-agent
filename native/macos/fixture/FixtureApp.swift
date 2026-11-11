@@ -8,11 +8,20 @@ let projects = [
   "Umber", "Vesper", "Willow", "Xenon", "Yarrow", "Zephyr", "Atlas", "Beacon", "Comet", "Dune",
 ]
 
-// Navigation state shared with menu commands.
+// All view state, shared with menu commands. It lives here rather than in
+// `@State`: the Command Line Tools ship no SwiftUIMacros plugin, and `@State`
+// is a macro in recent SDKs, so a fixture using it only builds with Xcode.
 final class Store: ObservableObject {
   static let shared = Store()
   @Published var section = "Inbox"
   @Published var project: String?
+  @Published var compact = false
+  @Published var displayName = ""
+  @Published var deleted = false
+  @Published var theme: String? = "Light"
+  @Published var markedRead = false
+  @Published var query = ""
+  @Published var searched = ""
 }
 
 @main
@@ -35,13 +44,6 @@ struct ContentView: View {
   @ObservedObject private var store = Store.shared
   private var section: String { store.section }
   private var project: String? { store.project }
-  @State private var compact = false
-  @State private var displayName = ""
-  @State private var deleted = false
-  @State private var theme: String? = "Light"
-  @State private var markedRead = false
-  @State private var query = ""
-  @State private var searched = ""
 
   var body: some View {
     HStack(spacing: 0) {
@@ -83,14 +85,14 @@ struct ContentView: View {
     } else if section == "Settings" {
       VStack(alignment: .leading, spacing: 12) {
         Text("Settings").font(.title)
-        Toggle("Compact layout", isOn: $compact).accessibilityIdentifier("compact-toggle")
-        TextField("Display name", text: $displayName).accessibilityIdentifier("display-name")
-        Button("Delete all data") { deleted = true }.accessibilityIdentifier("delete-all")
-        Text("Theme: \(theme ?? "none")").accessibilityIdentifier("theme-current")
-        List(["Light", "Dark", "Solarized"], id: \.self, selection: $theme) { name in Text(name) }
+        Toggle("Compact layout", isOn: $store.compact).accessibilityIdentifier("compact-toggle")
+        TextField("Display name", text: $store.displayName).accessibilityIdentifier("display-name")
+        Button("Delete all data") { store.deleted = true }.accessibilityIdentifier("delete-all")
+        Text("Theme: \(store.theme ?? "none")").accessibilityIdentifier("theme-current")
+        List(["Light", "Dark", "Solarized"], id: \.self, selection: $store.theme) { name in Text(name) }
           .frame(height: 110)
           .accessibilityLabel("Themes")
-        if deleted { Text("All data deleted").accessibilityIdentifier("deleted-banner") }
+        if store.deleted { Text("All data deleted").accessibilityIdentifier("deleted-banner") }
       }
     } else {
       VStack(alignment: .leading, spacing: 12) {
@@ -98,13 +100,13 @@ struct ContentView: View {
         Text("No new messages").accessibilityIdentifier("inbox-empty")
         // A button that only a real click activates (no AXPress), like web-view
         // buttons in Electron apps; exercised by syntheticInput tests.
-        ClickOnlyButton(title: "Mark all read") { markedRead = true }
+        ClickOnlyButton(title: "Mark all read") { store.markedRead = true }
           .frame(width: 140, height: 28)
-        if markedRead { Text("All marked read").accessibilityIdentifier("marked-read") }
-        TextField("Search messages", text: $query)
+        if store.markedRead { Text("All marked read").accessibilityIdentifier("marked-read") }
+        TextField("Search messages", text: $store.query)
           .accessibilityIdentifier("search-field")
-          .onSubmit { searched = query }
-        if !searched.isEmpty { Text("Searched: \(searched)").accessibilityIdentifier("searched") }
+          .onSubmit { store.searched = store.query }
+        if !store.searched.isEmpty { Text("Searched: \(store.searched)").accessibilityIdentifier("searched") }
       }
     }
   }
