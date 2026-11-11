@@ -30,8 +30,11 @@ export const horizontalOverflowAudit: AuditDefinition<
               severity: 'serious',
               certainty: 'violation',
               description: `Document is ${first.horizontalOverflow}px wider than the viewport; review whether the horizontal overflow is intentional`,
-              helpUrl: 'https://www.w3.org/WAI/WCAG22/Understanding/reflow.html',
-              targets: [{ description: 'document', selector: 'html', snippet: null }],
+              helpUrl:
+                'https://www.w3.org/WAI/WCAG22/Understanding/reflow.html',
+              targets: [
+                { description: 'document', selector: 'html', snippet: null },
+              ],
               nodeCount: 1,
               at: {
                 step: first.step,

@@ -14,7 +14,7 @@ import {
   type DriverKind,
   type ParsedAuditOutput,
 } from './contract.js';
-import { auditDefinition } from './registry.js';
+import { auditDefinition, type AuditDefinition } from './registry.js';
 
 export type JourneyAuditOptions = {
   suite: Suite;
@@ -23,6 +23,8 @@ export type JourneyAuditOptions = {
   directory: string;
   session: UISession;
   log: EventLogger;
+  // The audit registry; tests substitute their own definitions.
+  definitions?: (id: AuditId) => AuditDefinition;
 };
 
 function firstLine(caught: unknown): string {
@@ -100,9 +102,21 @@ export class JourneyAudits {
       } catch (caught) {
         // The state cannot be decided; record it once instead of retrying.
         this.statesDone.add(state.name);
-        const checkpoint = this.checkpointOf('state', state.name, observation, observation.step);
+        const checkpoint = this.checkpointOf(
+          'state',
+          state.name,
+          observation,
+          observation.step,
+        );
         for (const config of auditsAtStates)
-          await this.push(config, checkpoint, 'error', `State check failed: ${firstLine(caught)}`, null, Date.now());
+          await this.push(
+            config,
+            checkpoint,
+            'error',
+            `State check failed: ${firstLine(caught)}`,
+            null,
+            Date.now(),
+          );
         continue;
       }
       if (!holds) continue;
@@ -122,7 +136,10 @@ export class JourneyAudits {
     } catch {
       // Keep the last observed URL.
     }
-    await this.checkpoint('completion', null, this.last, step, { url, screenshot });
+    await this.checkpoint('completion', null, this.last, step, {
+      url,
+      screenshot,
+    });
   }
 
   finish(): AuditsResult {
@@ -183,13 +200,20 @@ export class JourneyAudits {
     checkpoint: AuditCheckpoint,
     current: Observation | null,
   ): Promise<void> {
-    const definition = auditDefinition(config.id);
+    const definition = (this.options.definitions ?? auditDefinition)(config.id);
     const started = Date.now();
     const recorded = this.pending.get(config.id) ?? [];
     this.pending.set(config.id, []);
     const observations = recorded.length ? recorded : current ? [current] : [];
     if (!definition.drivers.includes(this.driver))
-      return this.push(config, checkpoint, 'unsupported', definition.unsupported, null, started);
+      return this.push(
+        config,
+        checkpoint,
+        'unsupported',
+        definition.unsupported,
+        null,
+        started,
+      );
     let output: ParsedAuditOutput;
     try {
       const { session, directory, suite } = this.options;
@@ -213,14 +237,28 @@ export class JourneyAudits {
         );
       output = parsed.data;
     } catch (caught) {
-      return this.push(config, checkpoint, 'error', firstLine(caught), null, started);
+      return this.push(
+        config,
+        checkpoint,
+        'error',
+        firstLine(caught),
+        null,
+        started,
+      );
     }
     const status: AuditStatus = !output.complete
       ? 'incomplete'
       : output.findings.some((finding) => finding.certainty === 'violation')
         ? 'findings'
         : 'clean';
-    return this.push(config, checkpoint, status, output.detail, output, started);
+    return this.push(
+      config,
+      checkpoint,
+      status,
+      output.detail,
+      output,
+      started,
+    );
   }
 
   private async push(
@@ -232,7 +270,7 @@ export class JourneyAudits {
     started: number,
   ): Promise<void> {
     const { journey, viewport, log } = this.options;
-    const definition = auditDefinition(config.id);
+    const definition = (this.options.definitions ?? auditDefinition)(config.id);
     const run = this.result.runs.length;
     const findings: number[] = [];
     for (const finding of output?.findings ?? []) {
@@ -252,7 +290,9 @@ export class JourneyAudits {
         run,
         gating: isGating(finding, this.result.failOn),
         evidence: {
-          screenshot: finding.at ? finding.at.screenshot : checkpoint.screenshot,
+          screenshot: finding.at
+            ? finding.at.screenshot
+            : checkpoint.screenshot,
           files: finding.files,
         },
         reproduction: {

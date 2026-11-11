@@ -8,6 +8,14 @@ import { z } from 'zod';
 export const AUDIT_CONTRACT_VERSION = 1;
 
 const count = z.number().int().nonnegative();
+// Guidance links end up in the HTML report: HTTP(S) only.
+const helpUrl = z
+  .url()
+  .refine(
+    (value) => /^https?:$/.test(new URL(value).protocol),
+    'helpUrl must be HTTP(S)',
+  )
+  .nullable();
 
 // The drivers an audit can declare support for.
 export const driverKindSchema = z.enum(['playwright', 'macos']);
@@ -94,7 +102,7 @@ export const auditOutputFindingSchema = z
     certainty: certaintySchema,
     description: z.string().min(1),
     // Applicable guidance (for example a WCAG understanding document).
-    helpUrl: z.url().nullable(),
+    helpUrl,
     // Standards and rule-set tags, for example wcag2a, wcag412.
     tags: z.array(z.string().min(1)).max(50).default([]),
     // Affected elements in total; `targets` may be a sample of them.
@@ -148,7 +156,7 @@ export const auditFindingSchema = z
     severity: severitySchema.nullable(),
     certainty: certaintySchema,
     description: z.string().min(1),
-    helpUrl: z.url().nullable(),
+    helpUrl,
     tags: z.array(z.string().min(1)),
     // Affected elements in total (at least the number of targets).
     nodeCount: count,

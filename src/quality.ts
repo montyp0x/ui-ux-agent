@@ -181,7 +181,9 @@ export function verdict(
       verdict: 'not_evaluated',
       reason: `No check failed, but ${[
         ...unclear.map((check) => `${check.id} was ${check.status}`),
-        ...gaps.map((gap) => `configured audit ${gap.id} did not run (${gap.reason})`),
+        ...gaps.map(
+          (gap) => `configured audit ${gap.id} did not run (${gap.reason})`,
+        ),
       ].join(', ')}`,
     };
   return {

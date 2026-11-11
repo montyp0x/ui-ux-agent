@@ -33,7 +33,9 @@ export type AuditDefinition<C extends AuditConfig = AuditConfig> = {
   evaluate?: (context: AuditContext<C>) => AuditOutput;
 };
 
-type Registry = { [K in AuditId]: AuditDefinition<Extract<AuditConfig, { id: K }>> };
+type Registry = {
+  [K in AuditId]: AuditDefinition<Extract<AuditConfig, { id: K }>>;
+};
 
 export const AUDITS: Registry = {
   'layout.horizontal-overflow': horizontalOverflowAudit,
