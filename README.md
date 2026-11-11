@@ -183,8 +183,41 @@ Each audit finding carries its audit id, source and analyzer (name and version),
 Built-in audits:
 
 - `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
+- `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
 
 Audits are registered in `src/audits/registry.ts` and declare the drivers that support them. Core audits read the states the runner already observed; driver audits run through the session's `runAudit` (for Playwright, `src/drivers/playwright-audits.ts`), which receives the audit config, checkpoint, the session's viewport, the run directory and the timeout, and only runs fixed engine code in the page. The report says which automated audits ran; an automated scan does not establish accessibility or standards conformance.
+
+### Accessibility scan (axe-core)
+
+`accessibility.axe` is an opt-in driver audit that runs [axe-core](https://github.com/dequelabs/axe-core) (through `@axe-core/playwright`) on the page at its checkpoints. It is web-only: on macOS it is reported as `unsupported`, never as clean. [examples/website-accessibility.json](examples/website-accessibility.json) shows it in a suite:
+
+```json
+"audits": {
+  "checks": [
+    { "id": "layout.horizontal-overflow" },
+    { "id": "accessibility.axe", "at": ["ready", "completion"], "exclude": ["#support-chat"] }
+  ],
+  "failOn": "serious"
+}
+```
+
+| Option      | Purpose                                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| `at`        | Checkpoints: `ready`, `states` and `completion`; default ready and completion                              |
+| `include`   | CSS selectors of the regions to scan; empty scans the page. A selector that matches nothing is an audit `error`, not a clean region |
+| `exclude`   | CSS selectors of regions to leave out, such as a third-party widget                                        |
+| `tags`      | axe rule tags to run; default `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, `best-practice`       |
+| `timeoutMs` | Bound on one scan, overriding `audits.timeoutMs`                                                           |
+
+An axe violation becomes a `violation` finding with axe's impact as its severity; an axe *incomplete* result, a check axe could not decide (for example text contrast over a background image), becomes a `needs_review` finding. Each finding keeps the rule's help text, guidance link and tags (including WCAG criteria such as `wcag412`), the affected-element count and a sample of up to 25 elements: the element as `description`, its selector, axe's explanation as `reason` and an HTML snippet of at most 300 characters. An analyzer exception, a scope that matched nothing, a timeout or unreadable analyzer output is an `error` run whose detail names the kind (`scope_not_found`, `analyzer_exception`, `timeout`, `invalid_output`).
+
+What a scan does not establish (each run's `limitations` repeats the coverage limits):
+
+- An automated scan detects only a subset of accessibility issues. A run without violations does not establish WCAG conformance or any accessibility certification, and is not a substitute for a manual accessibility audit.
+- `needs_review` findings are undecided, not passes.
+- Keyboard operation and focus order are not tested by the scan; keyboard and focus checks are planned separately.
+- Cross-origin frames are not scanned. The scan runs in the page itself, so it opens no second page in the browser context.
+- HTML snippets are excerpts of the page under test and can contain its data; treat results like other run evidence.
 
 ## Authentication and browser selection
 
@@ -367,7 +400,7 @@ Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoi
 
 - `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
 
-The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Accessibility audits, visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 
@@ -382,6 +415,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit, price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

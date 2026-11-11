@@ -22,7 +22,7 @@ export const NOT_IMPLEMENTED_CHECKS: QualityGap[] = [
   {
     id: 'accessibility.audit',
     reason:
-      'No accessibility analyzer runs in this engine version; this is not an accessibility audit',
+      'No accessibility analyzer was configured (add accessibility.axe to audits.checks); this is not an accessibility audit',
   },
   {
     id: 'visual.baseline',
@@ -198,8 +198,13 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
     : { executed: [], skipped: [], unsupported: [] };
   const executed: QualityCheck[] = [...audits.executed];
   const skipped: QualityGap[] = [...audits.skipped];
+  // A configured axe-core scan is reported as its own audit check, with the
+  // scan's limitations on each run, so the not-configured gap is dropped.
+  const axe = inputs.audits?.configured.includes('accessibility.axe');
   const unsupported: QualityGap[] = [
-    ...NOT_IMPLEMENTED_CHECKS,
+    ...NOT_IMPLEMENTED_CHECKS.filter(
+      (gap) => !(axe && gap.id === 'accessibility.audit'),
+    ),
     ...audits.unsupported,
   ];
   for (const check of BUILT_IN) {

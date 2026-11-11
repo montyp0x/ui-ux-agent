@@ -35,8 +35,40 @@ const horizontalOverflowConfig = z
   })
   .strict();
 
+// axe-core rule tags (wcag2a, best-practice, cat.forms ...): letters,
+// digits, dots and dashes only.
+const axeTag = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$/);
+// WCAG 2.x level A and AA rules plus axe's best-practice rules.
+export const DEFAULT_AXE_TAGS = [
+  'wcag2a',
+  'wcag2aa',
+  'wcag21a',
+  'wcag21aa',
+  'wcag22aa',
+  'best-practice',
+];
+const cssScope = z.array(z.string().min(1).max(200)).max(20).default([]);
+// An automated axe-core scan of the page in the web driver. Partial by nature:
+// it never establishes WCAG conformance (see src/audits/accessibility.ts).
+const axeConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('accessibility.axe'),
+    // The first ready state and the final state.
+    at: auditAtSchema.default(['ready', 'completion']),
+    // CSS selectors of the regions to scan; empty scans the whole page. A
+    // selector that matches nothing is an audit error, never a clean scan.
+    include: cssScope,
+    // CSS selectors of regions to leave out (for example a third-party widget).
+    exclude: cssScope,
+    // The axe rule tags to run.
+    tags: z.array(axeTag).min(1).max(20).default(DEFAULT_AXE_TAGS),
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
+  axeConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

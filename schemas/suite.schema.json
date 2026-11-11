@@ -4511,6 +4511,82 @@
                   "at"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 120000
+                  },
+                  "id": {
+                    "type": "string",
+                    "const": "accessibility.axe"
+                  },
+                  "at": {
+                    "default": [
+                      "ready",
+                      "completion"
+                    ],
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "states",
+                        "completion"
+                      ]
+                    }
+                  },
+                  "include": {
+                    "default": [],
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  },
+                  "exclude": {
+                    "default": [],
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  },
+                  "tags": {
+                    "default": [
+                      "wcag2a",
+                      "wcag2aa",
+                      "wcag21a",
+                      "wcag21aa",
+                      "wcag22aa",
+                      "best-practice"
+                    ],
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "at",
+                  "include",
+                  "exclude",
+                  "tags"
+                ],
+                "additionalProperties": false
               }
             ]
           }

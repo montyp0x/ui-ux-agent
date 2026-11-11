@@ -12,6 +12,7 @@
 import type { Observation } from '../contracts.js';
 import type { AuditConfig, AuditId } from './config.js';
 import type { AuditCheckpoint, AuditOutput, DriverKind } from './contract.js';
+import { axeAudit } from './accessibility.js';
 import { horizontalOverflowAudit } from './horizontal-overflow.js';
 
 export type AuditContext<C extends AuditConfig = AuditConfig> = {
@@ -39,6 +40,7 @@ type Registry = {
 
 export const AUDITS: Registry = {
   'layout.horizontal-overflow': horizontalOverflowAudit,
+  'accessibility.axe': axeAudit,
 };
 
 export const auditDefinition = (id: AuditId): AuditDefinition =>
