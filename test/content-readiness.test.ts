@@ -189,6 +189,10 @@ test('persistent loading fails with explicit timeout evidence, not an arrival pa
   assert.equal(result.status, 'failed');
   assert.match(result.reason, /Content readiness timed out/);
   assert.deepEqual(result.checks, [true, true, false, false, true]);
+  // The content assertions were evaluated within their own timeout and did not hold.
+  assert.equal(result.outcome.code, 'content_readiness_timeout');
+  assert.equal(result.outcome.source, 'assertion');
+  assert.deepEqual(result.outcome.evidence.failedChecks, [2, 3]);
   assert.equal(choices, 1);
   assert.ok(
     events.some(
@@ -248,6 +252,7 @@ test('an unauthorized response during content waiting blocks completion', async 
   const { result, events } = await run('unauthorized');
   assert.equal(result.status, 'blocked');
   assert.match(result.reason, /401/);
+  assert.equal(result.outcome.code, 'unauthorized_response');
   assert.ok(
     events.some(
       (event) =>
@@ -266,5 +271,8 @@ test('content waiting is capped by the overall journey deadline', async () => {
   );
   assert.ok(timeout);
   assert.equal(timeout.data.budget, 'journey');
+  // Cut short by the journey deadline: a budget outcome, not an assertion failure.
+  assert.equal(result.outcome.code, 'budget_deadline');
+  assert.equal(result.outcome.category, 'budget_exhausted');
   assert.ok(timeout.data.durationMs < 1300);
 });

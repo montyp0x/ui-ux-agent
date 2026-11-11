@@ -106,6 +106,9 @@ test('a planner that answers after the deadline fails the budget without calling
     result.reason,
     'Task budget exhausted before the outcome was observed (deadline reached before choose)',
   );
+  assert.equal(result.outcome.code, 'budget_deadline_before_stage');
+  assert.equal(result.outcome.stage, 'choose');
+  assert.deepEqual(result.outcome.evidence.events, ['budget_exhausted']);
   assert.ok(
     !result.findings.some((finding) => finding.category === 'action-error'),
   );
@@ -134,6 +137,8 @@ test('a selector HTTP call aborted by the journey deadline is a budget failure, 
     result.reason,
     'Task budget exhausted before the outcome was observed (choose timed out at the deadline)',
   );
+  assert.equal(result.outcome.code, 'budget_stage_timeout');
+  assert.match(result.outcome.detail ?? '', /aborted due to timeout/);
   const [exhausted] = budgetEvents(events);
   assert.equal(exhausted!.data.stage, 'choose');
   assert.equal(exhausted!.data.cause, 'timeout');
@@ -149,6 +154,7 @@ test('a timeout before the deadline remains an error', async () => {
   }));
   assert.equal(result.status, 'error');
   assert.equal(result.reason, 'Selector gave up early');
+  assert.equal(result.outcome.code, 'model_call_failed');
   assert.equal(budgetEvents(events).length, 0);
 });
 
@@ -162,6 +168,7 @@ test('a non-timeout failure at the deadline remains an error', async () => {
   }));
   assert.equal(result.status, 'error');
   assert.equal(result.reason, 'Selector response was malformed');
+  assert.equal(result.outcome.code, 'model_call_failed');
   assert.equal(budgetEvents(events).length, 0);
 });
 
