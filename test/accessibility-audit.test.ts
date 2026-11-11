@@ -15,7 +15,9 @@ import {
   type Journey,
   type Observation,
 } from '../src/contracts.js';
-import type { UISession } from '../src/drivers/types.js';
+import { chromium } from 'playwright';
+import { PLAYWRIGHT_AUDITS } from '../src/drivers/playwright-audits.js';
+import type { DriverAuditRequest, UISession } from '../src/drivers/types.js';
 import type { Models } from '../src/models.js';
 import type { Result } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
@@ -157,11 +159,9 @@ test('a broken page produces gating axe findings at its checkpoints through a re
   }
   assert.equal(axeCheck(result)?.status, 'failed');
   assert.equal(result.quality.verdict, 'fail');
-  // The scan is partial: the accessibility gap stays, saying so.
-  assert.match(
-    result.quality.unsupported.find((gap) => gap.id === 'accessibility.audit')
-      ?.reason ?? '',
-    /Only an automated axe-core scan/,
+  // The configured scan is its own audit check; the not-configured gap goes.
+  assert.ok(
+    !result.quality.unsupported.some((gap) => gap.id === 'accessibility.audit'),
   );
 });
 
@@ -177,7 +177,10 @@ test('needs-review results are listed but never gate the verdict', async () => {
     findings.map((finding) => [finding.ruleId, finding.certainty, finding.gating]),
     [['color-contrast', 'needs_review', false]],
   );
-  assert.match(findings[0]!.targets[0]!.description, /background/i);
+  const [target] = findings[0]!.targets;
+  // The element is named; axe's explanation is the reason.
+  assert.equal(target!.description, 'p element');
+  assert.match(target!.reason ?? '', /background/i);
   assert.equal(axeCheck(result)?.status, 'passed');
   assert.equal(result.quality.verdict, 'pass');
 });
@@ -235,7 +238,12 @@ test('the axe audit config parses with WCAG A/AA and best-practice defaults', ()
   assert.ok(
     parse({
       checks: [
-        { id: 'accessibility.axe', tags: ['wcag2a', 'cat.forms'], exclude: ['#chat'] },
+        {
+          id: 'accessibility.axe',
+          tags: ['wcag2a', 'cat.forms'],
+          exclude: ['#chat'],
+          timeoutMs: 60000,
+        },
       ],
     }).success,
   );
@@ -243,7 +251,8 @@ test('the axe audit config parses with WCAG A/AA and best-practice defaults', ()
     { id: 'accessibility.axe', tags: [] },
     { id: 'accessibility.axe', tags: ['wcag2a; alert(1)'] },
     { id: 'accessibility.axe', include: [''] },
-    { id: 'accessibility.axe', timeoutMs: 1000 },
+    { id: 'accessibility.axe', timeoutMs: 500 },
+    { id: 'accessibility.axe', timeoutMs: 200000 },
   ])
     assert.equal(parse({ checks: [bad] }).success, false, JSON.stringify(bad));
 });
@@ -336,10 +345,12 @@ test('scan results map onto the audit contract; a failed scan throws with its ki
   assert.equal(finding!.helpUrl, null);
   assert.equal(finding!.nodeCount, 3);
   assert.deepEqual(finding!.targets[0], {
-    description: 'iframe#pay >>> my-widget >> button',
+    description: 'button element',
     selector: 'iframe#pay >>> my-widget >> button',
+    reason: null,
     snippet: '<button></button>',
   });
+  assert.deepEqual(output.exemptions, []);
   assert.ok(output.limitations.some((text) => text.includes('#main')));
   assert.throws(
     () =>
@@ -364,4 +375,112 @@ test('the accessibility example suite parses', async () => {
   const axe = suite.audits.checks.find((check) => check.id === 'accessibility.axe');
   assert.deepEqual(axe?.at, ['ready', 'states', 'completion']);
   assert.equal(suite.journeys[0]!.states?.[0]?.name, 'docs-index');
+});
+
+test('a per-check timeoutMs overrides audits.timeoutMs for the scan', async () => {
+  const suite = suiteSchema.parse({
+    name: 'config',
+    baseURL: 'https://fixture.example',
+    requiresAuth: false,
+    viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+    journeys: [journey],
+    audits: {
+      timeoutMs: 20000,
+      checks: [
+        { id: 'accessibility.axe', at: ['ready'], timeoutMs: 4000 },
+        { id: 'layout.horizontal-overflow', at: ['ready'] },
+      ],
+    },
+  });
+  const requested: number[] = [];
+  const session = {
+    driver: 'playwright',
+    async runAudit(request: DriverAuditRequest) {
+      requested.push(request.timeoutMs);
+      return { complete: true, findings: [] };
+    },
+  } as unknown as UISession;
+  const audits = new JourneyAudits({
+    suite,
+    journey,
+    viewport: { name: 'desktop', width: 1280, height: 800 },
+    directory: tmpdir(),
+    session,
+    log: async () => {},
+  });
+  const state = {
+    step: 0,
+    url: 'https://fixture.example/',
+    screenshot: 'step.png',
+    horizontalOverflow: 0,
+  } as unknown as Observation;
+  audits.record(state);
+  await audits.afterObservation(state);
+  assert.deepEqual(requested, [4000]);
+
+  // The scan keeps 250 ms back for its own timeout error, which names the
+  // kind; a 251 ms budget leaves the scan 1 ms.
+  const app = await site({
+    start: accessibilityFixtures.semantics.broken,
+    done: accessibilityFixtures.semantics.broken,
+  });
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(app.url);
+    const config = suite.audits.checks[0]!;
+    await assert.rejects(
+      PLAYWRIGHT_AUDITS['accessibility.axe']!(page, {
+        config,
+        checkpoint: {
+          id: 'ready',
+          kind: 'ready',
+          name: null,
+          step: 0,
+          url: app.url,
+          screenshot: null,
+        },
+        viewport: { name: 'desktop', width: 1280, height: 800 },
+        directory: tmpdir(),
+        timeoutMs: 251,
+      }),
+      /axe-core scan error \(timeout\): Accessibility scan did not finish within 1 ms/,
+    );
+  } finally {
+    await browser.close();
+    await app.close();
+  }
+});
+
+test('without the axe scan the accessibility gap says how to enable it', async () => {
+  const result = await run(
+    {
+      start: accessibilityFixtures.formLabels.broken,
+      done: accessibilityFixtures.formLabels.broken,
+    },
+    { checks: [{ id: 'layout.horizontal-overflow' }] },
+  );
+  assert.deepEqual(axeRuns(result), []);
+  assert.match(
+    result.quality.unsupported.find((gap) => gap.id === 'accessibility.audit')
+      ?.reason ?? '',
+    /add accessibility\.axe to audits\.checks/,
+  );
+});
+
+test('a target names its element from the snippet; the selector says where', async () => {
+  const result = await run(
+    {
+      start: accessibilityFixtures.formLabels.broken,
+      done: accessibilityFixtures.formLabels.broken,
+    },
+    { checks: [{ id: 'accessibility.axe', at: ['ready'] }] },
+  );
+  const targets = Object.fromEntries(
+    axeFindings(result).map((finding) => [finding.ruleId, finding.targets[0]!]),
+  );
+  assert.equal(targets.label!.description, 'input element (name="email")');
+  assert.equal(targets.label!.selector, 'input');
+  assert.match(targets.label!.reason ?? '', /explicit <label>/);
+  assert.equal(targets['select-name']!.description, 'select element (name="plan")');
 });

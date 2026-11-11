@@ -211,7 +211,7 @@ Audits are registered in `src/audits/registry.ts` and declare the drivers that s
 
 An axe violation becomes a `violation` finding with axe's impact as its severity; an axe *incomplete* result, a check axe could not decide (for example text contrast over a background image), becomes a `needs_review` finding. Each finding keeps the rule's help text, guidance link and tags (including WCAG criteria such as `wcag412`), the affected-element count and a sample of up to 25 elements: the element as `description`, its selector, axe's explanation as `reason` and an HTML snippet of at most 300 characters. An analyzer exception, a scope that matched nothing, a timeout or unreadable analyzer output is an `error` run whose detail names the kind (`scope_not_found`, `analyzer_exception`, `timeout`, `invalid_output`).
 
-What a scan does not establish, also listed in every run's `limitations`:
+What a scan does not establish (each run's `limitations` repeats the coverage limits):
 
 - An automated scan detects only a subset of accessibility issues. A run without violations does not establish WCAG conformance or any accessibility certification, and is not a substitute for a manual accessibility audit.
 - `needs_review` findings are undecided, not passes.

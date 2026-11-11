@@ -313,7 +313,6 @@ test('every result states what an automated scan does not establish', async () =
     assert.deepEqual(scan.limitations, [...ACCESSIBILITY_SCAN_LIMITATIONS]);
     const text = scan.limitations.join(' ');
     assert.match(text, /does not establish WCAG conformance/);
-    assert.match(text, /manual review/);
     assert.match(text, /Keyboard operation and focus order are not tested/);
     assert.doesNotMatch(
       JSON.stringify(scan),

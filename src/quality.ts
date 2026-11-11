@@ -35,14 +35,6 @@ export const NOT_IMPLEMENTED_CHECKS: QualityGap[] = [
   },
 ];
 
-// Replaces the accessibility gap when the axe-core scan is configured: the
-// scan is partial, so the gap stays, saying what remains uncovered.
-const AUTOMATED_ACCESSIBILITY_ONLY: QualityGap = {
-  id: 'accessibility.audit',
-  reason:
-    'Only an automated axe-core scan is configured: it detects a subset of issues and does not establish WCAG conformance; manual accessibility review is not performed',
-};
-
 const findingIndices = (findings: Finding[], category: string) =>
   findings.flatMap((finding, index) =>
     finding.kind === 'observed' && finding.category === category ? [index] : [],
@@ -206,10 +198,12 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
     : { executed: [], skipped: [], unsupported: [] };
   const executed: QualityCheck[] = [...audits.executed];
   const skipped: QualityGap[] = [...audits.skipped];
+  // A configured axe-core scan is reported as its own audit check, with the
+  // scan's limitations on each run, so the not-configured gap is dropped.
   const axe = inputs.audits?.configured.includes('accessibility.axe');
   const unsupported: QualityGap[] = [
-    ...NOT_IMPLEMENTED_CHECKS.map((gap) =>
-      axe && gap.id === 'accessibility.audit' ? AUTOMATED_ACCESSIBILITY_ONLY : gap,
+    ...NOT_IMPLEMENTED_CHECKS.filter(
+      (gap) => !(axe && gap.id === 'accessibility.audit'),
     ),
     ...audits.unsupported,
   ];

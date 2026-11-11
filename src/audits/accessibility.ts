@@ -15,7 +15,6 @@ import type { AuditDefinition } from './registry.js';
 // than the scan it is.
 export const ACCESSIBILITY_SCAN_LIMITATIONS = [
   'Automated axe-core scan: it detects only a subset of accessibility issues, and a result without violations does not establish WCAG conformance or any accessibility certification.',
-  'Incomplete results are checks the analyzer could not decide; they need manual review and are not passes.',
   'Keyboard operation and focus order are not tested by this scan.',
   'Cross-origin frames are not analyzed.',
 ] as const;
@@ -299,6 +298,22 @@ const httpURL = (value: string): string | null => {
   return protocol === 'http:' || protocol === 'https:' ? value : null;
 };
 
+// Names the element from its snippet: the tag and its first identifying
+// attribute, for example 'input element (name="email")'. Where it is stays
+// in the target's selector.
+const IDENTIFYING_ATTRIBUTES = ['id', 'name', 'aria-label', 'role', 'type'];
+function elementDescription(html: string): string {
+  const start = /^<([a-zA-Z][a-zA-Z0-9-]*)([^>]*)/.exec(html);
+  if (!start) return 'element';
+  const tag = start[1]!.toLowerCase();
+  for (const attribute of IDENTIFYING_ATTRIBUTES) {
+    const value = new RegExp(`\\s${attribute}="([^"]*)"`).exec(start[2]!)?.[1];
+    if (value)
+      return `${tag} element (${attribute}="${truncate(value, 60).text}")`;
+  }
+  return `${tag} element`;
+}
+
 function auditFinding(
   rule: AccessibilityRuleResult,
   certainty: AuditOutputFinding['certainty'],
@@ -314,12 +329,12 @@ function auditFinding(
     targets: rule.nodes.map((node) => {
       const selector = node.target.join(FRAME_SEPARATOR);
       return {
-        // Why the analyzer flagged the element, or where it is.
-        description:
-          truncate(node.messages.join('; '), MAX_MESSAGE_LENGTH).text ||
-          selector ||
-          'element',
+        description: elementDescription(node.html),
         selector: selector || null,
+        // axe's own explanation of the node: why it failed, or why the
+        // check could not be decided.
+        reason:
+          truncate(node.messages.join('; '), MAX_MESSAGE_LENGTH).text || null,
         snippet: node.html || null,
       };
     }),
@@ -345,7 +360,8 @@ export function axeAuditOutput(scan: AccessibilityScan): AuditOutput {
     );
   return {
     complete: true,
-    detail: `${scan.violations.length} rule(s) violated, ${scan.incomplete.length} needing manual review, ${scan.passedRules} passed, ${scan.inapplicableRules} inapplicable (tags: ${scan.tags.join(', ') || 'axe default'})`,
+    // Findings are listed by the report; the detail adds what they do not say.
+    detail: `${scan.passedRules} rule(s) passed, ${scan.inapplicableRules} inapplicable; tags ${scan.tags.join(', ') || 'axe default'}`,
     observations: 1,
     analyzer: { name: 'axe-core', version: scan.analyzer.version },
     limitations,
