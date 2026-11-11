@@ -24,6 +24,8 @@ import {
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
 import { runPlaywrightAudit } from './playwright-audits.js';
+import { protectedScreenshot } from './playwright-evidence.js';
+import { formatEnabled } from '../evidence/policy.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -69,7 +71,16 @@ export async function playwrightDriver(
       storageState,
       video,
       log,
+      evidence,
     }) {
+      const traced = evidence ? formatEnabled(evidence.formats, 'trace') : true;
+      const recorded =
+        !!video && (evidence ? formatEnabled(evidence.formats, 'video') : true);
+      const capture = (path: string) =>
+        protectedScreenshot(page, evidence?.screenshots, {
+          path,
+          fullPage: false,
+        });
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)
@@ -88,7 +99,7 @@ export async function playwrightDriver(
         viewport,
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
-        ...(video ? { recordVideo: { dir: directory } } : {}),
+        ...(recorded ? { recordVideo: { dir: directory } } : {}),
       };
       // Sessions run one at a time, so each can open the profile in turn.
       const context = browser
@@ -171,11 +182,14 @@ export async function playwrightDriver(
           reason: request.failure()?.errorText,
         });
       });
-      await context.tracing.start({
-        screenshots: true,
-        snapshots: true,
-        sources: false,
-      });
+      // Traces hold DOM snapshots, network traffic and unmasked screenshots;
+      // the evidence policy decides whether one is captured at all.
+      if (traced)
+        await context.tracing.start({
+          screenshots: true,
+          snapshots: true,
+          sources: false,
+        });
       return {
         driver: 'playwright' as const,
         browserErrors,
@@ -208,7 +222,7 @@ export async function playwrightDriver(
           return check(page, condition);
         },
         observe(step, screenshot) {
-          return observe(page, step, screenshot);
+          return observe(page, step, screenshot, capture);
         },
         candidates() {
           return candidates(
@@ -236,7 +250,7 @@ export async function playwrightDriver(
           );
         },
         async screenshot(path) {
-          await page.screenshot({ path });
+          await capture(path);
         },
         runAudit(request) {
           return runPlaywrightAudit(page, request);
@@ -244,11 +258,14 @@ export async function playwrightDriver(
         async finish(trace) {
           const recording = page.video();
           try {
-            await context.tracing.stop({ path: trace });
+            if (traced) await context.tracing.stop({ path: trace });
           } finally {
             await context.close();
           }
-          return { video: recording ? await recording.path() : null };
+          return {
+            video: recording ? await recording.path() : null,
+            ...(traced ? {} : { trace: null }),
+          };
         },
       };
     },

@@ -519,8 +519,12 @@ export async function observe(
   page: Page,
   step: number,
   screenshotPath: string,
+  // Writes the viewport screenshot to the path; drivers pass one that applies
+  // the run's screenshot protection before capture.
+  capture: (path: string) => Promise<unknown> = (path) =>
+    page.screenshot({ path, fullPage: false }),
 ): Promise<Observation> {
-  await page.screenshot({ path: screenshotPath, fullPage: false });
+  await capture(screenshotPath);
   const snapshot = await page.locator('body').ariaSnapshot();
   const horizontalOverflow = await page.evaluate(() =>
     Math.max(0, document.documentElement.scrollWidth - window.innerWidth),

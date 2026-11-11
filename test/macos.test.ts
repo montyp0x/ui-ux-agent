@@ -142,7 +142,7 @@ test(
       offeredDescriptions.indexOf('Press button Atlas') >
         offeredDescriptions.indexOf('Press button Apollo'),
     );
-    assert.ok(result!.trace.endsWith('.json'));
+    assert.ok(result!.trace?.endsWith('.json'));
     const screenshot = await readFile(
       join(directory, 'open-atlas-window', 'final.png'),
     );

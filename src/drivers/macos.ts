@@ -21,6 +21,7 @@ import {
   type Target,
 } from '../contracts.js';
 import type { UIDriver, UISession } from './types.js';
+import { formatEnabled } from '../evidence/policy.js';
 
 const run = promisify(execFile);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -310,7 +311,7 @@ export async function macosDriver(): Promise<UIDriver> {
       'macOS needs Accessibility and Screen Recording permission for the app running this process (System Settings → Privacy & Security)',
     );
   return {
-    async openSession({ suite, journey, viewport, log }) {
+    async openSession({ suite, journey, viewport, log, evidence }) {
       let pid = 0;
       let bundleId = suite.app?.bundleId ?? '';
       let timeoutMs = 5000;
@@ -1031,7 +1032,10 @@ export async function macosDriver(): Promise<UIDriver> {
           );
         },
         async finish(trace) {
-          // No Playwright trace for native apps: record the final accessibility tree.
+          if (evidence && !formatEnabled(evidence.formats, 'trace'))
+            return { video: null, trace: null };
+          // No Playwright trace for native apps: record the final accessibility
+          // tree. The runner redacts it with the run's other text files.
           const path = trace.replace(/\.zip$/, '.json');
           await writeFile(path, JSON.stringify(last ?? {}, null, 2), {
             mode: 0o600,

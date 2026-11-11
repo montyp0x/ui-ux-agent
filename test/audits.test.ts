@@ -610,7 +610,7 @@ test('the runner records audit runs in results.json and the report', async () =>
     },
   });
   const [result] = parseResults(JSON.stringify(results));
-  assert.equal(result!.resultVersion, 3);
+  assert.equal(result!.resultVersion, 4);
   assert.equal(result!.status, 'passed');
   assert.deepEqual(
     result!.audits.runs.map((run) => [run.checkpoint.id, run.status]),

@@ -106,12 +106,26 @@ export function reportHTML(
       .join('');
     // Audit time counts against the journey deadline; shown so a slow scan
     // is visible as the cause of an exhausted budget.
-    const auditMs = audits.runs.reduce((total, run) => total + run.durationMs, 0);
+    const auditMs = audits.runs.reduce(
+      (total, run) => total + run.durationMs,
+      0,
+    );
     const budgetNote =
       outcome.category === 'budget_exhausted' && auditMs > 0
         ? `<p><small>Audits took ${(auditMs / 1000).toFixed(1)} s of this run's ${(durationMs / 1000).toFixed(1)} s (${Math.round((auditMs / Math.max(1, durationMs)) * 100)}%); audit time counts against the journey deadline.</small></p>`
         : '';
     return `${budgetNote}<details><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
+  };
+  // What each evidence format captured or why it was disabled.
+  const evidence = ({ evidence }: Result) => {
+    const disabled = evidence.formats.filter((format) => !format.enabled);
+    const items = evidence.formats
+      .map(
+        (format) =>
+          `<li><code>${escapeHTML(format.format)}</code> ${format.enabled ? 'enabled' : '<strong>disabled</strong>'} · ${escapeHTML(format.destination === 'provider' ? 'sent to the model provider' : 'local only')} · ${escapeHTML(format.protection.replace('_', ' '))}: ${escapeHTML(format.reason)}</li>`,
+      )
+      .join('');
+    return `<details><summary>Evidence: ${disabled.length ? `${disabled.length} format(s) disabled (${escapeHTML(disabled.map((format) => format.format).join(', '))})` : 'all formats enabled'} · ${evidence.declaredPatterns} suite pattern(s), ${evidence.redactedEnv.length} redacted environment value(s), ${evidence.masks} mask(s)</summary><ul>${items}</ul></details>`;
   };
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(name)}</title>
 <style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}</style>
@@ -137,11 +151,11 @@ ${results
   .map(
     (
       result,
-    ) => `<article><h2>${escapeHTML(result.journey)} · ${escapeHTML(result.viewport)}${result.attempt > 1 || results.some((other) => other !== result && other.journey === result.journey && other.viewport === result.viewport) ? ` · run ${result.attempt}` : ''}</h2>${outcome(result)}${quality(result)}${audits(result)}<p>${result.steps} actions · ${(result.durationMs / 1000).toFixed(1)} seconds · ${result.usage.planner.calls + result.usage.selector.calls} model calls, ${result.usage.planner.inputTokens + result.usage.selector.inputTokens} input / ${result.usage.planner.outputTokens + result.usage.selector.outputTokens} output tokens · outcome checks: ${result.checks.map((ok) => (ok ? 'pass' : 'fail')).join(', ') || 'not evaluated'}</p><p><a href="${link(result.trace)}">${result.trace.endsWith('.json') ? 'Final accessibility tree' : 'Local Playwright trace'}</a>${result.video ? ` · <a href="${link(result.video)}">Video</a>` : ''}</p>
+    ) => `<article><h2>${escapeHTML(result.journey)} · ${escapeHTML(result.viewport)}${result.attempt > 1 || results.some((other) => other !== result && other.journey === result.journey && other.viewport === result.viewport) ? ` · run ${result.attempt}` : ''}</h2>${outcome(result)}${quality(result)}${audits(result)}<p>${result.steps} actions · ${(result.durationMs / 1000).toFixed(1)} seconds · ${result.usage.planner.calls + result.usage.selector.calls} model calls, ${result.usage.planner.inputTokens + result.usage.selector.inputTokens} input / ${result.usage.planner.outputTokens + result.usage.selector.outputTokens} output tokens · outcome checks: ${result.checks.map((ok) => (ok ? 'pass' : 'fail')).join(', ') || 'not evaluated'}</p><p>${result.trace ? `<a href="${link(result.trace)}">${result.trace.endsWith('.json') ? 'Final accessibility tree' : 'Local Playwright trace'}</a>` : 'No trace captured'}${result.video ? ` · <a href="${link(result.video)}">Video</a>` : ''}</p>${evidence(result)}
 ${result.findings.map((finding, index) => `<details><summary>${index + 1}. ${escapeHTML(finding.kind)} / ${escapeHTML(finding.category)} / step ${finding.step}</summary><p>${escapeHTML(finding.description)}</p><a href="${link(finding.screenshot)}"><img src="${link(finding.screenshot)}" alt="Evidence at step ${finding.step}" loading="lazy"></a></details>`).join('')}
 </article>`,
   )
   .join(
     '',
-  )}<p>Raw observations, decisions, and execution outcomes: <code>events.jsonl</code>. Screenshots, videos and traces may contain private organization data and session material; keep this run local.</p></html>`;
+  )}<p>Raw observations, decisions, and execution outcomes: <code>events.jsonl</code>. Screenshots, videos and traces may contain private organization data and session material; keep this run local. Redaction and masks remove the patterns, environment values and elements they are given plus well-known credential shapes; they are not a guarantee for arbitrary unknown sensitive content.</p></html>`;
 }

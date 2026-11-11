@@ -25,6 +25,13 @@ import {
 } from './results.js';
 import { addModelCall, emptyUsage, summarize, type Usage } from './summary.js';
 import { actionSignature, refreshReasons, type PlanState } from './planning.js';
+import {
+  evidenceProtection,
+  type EvidenceProtection,
+} from './evidence/protection.js';
+import { providerModels } from './evidence/provider.js';
+import { sanitizeTextFiles } from './evidence/sweep.js';
+import { writeRunManifest } from './evidence/retention.js';
 
 export type RunOptions = {
   directory: string;
@@ -39,6 +46,10 @@ export type RunOptions = {
   driver?: UIDriver;
   // Runs per journey/viewport, for pass rates (1-50, default 1).
   repeat?: number;
+  // Environment for credential redaction (default process.env): values of
+  // the suite's redactEnv variables and of credential-named variables never
+  // appear in evidence or model payloads.
+  env?: Record<string, string | undefined>;
 };
 export type Logger = EventLogger;
 
@@ -199,6 +210,7 @@ async function runJourney(
   log: Logger,
   attempt: number,
   usage: Usage,
+  protection: EvidenceProtection,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -258,6 +270,7 @@ async function runJourney(
     audits: emptyAudits(suite.audits.failOn),
     trace: join(directory, 'trace.zip'),
     video: null,
+    evidence: protection.report(0),
   };
   let observation: Observation | null = null;
   let plan: Plan | null = null;
@@ -924,9 +937,9 @@ async function runJourney(
     await audits.completion(result.steps, finalScreenshot);
     result.audits = audits.finish();
     try {
-      const finished = await session.finish(result.trace);
+      const finished = await session.finish(join(directory, 'trace.zip'));
       result.video = finished.video;
-      if (finished.trace) result.trace = finished.trace;
+      if (finished.trace !== undefined) result.trace = finished.trace;
     } catch (caught) {
       stage = 'finish';
       decide(
@@ -951,11 +964,20 @@ async function runJourney(
       audits: result.audits,
     });
     result.durationMs = Date.now() - started;
-    await writeFile(
-      join(directory, 'result.json'),
-      JSON.stringify(result, null, 2),
-      { mode: 0o600 },
+    // Files drivers and audits wrote (measurements, the native tree) get the
+    // run's redaction, then the result itself is redacted before it is written
+    // or returned.
+    const resultFile = join(directory, 'result.json');
+    const rewritten = await sanitizeTextFiles(
+      directory,
+      protection.redactor,
+      new Set([resultFile]),
     );
+    result.evidence = protection.report(rewritten.length);
+    Object.assign(result, protection.redactor.deep(result));
+    await writeFile(resultFile, JSON.stringify(result, null, 2), {
+      mode: 0o600,
+    });
     await log('journey_finished', result);
   }
   return result;
@@ -982,22 +1004,45 @@ export async function runSuite(
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
+  // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
+  await writeRunManifest(options.directory, suite.evidence.retentionDays);
+  const protection = evidenceProtection(
+    suite.evidence,
+    options.env ?? process.env,
+    {
+      platform: suite.platform,
+      authenticated: !!(options.storageState || options.profile),
+      videoRequested: !!options.video,
+    },
+  );
+  const { redactor } = protection;
   // Journeys run one at a time, so model calls belong to the current run.
   let currentUsage: Usage | null = null;
   const log: Logger = async (event, data) => {
     if (event === 'model_call' && currentUsage)
       addModelCall(currentUsage, data);
+    // Every event is redacted before it is written: page text, errors,
+    // model responses and audit output alike.
     await appendFile(
       join(options.directory, 'events.jsonl'),
-      JSON.stringify({ time: new Date().toISOString(), event, data }) + '\n',
+      JSON.stringify({
+        time: new Date().toISOString(),
+        event,
+        data: redactor.deep(data),
+      }) + '\n',
       { mode: 0o600 },
     );
   };
-  const engine = typeof models === 'function' ? models(log) : models;
+  // Model adapters receive only the redacted, provider-visible view.
+  const engine = providerModels(
+    typeof models === 'function' ? models(log) : models,
+    protection,
+  );
+  await log('evidence_policy', protection.report(0));
   await writeFile(
     join(options.directory, 'suite.json'),
-    JSON.stringify(suite, null, 2),
+    JSON.stringify(redactor.deep(suite), null, 2),
     { mode: 0o600 },
   );
   const driver =
@@ -1041,6 +1086,7 @@ export async function runSuite(
             storageState: options.storageState,
             video: options.video,
             log,
+            evidence: protection,
           });
           const usage = emptyUsage();
           currentUsage = usage;
@@ -1055,6 +1101,7 @@ export async function runSuite(
               log,
               attempt,
               usage,
+              protection,
             );
             if (runJourneyConfig !== journey) result.marker = marker;
             results.push(result);
@@ -1073,7 +1120,7 @@ export async function runSuite(
           );
           await writeFile(
             join(options.directory, 'report.html'),
-            reportHTML(suite.name, results, options.directory),
+            reportHTML(redactor.text(suite.name), results, options.directory),
             { mode: 0o600 },
           );
         }
@@ -1081,6 +1128,8 @@ export async function runSuite(
     }
   } finally {
     await driver.close();
+    // Last pass over the whole run directory, failed runs included.
+    await sanitizeTextFiles(options.directory, redactor);
   }
   return results;
 }

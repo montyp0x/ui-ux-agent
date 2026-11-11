@@ -66,6 +66,14 @@ const run = (
     audits: emptyAudits(),
     trace: 't',
     video: null,
+    evidence: {
+      declaredPatterns: 0,
+      builtInPatterns: 0,
+      redactedEnv: [],
+      masks: 0,
+      formats: [],
+      sanitizedFiles: 0,
+    },
   };
 };
 

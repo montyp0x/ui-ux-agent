@@ -3,11 +3,14 @@
 // reason, checks, findings ...) and added a typed functional `outcome` and a
 // separate `quality` verdict. Version 3 adds `audits` (checkpoint audit runs
 // and their findings, see src/audits/contract.ts); the horizontal overflow
-// check moved there from `findings`.
+// check moved there from `findings`. Version 4 adds `evidence` (what each
+// evidence format captured and how it was protected, see
+// src/evidence/policy.ts); `trace` is null when no trace was captured.
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
+import { evidenceReportSchema } from './evidence/policy.js';
 
-export const RESULT_VERSION = 3;
+export const RESULT_VERSION = 4;
 
 const count = z.number().int().nonnegative();
 
@@ -231,8 +234,11 @@ export const resultSchema = z
     // Objective audits at configured checkpoints; model hypotheses stay in
     // `findings`.
     audits: auditsResultSchema,
-    trace: z.string(),
+    // Null when the trace was disabled (see evidence.formats).
+    trace: z.string().nullable(),
     video: z.string().nullable(),
+    // Evidence formats captured or disabled for this run, and their protection.
+    evidence: evidenceReportSchema,
   })
   .strict()
   .superRefine((result, ctx) => {
