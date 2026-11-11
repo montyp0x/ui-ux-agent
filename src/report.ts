@@ -73,7 +73,7 @@ export function reportHTML(
     ),
   ];
   // Audit runs per checkpoint, then violations and needs-review items apart.
-  const audits = ({ audits }: Result) => {
+  const audits = ({ audits, outcome, durationMs }: Result) => {
     if (!audits.runs.length && !audits.notReached.length) return '';
     const finding = (index: number) => {
       const entry = audits.findings[index]!;
@@ -95,7 +95,7 @@ export function reportHTML(
     const runs = audits.runs
       .map(
         (run) =>
-          `<li><code>${escapeHTML(run.auditId)}</code> at <code>${escapeHTML(run.checkpoint.id)}</code> (step ${run.checkpoint.step}): <strong class="audit-${run.status}">${escapeHTML(run.status)}</strong>${run.analyzer ? ` · ${escapeHTML(run.analyzer.name)}${run.analyzer.version ? ` ${escapeHTML(run.analyzer.version)}` : ''}` : ''}${run.findings.length ? ` · ${run.findings.length} finding(s)` : ''}${run.detail ? `: ${escapeHTML(run.detail)}` : ''}${run.limitations.length ? `<br><small>Limitations: ${escapeHTML(run.limitations.join('; '))}</small>` : ''}${run.exemptions.length ? `<br><small>Exempted by configuration (${run.exemptions.length}): ${escapeHTML(run.exemptions.map((item) => `${item.ruleId} ${item.target.description}${item.target.selector ? ` ${item.target.selector}` : ''}: ${item.reason}`).join('; '))}</small>` : ''}</li>`,
+          `<li><code>${escapeHTML(run.auditId)}</code> at <code>${escapeHTML(run.checkpoint.id)}</code> (step ${run.checkpoint.step}): <strong class="audit-${run.status}">${escapeHTML(run.status)}</strong> · ${run.durationMs} ms${run.analyzer ? ` · ${escapeHTML(run.analyzer.name)}${run.analyzer.version ? ` ${escapeHTML(run.analyzer.version)}` : ''}` : ''}${run.findings.length ? ` · ${run.findings.length} finding(s)` : ''}${run.detail ? `: ${escapeHTML(run.detail)}` : ''}${run.limitations.length ? `<br><small>Limitations: ${escapeHTML(run.limitations.join('; '))}</small>` : ''}${run.exemptions.length ? `<br><small>Exempted by configuration (${run.exemptions.length}): ${escapeHTML(run.exemptions.map((item) => `${item.ruleId} ${item.target.description}${item.target.selector ? ` ${item.target.selector}` : ''}: ${item.reason}`).join('; '))}</small>` : ''}</li>`,
       )
       .join('');
     const notReached = audits.notReached
@@ -104,7 +104,14 @@ export function reportHTML(
           `<li><code>${escapeHTML(gap.auditId)}</code> at <code>${escapeHTML(gap.at)}</code>: checkpoint not reached</li>`,
       )
       .join('');
-    return `<details><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
+    // Audit time counts against the journey deadline; shown so a slow scan
+    // is visible as the cause of an exhausted budget.
+    const auditMs = audits.runs.reduce((total, run) => total + run.durationMs, 0);
+    const budgetNote =
+      outcome.category === 'budget_exhausted' && auditMs > 0
+        ? `<p><small>Audits took ${(auditMs / 1000).toFixed(1)} s of this run's ${(durationMs / 1000).toFixed(1)} s (${Math.round((auditMs / Math.max(1, durationMs)) * 100)}%); audit time counts against the journey deadline.</small></p>`
+        : '';
+    return `${budgetNote}<details><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
   };
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(name)}</title>
 <style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}</style>

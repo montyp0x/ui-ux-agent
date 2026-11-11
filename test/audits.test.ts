@@ -851,3 +851,52 @@ test('driver audits get the session viewport, a per-audit timeout and report exe
     60000,
   );
 });
+
+test('audit time counts against the journey deadline and the report shows it', async () => {
+  const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-audits-')), 'run');
+  const suite = suiteWith(
+    { audits: { checks: [{ id: 'accessibility.axe', at: ['ready'] }] } },
+    { maxDurationMs: 1000 },
+  );
+  const results = await runSuite(suite, deterministic, {
+    directory,
+    driver: {
+      async openSession() {
+        return {
+          ...session({
+            // A scan slower than the whole journey budget.
+            runAudit: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 1200));
+              return { complete: true, findings: [] };
+            },
+          }),
+          async check(condition: Check) {
+            return condition.kind === 'visible';
+          },
+          async observe(step: number, screenshot: string) {
+            return { ...state(step), screenshot };
+          },
+          async candidates() {
+            return [{ ...continueAction }];
+          },
+          async inScope() {
+            return true;
+          },
+        };
+      },
+      async close() {},
+    },
+  });
+  const [result] = parseResults(JSON.stringify(results));
+  assert.equal(result!.outcome.category, 'budget_exhausted');
+  const [run] = result!.audits.runs;
+  assert.equal(run!.checkpoint.id, 'ready');
+  assert.ok(run!.durationMs >= 1100, `durationMs ${run!.durationMs}`);
+  const report = reportHTML(suite.name, results, directory);
+  assert.match(report, new RegExp(`clean</strong> · ${run!.durationMs} ms`));
+  assert.match(report, /\d+\.\d s audit time/);
+  assert.match(
+    report,
+    /Audits took 1\.\d s of this run's \d+\.\d s \(\d+%\); audit time counts against the journey deadline/,
+  );
+});
