@@ -93,6 +93,10 @@ export const OUTCOME_CODES = {
   budget_deadline: ['failed', 'budget_exhausted', 'unknown'],
   budget_deadline_before_stage: ['failed', 'budget_exhausted', 'unknown'],
   budget_stage_timeout: ['failed', 'budget_exhausted', 'unknown'],
+  // A planner or selector call was cut off at the journey deadline: by the
+  // journey's abort signal, the call's own timeout or the limiter's slot wait,
+  // whichever ended first.
+  budget_deadline_abort: ['failed', 'budget_exhausted', 'unknown'],
   // The model endpoint's rate-limit cooldown would end past the deadline.
   budget_model_rate_limit: ['failed', 'budget_exhausted', 'model'],
   model_call_failed: ['error', 'model_error', 'model'],

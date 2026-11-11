@@ -125,6 +125,7 @@
             "budget_deadline",
             "budget_deadline_before_stage",
             "budget_stage_timeout",
+            "budget_deadline_abort",
             "budget_model_rate_limit",
             "model_call_failed",
             "model_invalid_output",
