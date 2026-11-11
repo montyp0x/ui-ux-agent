@@ -264,6 +264,16 @@ export function detectLayout(input: DetectInput): DetectOutput {
         )
       );
     },
+    // The nearest ancestor that is not inline-level: the block whose lines
+    // hold the element's text.
+    block(element: Element): Element | null {
+      let node: Element | null = element;
+      if (getComputedStyle(element).display === 'inline')
+        node = g.parent(element);
+      while (node && getComputedStyle(node).display === 'inline')
+        node = g.parent(node);
+      return node;
+    },
     disabled(element: Element): boolean {
       return (
         element.matches(':disabled') ||
@@ -857,10 +867,9 @@ export function detectLayout(input: DetectInput): DetectOutput {
           description: `Target "${g.name(element).slice(0, 40)}" is ${g.round(rect.width)}x${g.round(rect.height)} CSS px, below the ${minimum}x${minimum} minimum`,
         };
         // Inline: a link in a sentence, sized by the surrounding line height.
+        // Only text in the same block's own lines counts as the sentence.
         if (getComputedStyle(element).display === 'inline') {
-          let block: Element | null = g.parent(element);
-          while (block && getComputedStyle(block).display === 'inline')
-            block = g.parent(block);
+          const block = g.block(element);
           const walker = block
             ? document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
             : null;
@@ -869,7 +878,8 @@ export function detectLayout(input: DetectInput): DetectOutput {
             if (
               node.textContent?.trim() &&
               node.parentElement &&
-              !g.closest(node.parentElement, TARGETS)
+              !g.closest(node.parentElement, TARGETS) &&
+              g.block(node.parentElement) === block
             ) {
               prose = true;
               break;

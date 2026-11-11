@@ -7,6 +7,7 @@
 import type { Page } from 'playwright';
 import type { AuditOutput } from '../audits/contract.js';
 import type { AuditId } from '../audits/config.js';
+import { layoutResponsivePlaywrightAudit } from './playwright-layout.js';
 import type { DriverAuditRequest } from './types.js';
 
 export type PlaywrightAudit = (
@@ -14,7 +15,9 @@ export type PlaywrightAudit = (
   request: DriverAuditRequest,
 ) => Promise<AuditOutput>;
 
-export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {};
+export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
+  'layout.responsive': layoutResponsivePlaywrightAudit,
+};
 
 export async function runPlaywrightAudit(
   page: Page,

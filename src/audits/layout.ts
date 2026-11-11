@@ -3,7 +3,8 @@
 // driven by a browser driver (drivers/playwright-layout.ts); nothing here
 // depends on a browser implementation.
 import { z } from 'zod';
-import { targetSchema, type Suite } from '../contracts.js';
+import type { Suite } from '../contracts.js';
+import { targetSchema } from '../target.js';
 
 export const LAYOUT_RULES = ['clipping', 'occlusion', 'target-size'] as const;
 export const layoutRuleSchema = z.enum(LAYOUT_RULES);
@@ -108,7 +109,8 @@ export const layoutBreakpointSchema = z
     name: breakpointName,
     width: z.number().int(),
     height: z.number().int(),
-    deviceScaleFactor: z.number(),
+    // Null keeps the browser context's ratio.
+    deviceScaleFactor: z.number().nullable(),
     kind: z.enum(['viewport', 'reflow']),
     // Browser zoom the case stands for; null for declared viewports.
     zoom: z.number().nullable(),
@@ -120,17 +122,19 @@ export type LayoutBreakpoint = z.infer<typeof layoutBreakpointSchema>;
 export function expandBreakpoints(
   matrix: LayoutMatrixInput,
   viewports: Suite['viewports'] = [],
+  // Allow an empty declared list (audits always measure the current viewport).
+  allowEmpty = false,
 ): LayoutBreakpoint[] {
   const parsed = layoutMatrixSchema.parse(matrix);
   const declared = parsed.breakpoints ?? viewports;
-  if (!declared.length)
+  if (!declared.length && !allowEmpty)
     throw new Error('A layout matrix needs breakpoints or suite viewports');
   const cases: LayoutBreakpoint[] = declared.map(
     (viewport: Breakpoint): LayoutBreakpoint => ({
       name: viewport.name,
       width: viewport.width,
       height: viewport.height,
-      deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
+      deviceScaleFactor: viewport.deviceScaleFactor ?? null,
       kind: 'viewport',
       zoom: null,
     }),
@@ -143,7 +147,7 @@ export function expandBreakpoints(
       width: Math.round(baseWidth / zoom),
       height: Math.round(baseHeight / zoom),
     });
-    cases.push({ ...reflow, deviceScaleFactor: 1, kind: 'reflow', zoom });
+    cases.push({ ...reflow, deviceScaleFactor: null, kind: 'reflow', zoom });
   }
   const names = cases.map((entry) => entry.name);
   if (new Set(names).size !== names.length)
@@ -331,6 +335,8 @@ export const layoutAuditResultSchema = z
       })
       .strict()
       .nullable(),
+    // CSS px the document is wider than the viewport (WCAG 1.4.10 at reflow).
+    horizontalOverflow: z.number().nullable(),
     detectors: z.array(layoutDetectorResultSchema),
     exceptions: z.array(exceptionLedgerSchema),
     // Why the whole audit is unsupported or failed; null otherwise.
@@ -383,7 +389,7 @@ export function activeExceptions(
 // A result for audits that could not measure: every configured rule carries
 // the same status and reason, so nothing reads as clean.
 export function unmeasuredResult(
-  status: 'error' | 'unsupported',
+  status: 'error' | 'unsupported' | 'incomplete',
   detail: string,
   config: LayoutAuditConfig,
   breakpoint: LayoutBreakpoint | null,
@@ -395,6 +401,7 @@ export function unmeasuredResult(
     url,
     breakpoint,
     viewport: null,
+    horizontalOverflow: null,
     detectors: config.rules.map((rule) => ({
       rule,
       status,
@@ -403,7 +410,7 @@ export function unmeasuredResult(
       findings: [],
       exempted: [],
       reviewCandidates: [],
-      incomplete: [],
+      incomplete: status === 'incomplete' ? [detail] : [],
       truncated: false,
       error: status === 'error' ? detail : null,
     })),

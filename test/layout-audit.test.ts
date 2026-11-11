@@ -567,3 +567,26 @@ test('a breakpoint sweep on a live page restores its viewport and reports pixel 
     await context.close();
   }
 });
+
+test('a small link outside any sentence gets no inline exemption', async () => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 600 },
+  });
+  try {
+    const page = await context.newPage();
+    await page.setContent(
+      '<h1>Account</h1><nav><a href="/a">A</a> <a href="/b">B</a></nav><p>Settings are saved automatically.</p>',
+    );
+    const sizes = detector(
+      await auditLayout(page, { rules: ['target-size'] }),
+      'target-size',
+    );
+    assert.deepEqual(
+      sizes.findings.map((entry) => entry.selector),
+      ['body > nav > a:nth-of-type(1)', 'body > nav > a:nth-of-type(2)'],
+    );
+    assert.deepEqual(sizes.exempted, []);
+  } finally {
+    await context.close();
+  }
+});

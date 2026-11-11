@@ -3,6 +3,7 @@
 // checkpoints listed here, never after every action.
 import { z } from 'zod';
 import { failOnSchema } from './contract.js';
+import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
 // (each of the journey's declared `states`, once, when it first holds) and
@@ -35,8 +36,22 @@ const horizontalOverflowConfig = z
   })
   .strict();
 
+// Clipping, occlusion and target size at the session's viewport plus extra
+// breakpoints and a reflow case, swept in place and restored (src/audits/
+// layout.ts). Exception `breakpoints` name suite viewports or extra breakpoints.
+const layoutResponsiveConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('layout.responsive'),
+    at: auditAtSchema.default(['ready', 'completion']),
+    ...layoutAuditConfigSchema.shape,
+    matrix: layoutMatrixSchema.prefault({}),
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
+  layoutResponsiveConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

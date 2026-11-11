@@ -6,6 +6,21 @@
 // unsupported there rather than a silent pass.
 import type { AuditDefinition } from './registry.js';
 import type { AuditConfig } from './config.js';
+import type { AuditOutputFinding } from './contract.js';
+
+// The finding for a document `px` wider than its viewport; layout.responsive
+// reports the same rule at its extra breakpoints.
+export function documentOverflowFinding(px: number): AuditOutputFinding {
+  return {
+    ruleId: 'document-wider-than-viewport',
+    severity: 'serious',
+    certainty: 'violation',
+    description: `Document is ${px}px wider than the viewport; review whether the horizontal overflow is intentional`,
+    helpUrl: 'https://www.w3.org/WAI/WCAG22/Understanding/reflow.html',
+    targets: [{ description: 'document', selector: 'html', snippet: null }],
+    nodeCount: 1,
+  };
+}
 
 export const horizontalOverflowAudit: AuditDefinition<
   Extract<AuditConfig, { id: 'layout.horizontal-overflow' }>
@@ -26,16 +41,7 @@ export const horizontalOverflowAudit: AuditDefinition<
       findings: first
         ? [
             {
-              ruleId: 'document-wider-than-viewport',
-              severity: 'serious',
-              certainty: 'violation',
-              description: `Document is ${first.horizontalOverflow}px wider than the viewport; review whether the horizontal overflow is intentional`,
-              helpUrl:
-                'https://www.w3.org/WAI/WCAG22/Understanding/reflow.html',
-              targets: [
-                { description: 'document', selector: 'html', snippet: null },
-              ],
-              nodeCount: 1,
+              ...documentOverflowFinding(first.horizontalOverflow),
               at: {
                 step: first.step,
                 url: first.url,
