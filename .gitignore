@@ -9,3 +9,5 @@ runs/
 .DS_Store
 suites/
 .build/
+# Approved visual baselines and their metadata: local evidence, never committed.
+.baselines/

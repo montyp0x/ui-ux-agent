@@ -16,6 +16,7 @@ import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
+import { baselineDirectoryForRun } from './baselines.js';
 import { evaluateQuality } from './quality.js';
 import {
   OUTCOME_CODES,
@@ -39,6 +40,9 @@ export type RunOptions = {
   driver?: UIDriver;
   // Runs per journey/viewport, for pass rates (1-50, default 1).
   repeat?: number;
+  // A user-supplied directory of approved visual baselines (outside Git),
+  // read by the visual.baseline audit; runs never write into it.
+  baselines?: string;
 };
 export type Logger = EventLogger;
 
@@ -199,6 +203,7 @@ async function runJourney(
   log: Logger,
   attempt: number,
   usage: Usage,
+  baselines: string | null = null,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -216,6 +221,7 @@ async function runJourney(
       height: 0,
     },
     directory,
+    baselines,
     session,
     log,
   });
@@ -981,6 +987,10 @@ export async function runSuite(
   const repeat = options.repeat ?? 1;
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
+  // Checked before the run starts: an existing directory outside Git.
+  const baselines = options.baselines
+    ? await baselineDirectoryForRun(options.baselines)
+    : null;
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   await mkdir(options.directory, { mode: 0o700 });
   // Journeys run one at a time, so model calls belong to the current run.
@@ -1055,6 +1065,7 @@ export async function runSuite(
               log,
               attempt,
               usage,
+              baselines,
             );
             if (runJourneyConfig !== journey) result.marker = marker;
             results.push(result);
