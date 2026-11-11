@@ -66,6 +66,9 @@ export interface Models {
     timeoutMs: number,
     actions?: Action[],
     context?: PlanContext,
+    // Aborts when the journey's deadline is reached; an implementation should
+    // stop waiting and never start a request after it fires.
+    signal?: AbortSignal,
   ): Promise<Plan>;
   choose(
     journey: Journey,
@@ -74,6 +77,7 @@ export interface Models {
     actions: Action[],
     history: History,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<Choice>;
 }
 
@@ -177,44 +181,63 @@ export type ModelWait = {
 // `concurrency` in flight, starts spaced by 60000/rpm ms. A 429 pauses the
 // endpoint until its Retry-After (or a backoff) has passed and halves the
 // rate; each success restores it by one request per minute up to the limit.
+//
+// A request holds its slot from acquire() until release(). Its start time is
+// recomputed from the latest pacing and cooldown right before it is granted,
+// so a cooldown applied while it waits always delays it, and a request whose
+// start would fall at or after its deadline, or whose signal aborts, gives its
+// slot back and never starts.
 export class EndpointLimiter {
   private nextStart = 0;
   private pausedUntil = 0;
   private active = 0;
-  private waiting: (() => void)[] = [];
+  // Callers waiting for a slot, in arrival order; release() hands its slot
+  // to the first one. Waiters remove themselves on timeout or abort.
+  private readonly waiting: (() => void)[] = [];
+  // Slot holders sleeping until their start; woken to recheck on throttled().
+  private readonly sleepers = new Set<() => void>();
   rpm: number;
   constructor(
     readonly limit: RateLimit,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => Date.now(),
   ) {
     this.rpm = limit.rpm;
   }
-  // Resolves when a request may start; the wait in ms. Throws when the start
-  // would fall after `deadline`.
-  async acquire(deadline: number): Promise<number> {
+  // Requests holding a slot: started, or granted a slot and waiting to start.
+  get inFlight(): number {
+    return this.active;
+  }
+  // Resolves with the wait in ms once a request may start; it then holds a
+  // slot until release(). Throws RateLimitBudgetError when the start would
+  // fall at or after `deadline`, and the signal's reason when it aborts; in
+  // both cases no slot is held.
+  async acquire(deadline: number, signal?: AbortSignal): Promise<number> {
     const started = this.now();
-    while (this.active >= this.limit.concurrency) {
-      const remaining = deadline - this.now();
-      if (remaining <= 0) throw new RateLimitBudgetError(0);
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, remaining);
-        this.waiting.push(() => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+    signal?.throwIfAborted();
+    if (this.active < this.limit.concurrency) this.active++;
+    else await this.waitForSlot(deadline, signal);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const now = this.now();
+        const at = Math.max(this.nextStart, this.pausedUntil, now);
+        if (at >= deadline) throw new RateLimitBudgetError(at - now);
+        if (at <= now) break;
+        await this.sleep(at - now, signal);
+      }
+      this.nextStart = this.now() + 60000 / this.rpm;
+      return this.now() - started;
+    } catch (caught) {
+      this.release();
+      throw caught;
     }
-    const at = Math.max(this.nextStart, this.pausedUntil, this.now());
-    if (at >= deadline) throw new RateLimitBudgetError(at - this.now());
-    this.active++;
-    this.nextStart = at + 60000 / this.rpm;
-    const delay = at - this.now();
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-    return this.now() - started;
   }
   release(): void {
-    this.active = Math.max(0, this.active - 1);
-    this.waiting.shift()?.();
+    const next = this.waiting.shift();
+    // Hand the slot straight to the next waiter, so a newer caller cannot
+    // take it between this release and the waiter resuming.
+    if (next) next();
+    else this.active = Math.max(0, this.active - 1);
   }
   succeeded(): void {
     this.rpm = Math.min(this.limit.rpm, this.rpm + 1);
@@ -222,6 +245,45 @@ export class EndpointLimiter {
   throttled(waitMs: number): void {
     this.pausedUntil = Math.max(this.pausedUntil, this.now() + waitMs);
     this.rpm = Math.max(1, this.rpm / 2);
+    for (const wake of [...this.sleepers]) wake();
+  }
+  private waitForSlot(deadline: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const done = (error?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', aborted);
+        const index = this.waiting.indexOf(grant);
+        if (index >= 0) this.waiting.splice(index, 1);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      // Called by release(), which keeps the slot counted for this waiter.
+      const grant = () => done();
+      const aborted = () => done(signal!.reason);
+      const timer = setTimeout(
+        () => done(new RateLimitBudgetError(0)),
+        Math.max(0, deadline - this.now()),
+      );
+      signal?.addEventListener('abort', aborted, { once: true });
+      this.waiting.push(grant);
+    });
+  }
+  // Sleeps up to `ms`, returning early when throttled() changes the schedule.
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const done = (error?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', aborted);
+        this.sleepers.delete(wake);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const wake = () => done();
+      const aborted = () => done(signal!.reason);
+      const timer = setTimeout(wake, ms);
+      signal?.addEventListener('abort', aborted, { once: true });
+      this.sleepers.add(wake);
+    });
   }
 }
 
@@ -230,6 +292,8 @@ export class RateLimitBudgetError extends Error {
     super(
       `Model request would wait ${Math.ceil(waitMs / 1000)}s for its rate limit, past the step budget`,
     );
+    // Explicit, so classification by name survives minification.
+    this.name = 'RateLimitBudgetError';
   }
 }
 
@@ -258,6 +322,11 @@ const MAX_ATTEMPTS = 5;
 const backoffMs = (attempt: number) =>
   Math.min(20000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
 
+// POSTs JSON to a model endpoint within `timeoutMs`. With `pacing`, every
+// attempt holds an endpoint slot from just before dispatch until its response
+// body is consumed or the attempt fails, and 429/503 replies are retried after
+// the endpoint's cooldown. Nothing is dispatched once `signal` aborts or the
+// deadline has passed; diagnostics never include the key or headers.
 export async function post(
   url: string,
   key: string,
@@ -269,12 +338,16 @@ export async function post(
     limiter: EndpointLimiter;
     onWait?: (data: ModelWait) => Promise<void>;
   },
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   for (let attempt = 1; ; attempt++) {
-    if (pacing) {
-      const waited = await pacing.limiter.acquire(deadline);
-      if (waited >= 50)
+    signal?.throwIfAborted();
+    // From here the attempt holds an endpoint slot; finally releases it.
+    const waited = pacing ? await pacing.limiter.acquire(deadline, signal) : 0;
+    let retry: { wait: number; status: 429 | 503 } | undefined;
+    try {
+      if (pacing && waited >= 50)
         await pacing.onWait?.({
           role: pacing.role,
           reason: 'pacing',
@@ -282,10 +355,19 @@ export async function post(
           attempt,
           rpm: pacing.limiter.rpm,
         });
-    }
-    let response: Response;
-    try {
-      response = await fetch(url, {
+      // Recheck after the wait and its diagnostics: never dispatch expired or
+      // cancelled work.
+      signal?.throwIfAborted();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        throw new DOMException(
+          'Model request deadline passed before dispatch',
+          'TimeoutError',
+        );
+      const timeout = AbortSignal.timeout(
+        Math.max(1, Math.min(60000, remaining)),
+      );
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           ...headers,
@@ -293,35 +375,40 @@ export async function post(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(
-          Math.max(1, Math.min(60000, deadline - Date.now())),
-        ),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
+      if (pacing && (response.status === 429 || response.status === 503)) {
+        const wait =
+          retryAfterMs(response.headers.get('retry-after')) ??
+          backoffMs(attempt);
+        // Before release, so the caller handed this slot sees the cooldown.
+        pacing.limiter.throttled(wait);
+        retry = { wait, status: response.status };
+        await response.body?.cancel().catch(() => undefined);
+      } else if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`Model HTTP ${response.status}`);
+      } else {
+        const payload: unknown = await response.json();
+        pacing?.limiter.succeeded();
+        return payload;
+      }
     } finally {
       pacing?.limiter.release();
     }
-    if (pacing && (response.status === 429 || response.status === 503)) {
-      const wait =
-        retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt);
-      pacing.limiter.throttled(wait);
-      await pacing.onWait?.({
-        role: pacing.role,
-        reason: response.status === 429 ? 'rate_limited' : 'unavailable',
-        status: response.status,
-        waitMs: Math.round(wait),
-        attempt,
-        rpm: pacing.limiter.rpm,
-      });
-      await response.body?.cancel();
-      if (attempt >= MAX_ATTEMPTS || Date.now() + wait >= deadline)
-        throw new Error(
-          `Model HTTP ${response.status} after ${attempt} attempts (rate limited)`,
-        );
-      continue;
-    }
-    if (!response.ok) throw new Error(`Model HTTP ${response.status}`);
-    pacing?.limiter.succeeded();
-    return response.json();
+    // Only a paced 429/503 reaches here; the retry waits outside the slot.
+    await pacing!.onWait?.({
+      role: pacing!.role,
+      reason: retry.status === 429 ? 'rate_limited' : 'unavailable',
+      status: retry.status,
+      waitMs: Math.round(retry.wait),
+      attempt,
+      rpm: pacing!.limiter.rpm,
+    });
+    if (attempt >= MAX_ATTEMPTS || Date.now() + retry.wait >= deadline)
+      throw new Error(
+        `Model HTTP ${retry.status} after ${attempt} attempts (rate limited)`,
+      );
   }
 }
 
@@ -372,6 +459,7 @@ export function models(options: ModelOptions): Models {
       timeoutMs,
       actions = [],
       context = { reasons: [] },
+      signal,
     ) {
       const { offeredControls, ...refresh } = context;
       const scoped = offeredControls
@@ -387,9 +475,9 @@ export function models(options: ModelOptions): Models {
           }
         : modelObservation(observation);
       const started = Date.now();
-      const screenshot = (await readFile(observation.screenshot)).toString(
-        'base64',
-      );
+      const screenshot = (
+        await readFile(observation.screenshot, { signal })
+      ).toString('base64');
       const request = {
         model: options.plannerModel,
         messages: [
@@ -452,6 +540,7 @@ export function models(options: ModelOptions): Models {
           Math.max(1, timeoutMs - (callStarted - started)),
           options.plannerHeaders,
           planner,
+          signal,
         );
         await options.onCall?.({
           role: 'planner',
@@ -484,7 +573,15 @@ export function models(options: ModelOptions): Models {
         }
       }
     },
-    async choose(journey, observation, plan, actions, history, timeoutMs) {
+    async choose(
+      journey,
+      observation,
+      plan,
+      actions,
+      history,
+      timeoutMs,
+      signal,
+    ) {
       const started = Date.now();
       const state = {
         goal: journey.goal,
@@ -544,6 +641,7 @@ export function models(options: ModelOptions): Models {
           timeoutMs,
           options.selectorHeaders,
           selector,
+          signal,
         );
         await options.onCall?.({
           role: 'selector',
@@ -615,6 +713,7 @@ export function models(options: ModelOptions): Models {
         timeoutMs,
         options.selectorHeaders,
         selector,
+        signal,
       );
       await options.onCall?.({
         role: 'selector',

@@ -97,6 +97,11 @@ function isTimeout(caught: unknown): boolean {
   return (error as { name?: unknown } | null)?.name === 'TimeoutError';
 }
 
+function isAbort(caught: unknown): boolean {
+  const error = caught instanceof ModelFailure ? caught.original : caught;
+  return (error as { name?: unknown } | null)?.name === 'AbortError';
+}
+
 // The model limiter's refusal to start a request whose rate-limit cooldown
 // ends past the deadline (RateLimitBudgetError in models.ts). Matched by name
 // so this module does not depend on the limiter's class.
@@ -195,6 +200,17 @@ async function runJourney(
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
+  // Aborted at the deadline and passed to every model call, so queued or
+  // in-flight planner and selector requests stop there. The reason is a
+  // TimeoutError, like AbortSignal.timeout's.
+  const deadlineAbort = new AbortController();
+  const deadlineTimer = setTimeout(
+    () =>
+      deadlineAbort.abort(
+        new DOMException('Journey deadline reached', 'TimeoutError'),
+      ),
+    journey.maxDurationMs,
+  );
   const result: Result = {
     resultVersion: RESULT_VERSION,
     journey: journey.id,
@@ -546,6 +562,7 @@ async function runJourney(
               planBudget,
               actions,
               context,
+              deadlineAbort.signal,
             ),
           );
           planState = currentPlanState;
@@ -577,6 +594,7 @@ async function runJourney(
             actions,
             history,
             chooseBudget,
+            deadlineAbort.signal,
           ),
         );
         await log('decision', {
@@ -762,10 +780,18 @@ async function runJourney(
     }
   } catch (caught) {
     const notStarted = caught instanceof BudgetExpired;
-    const rateLimited = isRateLimitBudget(caught);
+    // A model call that ended at the deadline is one outcome whichever fired
+    // first: the journey signal, the call's own timeout, or the limiter's
+    // slot wait expiring (RateLimitBudgetError).
+    const deadlineCut =
+      caught instanceof ModelFailure &&
+      (deadlineAbort.signal.aborted || Date.now() >= deadline) &&
+      (isTimeout(caught) || isAbort(caught) || isRateLimitBudget(caught));
+    const rateLimited = !deadlineCut && isRateLimitBudget(caught);
     if (
       !session.unauthorized &&
       (notStarted ||
+        deadlineCut ||
         rateLimited ||
         (isTimeout(caught) && Date.now() >= deadline))
     ) {
@@ -775,17 +801,23 @@ async function runJourney(
             'deadline_before_stage',
             `deadline reached before ${stage}`,
           ]
-        : rateLimited
+        : deadlineCut
           ? [
-              'budget_model_rate_limit',
-              'rate_limit',
-              `${stage} would wait for the model rate limit past the deadline`,
+              'budget_deadline_abort',
+              'deadline_abort',
+              `${stage} was cancelled at the deadline`,
             ]
-          : [
-              'budget_stage_timeout',
-              'timeout',
-              `${stage} timed out at the deadline`,
-            ];
+          : rateLimited
+            ? [
+                'budget_model_rate_limit',
+                'rate_limit',
+                `${stage} would wait for the model rate limit past the deadline`,
+              ]
+            : [
+                'budget_stage_timeout',
+                'timeout',
+                `${stage} timed out at the deadline`,
+              ];
       const detail = notStarted ? null : firstLine(caught);
       decide(
         code,
@@ -827,6 +859,7 @@ async function runJourney(
       );
     }
   } finally {
+    clearTimeout(deadlineTimer);
     let evidenceComplete = false;
     try {
       // Evidence capture has its own bounded timeout, not the expired task timeout.
