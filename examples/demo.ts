@@ -74,7 +74,9 @@ try {
   );
   const results = await runSuite(suite, decisions, { directory, video: true });
   for (const result of results)
-    console.log(`${result.status}: ${result.journey}/${result.viewport}`);
+    console.log(
+      `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · quality ${result.quality.verdict}`,
+    );
   console.log(`Report: ${directory}/report.html`);
   process.exitCode = results.every((result) => result.status === 'passed')
     ? 0
