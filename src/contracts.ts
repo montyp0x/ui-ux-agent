@@ -32,8 +32,36 @@ export const checkSchema = z.discriminatedUnion('kind', [
       pattern: z.string().min(1),
     })
     .strict(),
+  // Web only: the target has keyboard focus (with within, focus is on the
+  // target or inside it, for example inside a dialog). Open shadow roots are
+  // followed; frames are not.
+  z
+    .object({
+      kind: z.literal('focused'),
+      target: targetSchema,
+      within: z.boolean().default(false),
+    })
+    .strict(),
 ]);
 export type Check = z.infer<typeof checkSchema>;
+// Keys a keyboard-only journey (input: keyboard) is offered at every state,
+// pressed on whatever has focus with the browser's own keyboard.
+export const KEYBOARD_KEYS = [
+  'Tab',
+  'Shift+Tab',
+  'Enter',
+  'Space',
+  'Escape',
+  'ArrowDown',
+  'ArrowUp',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'PageDown',
+  'PageUp',
+] as const;
+export type KeyboardKey = (typeof KEYBOARD_KEYS)[number];
 const interactionSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -114,6 +142,32 @@ export const journeySchema = z
     // at the first observed state where `when` holds.
     states: z.array(journeyStateSchema(checkSchema)).max(10).optional(),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
+    // keyboard: a keyboard-only journey on the web. Every action is a key
+    // press on the focused element (KEYBOARD_KEYS), or a configured fill or
+    // press on its target once keys have focused it; links, clicks, scrolling
+    // and history are never offered, and the driver refuses any pointer
+    // action. any (or omitted): mixed pointer and keyboard actions.
+    input: z.enum(['any', 'keyboard']).optional(),
+    // Expectations a keyboard-only journey states explicitly, checked by the
+    // keyboard.focus audit from the journey's own key presses.
+    keyboard: z
+      .object({
+        // Tab reaches these targets in this order (unlisted controls may sit
+        // between them).
+        focusOrder: z.array(targetSchema).min(2).max(20).optional(),
+        dialogs: z
+          .object({
+            // Escape closes an open modal dialog.
+            closeOnEscape: z.boolean().default(false),
+            // Closing a modal dialog returns focus to the control that had
+            // focus when it opened.
+            restoreFocus: z.boolean().default(false),
+          })
+          .strict()
+          .prefault({}),
+      })
+      .strict()
+      .optional(),
     maxSteps: z.number().int().min(1).max(100).default(20),
     maxDurationMs: z.number().int().min(1000).max(900000).default(180000),
   })
@@ -310,6 +364,33 @@ const suiteObject = z
           message:
             'press interactions are not supported on macOS: the driver never synthesizes keyboard input',
         });
+      if (
+        suite.journeys.some(
+          (journey) => journey.input === 'keyboard' || journey.keyboard,
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'Keyboard-only journeys are web-only: the macOS driver never synthesizes keyboard input',
+        });
+      if (
+        suite.journeys.some((journey) =>
+          [
+            journey.ready,
+            ...journey.success,
+            ...(journey.contentReady?.checks ?? []),
+            ...(journey.states ?? []).flatMap((state) => [
+              state.when,
+              ...(state.expect ?? []),
+            ]),
+          ].some((check) => check.kind === 'focused'),
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'focused checks apply to web suites only',
+        });
     } else if (suite.menus)
       ctx.addIssue({
         code: 'custom',
@@ -344,6 +425,30 @@ const suiteObject = z
       (check.at as string[]).includes('states'),
     );
     for (const journey of suite.journeys) {
+      if (journey.keyboard && journey.input !== 'keyboard')
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id}: keyboard expectations need input: keyboard`,
+        });
+      if (journey.input === 'keyboard') {
+        // Keys reach and operate controls; a click, select or check would
+        // need the pointer or programmatic focus.
+        if (
+          [...journey.interactions, ...(journey.setup ?? [])].some(
+            (interaction) =>
+              interaction.kind !== 'fill' && interaction.kind !== 'press',
+          )
+        )
+          ctx.addIssue({
+            code: 'custom',
+            message: `${journey.id}: keyboard-only journeys support fill and press interactions only; operate controls with Enter, Space or arrow keys`,
+          });
+        if (journey.discoverRoles.length)
+          ctx.addIssue({
+            code: 'custom',
+            message: `${journey.id}: discoverRoles offers clicks; keyboard-only journeys reach controls with Tab`,
+          });
+      }
       const states = (journey.states ?? []).map((state) => state.name);
       if (new Set(states).size !== states.length)
         ctx.addIssue({
@@ -409,6 +514,8 @@ export type Action =
       point: ScrollPoint;
     }
   | { kind: 'wait'; id: string; description: string }
+  // Keyboard-only journeys: a key pressed on whatever has focus.
+  | { kind: 'key'; id: string; description: string; key: KeyboardKey }
   // Browser history back to an in-scope previous entry (url).
   | { kind: 'back'; id: string; description: string; url: string };
 export type ScrollPoint = { x: number; y: number };

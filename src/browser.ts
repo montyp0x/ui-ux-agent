@@ -19,6 +19,11 @@ import type {
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
 import type { EventLogger } from './drivers/types.js';
+import {
+  keyboardCandidates,
+  keyboardExecute,
+  keyboardRepeatState,
+} from './drivers/playwright-keyboard.js';
 
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard =
@@ -289,6 +294,8 @@ async function bind(
     });
     return null;
   }
+  // Key actions belong to keyboard-only journeys (playwright-keyboard.ts).
+  if (action.kind === 'key') return { reason: 'no_recipient' };
   return bindControl(locate(page, action.target), (element, state) =>
     guards.set(action, {
       kind: 'control',
@@ -492,6 +499,24 @@ export async function check(page: Page, condition: Check): Promise<boolean> {
   if (condition.kind === 'path')
     return new RegExp(condition.pattern).test(new URL(page.url()).pathname);
   const target = locate(page, condition.target);
+  if (condition.kind === 'focused') {
+    if ((await target.count()) !== 1) return false;
+    return target.evaluate((element, within) => {
+      let active: globalThis.Element | null = document.activeElement;
+      while (active?.shadowRoot?.activeElement)
+        active = active.shadowRoot.activeElement;
+      if (!active || active === document.body) return false;
+      for (let node: Node | null = active; node; ) {
+        if (node === element) return true;
+        if (!within) return false;
+        node =
+          node.parentNode instanceof ShadowRoot
+            ? node.parentNode.host
+            : node.parentNode;
+      }
+      return false;
+    }, condition.within);
+  }
   if (condition.kind === 'notVisible') {
     for (const element of await target.all())
       if (await element.isVisible()) return false;
@@ -561,6 +586,12 @@ export async function candidates(
   log?: EventLogger,
 ): Promise<Action[]> {
   await releaseActions(page);
+  // Keyboard-only journeys are offered key presses only.
+  if (journey.input === 'keyboard') {
+    const offered = await keyboardCandidates(page, journey);
+    offeredNames.set(page, []);
+    return offered;
+  }
   const out: Action[] = [];
   // Discovery reads through element handles: a removed element stays the same
   // (detached) object instead of shifting nth() reads onto its neighbour.
@@ -780,6 +811,7 @@ export async function repeatState(
   action: Action,
   journey: Journey,
 ): Promise<string | null> {
+  if (journey.input === 'keyboard') return keyboardRepeatState(page, action);
   const guard = guards.get(action);
   if (!guard || guard.kind === 'wait') return null;
   const progress = [];
@@ -842,6 +874,11 @@ export async function execute(
   baseURL: string,
   origins: string[] = [],
 ): Promise<void> {
+  // Keyboard-only journeys never reach the pointer paths below.
+  if (journey.input === 'keyboard')
+    return keyboardExecute(page, action, before, journey, baseURL, origins);
+  if (action.kind === 'key')
+    throw new Error('Key actions are offered to keyboard-only journeys only');
   const guard = guards.get(action);
   if (!guard)
     throw new Error(

@@ -92,11 +92,31 @@ const stateChecksConfig = z
   })
   .strict();
 
+// Focus behaviour measured from a keyboard-only journey's own key presses
+// (src/audits/keyboard.ts). Each run reads the key presses since the previous
+// one, so the default single completion run covers the whole journey.
+const keyboardFocusConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('keyboard.focus'),
+    at: z
+      .array(z.enum(['states', 'completion']))
+      .min(1)
+      .max(2)
+      .refine(
+        (at) => new Set(at).size === at.length,
+        'Audit checkpoints must be unique',
+      )
+      .default(['completion']),
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
   layoutResponsiveConfig,
   stateChecksConfig,
+  keyboardFocusConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

@@ -17,6 +17,7 @@ import type { AuditCheckpoint, AuditOutput, DriverKind } from './contract.js';
 import { axeAudit } from './accessibility.js';
 import { horizontalOverflowAudit } from './horizontal-overflow.js';
 import { layoutResponsiveAudit } from './layout-output.js';
+import { keyboardFocusAudit } from './keyboard.js';
 import { stateChecksAudit } from './state-checks.js';
 
 export type AuditContext<C extends AuditConfig = AuditConfig> = {
@@ -55,6 +56,7 @@ export const AUDITS: Registry = {
   'accessibility.axe': axeAudit,
   'layout.responsive': layoutResponsiveAudit,
   'journey.state-checks': stateChecksAudit,
+  'keyboard.focus': keyboardFocusAudit,
 };
 
 export const auditDefinition = (id: AuditId): AuditDefinition =>

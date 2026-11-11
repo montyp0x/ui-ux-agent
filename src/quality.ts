@@ -31,7 +31,7 @@ export const NOT_IMPLEMENTED_CHECKS: QualityGap[] = [
   {
     id: 'keyboard.focus',
     reason:
-      'Keyboard-only and focus behaviour is not checked in this engine version',
+      'Keyboard focus behaviour was not checked (run a keyboard-only journey with the keyboard.focus audit)',
   },
 ];
 
@@ -201,9 +201,13 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
   // A configured axe-core scan is reported as its own audit check, with the
   // scan's limitations on each run, so the not-configured gap is dropped.
   const axe = inputs.audits?.configured.includes('accessibility.axe');
+  // Likewise a configured keyboard.focus audit reports its own coverage.
+  const keyboard = inputs.audits?.configured.includes('keyboard.focus');
   const unsupported: QualityGap[] = [
     ...NOT_IMPLEMENTED_CHECKS.filter(
-      (gap) => !(axe && gap.id === 'accessibility.audit'),
+      (gap) =>
+        !(axe && gap.id === 'accessibility.audit') &&
+        !(keyboard && gap.id === 'keyboard.focus'),
     ),
     ...audits.unsupported,
   ];
