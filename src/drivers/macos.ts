@@ -229,15 +229,6 @@ const CHROME = new Set([
 ]);
 const isChrome = (node: AXNode) => CHROME.has(node.subrole ?? '');
 
-// press interaction keys, as the helper names them.
-const KEYS: Record<string, string> = {
-  Enter: 'return',
-  Escape: 'escape',
-  Tab: 'tab',
-  ArrowDown: 'down',
-  ArrowUp: 'up',
-};
-
 const PRESSABLE = new Set([
   'button',
   'link',
@@ -259,11 +250,6 @@ type Guard =
       select?: boolean;
       // Menu commands are re-checked by title instead of the full signature.
       menu?: string;
-      // syntheticInput: click through the helper's verified click (the control
-      // has no AXPress, e.g. a web-view button).
-      synthetic?: boolean;
-      // syntheticInput: a configured press interaction's key.
-      key?: string;
     }
   | {
       kind: 'scroll';
@@ -576,9 +562,27 @@ export async function macosDriver(): Promise<UIDriver> {
           for (const interaction of journey.interactions) {
             const found = find(snap, interaction.target).visible;
             if (found.length !== 1 || found[0]!.enabled === false) continue;
-            if (interaction.kind === 'select') continue;
-            if (interaction.kind === 'press' && !suite.syntheticInput) continue;
+            if (interaction.kind === 'select' || interaction.kind === 'press')
+              continue;
             const node = found[0]!;
+            // A configured click or check is performed with AXPress (rows are
+            // selected instead). A control that offers no AXPress, such as a
+            // view that reacts only to the mouse, would need a synthesized
+            // click, so it is not offered.
+            if (
+              (interaction.kind === 'click' || interaction.kind === 'check') &&
+              node.role !== 'AXRow' &&
+              !node.actions.includes('AXPress')
+            ) {
+              await log('candidate_skipped', {
+                journey: journey.id,
+                phase: 'discovery',
+                role: roleOf(node),
+                name: nameOf(node),
+                reason: 'no_accessibility_action',
+              });
+              continue;
+            }
             offer(
               { ...interaction, id: `a${out.length}` },
               {
@@ -587,13 +591,6 @@ export async function macosDriver(): Promise<UIDriver> {
                 signature: signature(node),
                 title: snap.window.title,
                 select: node.role === 'AXRow',
-                synthetic:
-                  suite.syntheticInput &&
-                  interaction.kind === 'click' &&
-                  !node.actions.includes('AXPress'),
-                ...(interaction.kind === 'press'
-                  ? { key: interaction.key }
-                  : {}),
               },
               nameOf(node),
             );
@@ -604,7 +601,7 @@ export async function macosDriver(): Promise<UIDriver> {
               visible.has(node.ref) &&
               !isChrome(node) &&
               node.enabled !== false &&
-              (node.actions.includes('AXPress') || suite.syntheticInput) &&
+              node.actions.includes('AXPress') &&
               PRESSABLE.has(roleOf(node)) &&
               nameOf(node),
           );
@@ -650,7 +647,6 @@ export async function macosDriver(): Promise<UIDriver> {
                 ref: node.ref,
                 signature: signature(node),
                 title: snap.window.title,
-                synthetic: !node.actions.includes('AXPress'),
               },
               name,
             );
@@ -946,40 +942,6 @@ export async function macosDriver(): Promise<UIDriver> {
             });
             if (after.selected !== true)
               throw new Error('The row did not become selected');
-          } else if (guard.key) {
-            // press: the key goes to this process only, and only while the
-            // target element holds keyboard focus.
-            if (!current.focused) {
-              await helper.call({ cmd: 'focusElement', ref: guard.ref });
-              const focused = await helper.call<AXNode>({
-                cmd: 'inspect',
-                ref: guard.ref,
-              });
-              if (!focused.focused)
-                throw new Error(
-                  `Cannot send ${guard.key}: the target element does not take keyboard focus`,
-                );
-            }
-            await helper.call({ cmd: 'key', pid, key: KEYS[guard.key] });
-          } else if (guard.synthetic) {
-            try {
-              const clicked = await helper.call({
-                cmd: 'click',
-                ref: guard.ref,
-              });
-              await log('synthetic_click', {
-                journey: journey.id,
-                action: action.description,
-                result: clicked,
-              });
-            } catch (caught) {
-              await log('synthetic_click_refused', {
-                journey: journey.id,
-                action: action.description,
-                error: (caught as Error).message,
-              });
-              throw caught;
-            }
           } else await helper.call({ cmd: 'press', ref: guard.ref });
           await new Promise((resolve) => setTimeout(resolve, 300));
           const frontAfter = await frontmost();

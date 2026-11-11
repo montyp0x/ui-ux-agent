@@ -215,20 +215,14 @@ const suiteObject = z
     blockedControls: z.array(z.string().min(1)).max(50).default([]),
     // macOS: offer menu-bar commands (opt-in; see MENU_BLOCKED_CONTROLS).
     menus: z.boolean().default(false),
-    // macOS: allow the two synthetic inputs, for apps whose controls cannot be
-    // pressed through accessibility (web views such as Electron apps): a click
-    // on an element the driver found, sent only while its app is frontmost and
-    // a hit-test finds that element under the pointer; and `press` keys, posted
-    // to the app's process only while the target element has focus.
-    syntheticInput: z.boolean().default(false),
     baseURL: z.url(),
     browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
     // An installed browser build for chromium (e.g. 'chrome'): uses the
     // system's proxy settings and certificate trust like a user's browser.
     browserChannel: z.enum(['chrome', 'chrome-beta', 'msedge']).optional(),
     // Absolute path to another Chromium-based browser's executable (e.g.
-    // /Applications/Dia.app/Contents/MacOS/Dia). Launched with a fresh
-    // profile, never the user's own.
+    // /Applications/Dia.app/Contents/MacOS/Dia). Launched with a fresh or a
+    // dedicated --profile test profile, never the user's own.
     browserExecutable: z.string().regex(/^\//).optional(),
     requiresAuth: z.boolean().default(false),
     allowedOrigins: z.array(originSchema).default([]),
@@ -317,8 +311,9 @@ const suiteObject = z
           message:
             'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
         });
+      // A key press would have to be synthesized: the driver only performs
+      // actions that accessibility elements offer.
       if (
-        !suite.syntheticInput &&
         suite.journeys.some((journey) =>
           [...journey.interactions, ...(journey.setup ?? [])].some(
             (interaction) => interaction.kind === 'press',
@@ -327,12 +322,13 @@ const suiteObject = z
       )
         ctx.addIssue({
           code: 'custom',
-          message: 'press interactions on macOS need syntheticInput: true',
+          message:
+            'press interactions are not supported on macOS: the driver never synthesizes keyboard input',
         });
-    } else if (suite.menus || suite.syntheticInput)
+    } else if (suite.menus)
       ctx.addIssue({
         code: 'custom',
-        message: 'menus and syntheticInput apply to macOS suites only',
+        message: 'menus applies to macOS suites only',
       });
     else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });

@@ -20,8 +20,6 @@ final class Store: ObservableObject {
   @Published var deleted = false
   @Published var theme: String? = "Light"
   @Published var markedRead = false
-  @Published var query = ""
-  @Published var searched = ""
 }
 
 @main
@@ -98,15 +96,11 @@ struct ContentView: View {
       VStack(alignment: .leading, spacing: 12) {
         Text("Inbox").font(.title)
         Text("No new messages").accessibilityIdentifier("inbox-empty")
-        // A button that only a real click activates (no AXPress), like web-view
-        // buttons in Electron apps; exercised by syntheticInput tests.
+        // A button that only a mouse click activates (no AXPress). The driver
+        // sends no synthesized input, so it must never offer this control.
         ClickOnlyButton(title: "Mark all read") { store.markedRead = true }
           .frame(width: 140, height: 28)
         if store.markedRead { Text("All marked read").accessibilityIdentifier("marked-read") }
-        TextField("Search messages", text: $store.query)
-          .accessibilityIdentifier("search-field")
-          .onSubmit { store.searched = store.query }
-        if !store.searched.isEmpty { Text("Searched: \(store.searched)").accessibilityIdentifier("searched") }
       }
     }
   }
