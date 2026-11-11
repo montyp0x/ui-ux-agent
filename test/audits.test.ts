@@ -959,3 +959,76 @@ test('failOn is one suite-wide threshold; an audit entry cannot set its own', ()
       id,
     );
 });
+
+test('an audit that fails at a declared state is an error run and the journey continues', async () => {
+  const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-audits-')), 'run');
+  let executed = 0;
+  const suite = suiteWith(
+    {
+      audits: {
+        checks: [{ id: 'accessibility.axe', at: ['states', 'completion'] }],
+      },
+    },
+    {
+      states: [
+        { name: 'arrived', when: { kind: 'path', pattern: '^/arrived$' } },
+        { name: 'undecidable', when: { kind: 'path', pattern: '^/broken$' } },
+      ],
+    },
+  );
+  const results = await runSuite(suite, deterministic, {
+    directory,
+    driver: {
+      async openSession() {
+        return {
+          ...session({
+            runAudit: async (request) => {
+              if (request.checkpoint.kind === 'state')
+                throw new Error('analyzer crashed at the state');
+              return { complete: true, findings: [] };
+            },
+          }),
+          async check(condition: Check) {
+            if (condition.kind === 'visible') return true;
+            if (condition.kind !== 'path') return false;
+            if (condition.pattern === '^/broken$')
+              throw new Error('state check exploded');
+            if (condition.pattern === '^/arrived$') return true;
+            return executed >= 1;
+          },
+          async observe(step: number, screenshot: string) {
+            return { ...state(step), screenshot };
+          },
+          async candidates() {
+            return [{ ...continueAction }];
+          },
+          async execute() {
+            executed++;
+          },
+          async inScope() {
+            return true;
+          },
+        };
+      },
+      async close() {},
+    },
+  });
+  const [result] = parseResults(JSON.stringify(results));
+  // The journey went on to its outcome.
+  assert.equal(result!.status, 'passed');
+  assert.equal(executed, 1);
+  assert.deepEqual(
+    result!.audits.runs.map((run) => [
+      run.checkpoint.id,
+      run.status,
+      run.detail,
+    ]),
+    [
+      ['state:arrived', 'error', 'analyzer crashed at the state'],
+      ['state:undecidable', 'error', 'State check failed: state check exploded'],
+      ['completion', 'clean', null],
+    ],
+  );
+  // An errored audit keeps the verdict from passing; it is not a UI defect.
+  assert.equal(result!.quality.verdict, 'not_evaluated');
+});
