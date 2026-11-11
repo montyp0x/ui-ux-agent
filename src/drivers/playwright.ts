@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import {
   chromium,
   firefox,
@@ -6,6 +6,7 @@ import {
   type BrowserContextOptions,
 } from 'playwright';
 import {
+  dedicatedProfile,
   scopeStorageState,
   storageStateSchema,
   suiteOrigins,
@@ -55,7 +56,8 @@ export async function playwrightDriver(
       ? { args: ['--force-device-scale-factor=1'] }
       : {}),
   };
-  if (profile) await mkdir(profile, { recursive: true, mode: 0o700 });
+  // Only a dedicated test profile; a personal browser profile is refused.
+  if (profile) profile = await dedicatedProfile(profile);
   const browser = profile ? null : await engine.launch(launchOptions);
   return {
     async openSession({
@@ -73,11 +75,9 @@ export async function playwrightDriver(
         throw new Error('Use a profile or a storage state, not both');
       if (storageState) {
         const { state, report } = scopeStorageState(
-          typeof storageState === 'string'
-            ? storageStateSchema.parse(
-                JSON.parse(await readFile(storageState, 'utf8')),
-              )
-            : storageState,
+          storageStateSchema.parse(
+            JSON.parse(await readFile(storageState, 'utf8')),
+          ),
           suiteOrigins(suite),
         );
         await log('storage_state_scoped', report);

@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { scopeStorageState, suiteOrigins } from '../src/auth.js';
+import {
+  dedicatedProfile,
+  PROFILE_MARKER,
+  scopeStorageState,
+  suiteOrigins,
+} from '../src/auth.js';
 import { suiteSchema } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
@@ -283,7 +288,7 @@ test('a persistent profile carries a one-time sign-in into every run', async () 
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
   const directory = await mkdtemp(join(tmpdir(), 'ui-ux-profile-'));
-  const profile = join(directory, 'profile');
+  const profile = await dedicatedProfile(join(directory, 'profile'));
   const baseURL = `http://127.0.0.1:${address.port}`;
   // The one-time sign-in, as --sign-in does it.
   const { chromium } = await import('playwright');
@@ -350,4 +355,107 @@ test('a persistent profile carries a one-time sign-in into every run', async () 
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test('a persistent profile is a dedicated directory the runner created', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ui-ux-home-'));
+  // A new directory is created owner-only and marked as a test profile.
+  const fresh = await dedicatedProfile(join(home, 'profiles', 'app'), home);
+  assert.equal((await stat(fresh)).mode & 0o777, 0o700);
+  await stat(join(fresh, PROFILE_MARKER));
+  // Reusing it is accepted once it holds browser data.
+  await writeFile(join(fresh, 'Local State'), '{}');
+  assert.equal(await dedicatedProfile(fresh, home), fresh);
+  // Browser data locations under the home directory are refused outright,
+  // even when the directory does not exist yet.
+  for (const personal of [
+    ['Library', 'Application Support', 'Google', 'Chrome', 'Default'],
+    ['Library', 'Application Support', 'Dia', 'User Data'],
+    ['.config', 'google-chrome'],
+    ['.mozilla', 'firefox', 'abc.default'],
+  ])
+    await assert.rejects(
+      dedicatedProfile(join(home, ...personal), home),
+      /where browsers keep personal profiles/,
+    );
+  // So is an existing, non-empty directory the runner did not create, such
+  // as a copied personal profile; nothing is written into it.
+  const copied = join(home, 'copied-profile');
+  await mkdir(copied);
+  await writeFile(join(copied, 'Cookies'), '');
+  await assert.rejects(
+    dedicatedProfile(copied, home),
+    /not created by this runner/,
+  );
+  await assert.rejects(stat(join(copied, PROFILE_MARKER)), {
+    code: 'ENOENT',
+  });
+});
+
+test('runs refuse a profile directory the runner did not create', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ui-ux-profile-'));
+  const profile = join(directory, 'browser-profile');
+  await mkdir(profile);
+  await writeFile(join(profile, 'Cookies'), '');
+  const models: Models = {
+    async plan() {
+      throw new Error('not reached');
+    },
+    async choose() {
+      throw new Error('not reached');
+    },
+  };
+  await assert.rejects(
+    runSuite(
+      suiteSchema.parse({
+        name: 'Foreign profile',
+        baseURL: 'http://127.0.0.1:9',
+        viewports: [{ name: 'desktop', width: 800, height: 600 }],
+        journeys: [
+          {
+            id: 'j',
+            goal: 'g',
+            persona: 'p',
+            startPath: '/',
+            allowedPaths: ['/'],
+            ready: { kind: 'path', pattern: '.' },
+            success: [{ kind: 'path', pattern: '^/never$' }],
+          },
+        ],
+      }),
+      models,
+      { directory: join(directory, 'run'), profile },
+    ),
+    /not created by this runner/,
+  );
+});
+
+test('the CLI has no option to read a session from an installed browser', async () => {
+  for (const flag of ['--from-browser', '--browser-profile'])
+    await assert.rejects(
+      promisify(execFile)(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          'src/cli.ts',
+          '--suite',
+          'examples/website.json',
+          '--login',
+          join(tmpdir(), 'never-written.json'),
+          flag,
+          'chrome',
+        ],
+        { env: { ...process.env } },
+      ),
+      (error: { code?: number; stderr?: string }) => {
+        assert.equal(error.code, 2);
+        assert.match(
+          error.stderr ?? '',
+          new RegExp(`Unknown option '${flag}'`),
+        );
+        assert.match(error.stderr ?? '', /--help for the supported options/);
+        return true;
+      },
+    );
 });

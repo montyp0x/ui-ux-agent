@@ -1,7 +1,6 @@
 import { mkdir, appendFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import type { StorageState } from './auth.js';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
@@ -20,8 +19,9 @@ import { actionSignature, refreshReasons, type PlanState } from './planning.js';
 
 export type RunOptions = {
   directory: string;
-  storageState?: string | StorageState;
-  // Persistent browser profile directory, signed in once with --sign-in.
+  storageState?: string;
+  // Dedicated persistent test profile directory, signed in once with
+  // --sign-in (see dedicatedProfile); never a personal browser profile.
   profile?: string;
   headless?: boolean;
   video?: boolean;
@@ -654,7 +654,7 @@ export async function runSuite(
 ): Promise<Result[]> {
   if (suite.requiresAuth && !options.storageState && !options.profile)
     throw new Error(
-      'This suite requires a signed-in --profile, a storage-state path, or --from-browser',
+      'This suite requires a signed-in --profile or an approved storage-state path',
     );
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,

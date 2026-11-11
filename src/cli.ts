@@ -3,47 +3,55 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { chromium, firefox, webkit } from 'playwright';
-import { scopeStorageState, storageStateSchema, suiteOrigins } from './auth.js';
-import { parseArgs } from 'node:util';
 import {
-  importBrowserSession,
-  isBrowserSourceName,
-  type BrowserSourceName,
-} from './browser-session.js';
+  dedicatedProfile,
+  scopeStorageState,
+  storageStateSchema,
+  suiteOrigins,
+} from './auth.js';
+import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
 import { browserLaunchOptions } from './drivers/playwright.js';
-import { suiteSchema, type Suite } from './contracts.js';
+import { suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
 import { summarize } from './summary.js';
 
-const { values } = parseArgs({
-  options: {
-    suite: { type: 'string' },
-    url: { type: 'string' },
-    'storage-state': { type: 'string' },
-    out: { type: 'string' },
-    journey: { type: 'string' },
-    viewport: { type: 'string' },
-    headed: { type: 'boolean' },
-    video: { type: 'boolean' },
-    validate: { type: 'boolean' },
-    help: { type: 'boolean' },
-    init: { type: 'string' },
-    'success-path': { type: 'string' },
-    goal: { type: 'string' },
-    browser: { type: 'string' },
-    'env-file': { type: 'string' },
-    login: { type: 'string' },
-    repeat: { type: 'string' },
-    from: { type: 'string' },
-    'from-browser': { type: 'string' },
-    'browser-profile': { type: 'string' },
-    profile: { type: 'string' },
-    'sign-in': { type: 'boolean' },
-  },
-});
+const options = {
+  suite: { type: 'string' },
+  url: { type: 'string' },
+  'storage-state': { type: 'string' },
+  out: { type: 'string' },
+  journey: { type: 'string' },
+  viewport: { type: 'string' },
+  headed: { type: 'boolean' },
+  video: { type: 'boolean' },
+  validate: { type: 'boolean' },
+  help: { type: 'boolean' },
+  init: { type: 'string' },
+  'success-path': { type: 'string' },
+  goal: { type: 'string' },
+  browser: { type: 'string' },
+  'env-file': { type: 'string' },
+  login: { type: 'string' },
+  repeat: { type: 'string' },
+  from: { type: 'string' },
+  profile: { type: 'string' },
+  'sign-in': { type: 'boolean' },
+} as const;
+// Unknown flags (including the removed --from-browser, which read sessions out
+// of an installed browser's personal profile) are rejected with exit code 2.
+const { values } = (() => {
+  try {
+    return parseArgs({ options });
+  } catch (caught) {
+    console.error(
+      `${caught instanceof Error ? caught.message : String(caught)}. Run with --help for the supported options.`,
+    );
+    process.exit(2);
+  }
+})();
 
 // Credentials come from the environment. An explicit --env-file, or ./.env when
 // present, is loaded first; variables already set in the shell take precedence.
@@ -57,43 +65,19 @@ function loadCredentials(): void {
   process.loadEnvFile(path);
   console.log(`Loaded environment from ${path}`);
 }
-// --from-browser: the suite's session from the user's own browser profile,
-// read fresh on each run so it never goes stale and never touches disk.
-const fromBrowser = ((): BrowserSourceName | undefined => {
-  const name = values['from-browser'];
-  if (name === undefined) return undefined;
-  if (!isBrowserSourceName(name))
-    throw new Error(`--from-browser must be one of: dia, chrome`);
-  if (values['storage-state'] || values.from || values.profile)
-    throw new Error(
-      'Use one of --from-browser, --profile, --storage-state or --from',
-    );
-  return name;
-})();
-if (values.profile && values['storage-state'])
-  throw new Error('Use --profile or --storage-state, not both');
-async function sessionFromBrowser(name: BrowserSourceName, suite: Suite) {
-  const hosts = suiteOrigins(suite).map((origin) => new URL(origin).hostname);
-  const { state, report } = await importBrowserSession(
-    name,
-    hosts,
-    values['browser-profile'],
-  );
-  console.log(
-    `Using the ${report.browser} "${report.profile}" session: ${report.cookies} cookies for ${report.hosts.join(', ')}`,
-  );
-  return state;
-}
-
 if (values.help) {
   console.log(
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
-      'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json | --from-browser dia|chrome [--browser-profile NAME]] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH | --from-browser dia|chrome [--browser-profile NAME]] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]',
+      'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      '\n' +
+      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.',
   );
 } else {
   try {
+    if (values.profile && (values['storage-state'] || values.login))
+      throw new Error('Use --profile or --storage-state/--login, not both');
     if (values.init) {
       if (!values.url || !values['success-path'])
         throw new Error('--init requires --url and --success-path');
@@ -131,8 +115,7 @@ if (values.help) {
         // --profile reuse it, with no further login or Keychain access.
         if (!values.profile)
           throw new Error('--sign-in requires --profile DIR');
-        const profile = resolve(values.profile);
-        await mkdir(profile, { recursive: true, mode: 0o700 });
+        const profile = await dedicatedProfile(values.profile);
         const context = await { chromium, firefox, webkit }[
           suite.browser
         ].launchPersistentContext(profile, {
@@ -162,8 +145,6 @@ if (values.help) {
         let raw: unknown;
         if (values.from)
           raw = JSON.parse(await readFile(resolve(values.from), 'utf8'));
-        else if (fromBrowser)
-          raw = await sessionFromBrowser(fromBrowser, suite);
         else {
           const browser = await { chromium, firefox, webkit }[
             suite.browser
@@ -222,12 +203,12 @@ if (values.help) {
             }),
           {
             directory,
-            storageState: fromBrowser
-              ? await sessionFromBrowser(fromBrowser, suite)
-              : values['storage-state']
-                ? resolve(values['storage-state'])
-                : undefined,
-            profile: values.profile ? resolve(values.profile) : undefined,
+            storageState: values['storage-state']
+              ? resolve(values['storage-state'])
+              : undefined,
+            profile: values.profile
+              ? await dedicatedProfile(values.profile)
+              : undefined,
             headless: !values.headed,
             video: values.video,
             journey: values.journey,

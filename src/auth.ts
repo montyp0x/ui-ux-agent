@@ -1,3 +1,6 @@
+import { mkdir, readdir, realpath, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Suite } from './contracts.js';
 
@@ -79,4 +82,67 @@ export function scopeStorageState(
         .map((entry) => entry.origin),
     },
   };
+}
+
+// Written into every persistent profile the runner creates. A non-empty
+// directory without it was made by something else, such as a browser.
+export const PROFILE_MARKER = '.ui-ux-agent-profile';
+
+// Where browsers keep their users' own profiles. A persistent test profile
+// may not live there: the runner never opens a personal browser profile.
+const PERSONAL_PROFILE_ROOTS = [
+  ['Library', 'Application Support'],
+  ['Library', 'Containers'],
+  ['Library', 'Group Containers'],
+  ['.config'],
+  ['.mozilla'],
+  ['snap'],
+  ['.var', 'app'],
+];
+
+const inside = (path: string, root: string) => {
+  const rel = relative(root, path);
+  return rel === '' || (!rel.startsWith('..') && !rel.startsWith(sep));
+};
+
+// Resolves --profile to a dedicated test profile directory, creating it (mode
+// 0700, with PROFILE_MARKER) when missing. Rejects a directory inside a
+// browser's own data location, and an existing non-empty directory the runner
+// did not create, so a personal profile is never used, copied or modified.
+export async function dedicatedProfile(
+  path: string,
+  home = homedir(),
+): Promise<string> {
+  const absolute = resolve(path);
+  const real = await realpath(absolute).catch(() => absolute);
+  const homes = [
+    resolve(home),
+    await realpath(home).catch(() => resolve(home)),
+  ];
+  for (const candidate of new Set([absolute, real]))
+    for (const base of homes)
+      for (const root of PERSONAL_PROFILE_ROOTS)
+        if (inside(candidate, join(base, ...root)))
+          throw new Error(
+            `Refusing profile ${absolute}: it is inside ${join(base, ...root)}, where browsers keep personal profiles. Use a dedicated directory such as .auth/profiles/NAME and sign in with --sign-in.`,
+          );
+  const entries = await readdir(real).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    },
+  );
+  if (entries && entries.length && !entries.includes(PROFILE_MARKER))
+    throw new Error(
+      `Refusing profile ${absolute}: it is not empty and was not created by this runner (no ${PROFILE_MARKER}). Use a new directory and sign in with --sign-in.`,
+    );
+  if (!entries?.includes(PROFILE_MARKER)) {
+    await mkdir(real, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(real, PROFILE_MARKER),
+      'Dedicated ui-ux-agent test profile. Not a personal browser profile.\n',
+      { mode: 0o600, flag: 'wx' },
+    );
+  }
+  return absolute;
 }
