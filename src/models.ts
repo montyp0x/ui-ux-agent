@@ -288,6 +288,8 @@ export class RateLimitBudgetError extends Error {
     super(
       `Model request would wait ${Math.ceil(waitMs / 1000)}s for its rate limit, past the step budget`,
     );
+    // Explicit, so classification by name survives minification.
+    this.name = 'RateLimitBudgetError';
   }
 }
 

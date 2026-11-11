@@ -203,6 +203,17 @@ test('a wait that would pass the step budget fails at once instead of sleeping',
   assert.ok(Date.now() - started < 100);
 });
 
+test('a rate-limit budget error is named for classification', () => {
+  const error = new RateLimitBudgetError(1500);
+  assert.equal(error.name, 'RateLimitBudgetError');
+  assert.ok(error instanceof Error);
+  assert.equal(error.waitMs, 1500);
+  assert.match(
+    String(error),
+    /^RateLimitBudgetError: Model request would wait 2s/,
+  );
+});
+
 test('concurrency is capped per endpoint', async () => {
   const limiter = new EndpointLimiter({ rpm: 6000, concurrency: 1 });
   await limiter.acquire(Date.now() + 5000);
