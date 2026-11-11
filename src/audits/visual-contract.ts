@@ -72,6 +72,9 @@ export const visualEnvironmentSchema = z
         fullPage: z.boolean(),
         // Configured mask selectors, in configuration order.
         masks: z.array(z.string().min(1)),
+        // Whether the run's evidence protection (secret redaction and
+        // suite.evidence masks) was applied to the capture.
+        protected: z.boolean(),
       })
       .strict(),
   })
@@ -101,6 +104,12 @@ export const visualRegionSchema = z
   .strict();
 export type VisualRegion = z.infer<typeof visualRegionSchema>;
 
+// A masked box in CSS pixels of the capture (whole pixels covering it).
+export const visualRectSchema = z
+  .object({ x: count, y: count, width: count, height: count })
+  .strict();
+export type VisualRect = z.infer<typeof visualRectSchema>;
+
 export const visualToleranceSchema = z
   .object({
     // Per-pixel colour distance (pixelmatch threshold, 0..1) below which a
@@ -126,9 +135,17 @@ export const visualComparisonSchema = z
     // A copy of the approved baseline in the run directory, and when it was
     // approved. Null when none was compared.
     baseline: visualImageSchema
-      .extend({ approvedAt: z.iso.datetime() })
+      .extend({
+        approvedAt: z.iso.datetime(),
+        maskedRegions: z.array(visualRectSchema).max(500),
+      })
       .strict()
       .nullable(),
+    // Boxes of every masked element in the current capture (the audit's
+    // dynamic-region masks and the run's evidence protection). Pixels inside
+    // these boxes or the baseline's are not compared: they are painted over
+    // in both images. Everything outside them is.
+    maskedRegions: z.array(visualRectSchema).max(500),
     // Changed pixels painted over a faded current image; null when nothing
     // was compared.
     diff: z.string().min(1).nullable(),

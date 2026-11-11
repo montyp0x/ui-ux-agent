@@ -239,7 +239,24 @@ export async function playwrightDriver(
           await page.screenshot({ path });
         },
         runAudit(request) {
-          return runPlaywrightAudit(page, request);
+          return runPlaywrightAudit(
+            page,
+            request,
+            {
+              browser: browserName,
+              build: suite.browserChannel
+                ? `channel:${suite.browserChannel}`
+                : suite.browserExecutable
+                  ? 'executable'
+                  : 'bundled',
+              headless,
+            },
+            // INTEGRATION POINT (2B evidence protection): pass the run's
+            // ScreenshotProtection here once SessionOptions carries it (for
+            // example `evidence?.screenshots`). Until then visual captures
+            // apply only the audit's own dynamic-region masks.
+            undefined,
+          );
         },
         async finish(trace) {
           const recording = page.video();

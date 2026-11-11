@@ -19,10 +19,12 @@ import type { AuditDefinition } from './registry.js';
 import {
   visualEnvironmentSchema,
   visualKeySchema,
+  visualRectSchema,
   type VisualComparison,
   type VisualEnvironment,
   type VisualImage,
   type VisualKey,
+  type VisualRect,
   type VisualRegion,
   type VisualTolerance,
 } from './visual-contract.js';
@@ -56,7 +58,11 @@ export const visualAuditConfigShape = {
     .min(0)
     .max(10_000_000)
     .default(DEFAULT_TOLERANCE.maxDiffPixels),
-  maxDiffRatio: z.number().min(0).max(1).default(DEFAULT_TOLERANCE.maxDiffRatio),
+  maxDiffRatio: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(DEFAULT_TOLERANCE.maxDiffRatio),
   // Severity of a mismatch finding; it gates quality at or above failOn.
   severity: z
     .enum(['minor', 'moderate', 'serious', 'critical'])
@@ -68,7 +74,10 @@ export const visualAuditConfigShape = {
   networkIdleMs: z.number().int().min(0).max(30000).default(2000),
 };
 
-export type VisualBaselineConfig = Extract<AuditConfig, { id: 'visual.baseline' }>;
+export type VisualBaselineConfig = Extract<
+  AuditConfig,
+  { id: 'visual.baseline' }
+>;
 
 export const visualBaselineAudit: AuditDefinition<VisualBaselineConfig> = {
   id: 'visual.baseline',
@@ -120,9 +129,16 @@ function flatten(value: unknown, prefix = ''): Map<string, string> {
   const out = new Map<string, string>();
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     for (const [key, inner] of Object.entries(value))
-      for (const [path, leaf] of flatten(inner, prefix ? `${prefix}.${key}` : key))
+      for (const [path, leaf] of flatten(
+        inner,
+        prefix ? `${prefix}.${key}` : key,
+      ))
         out.set(path, leaf);
-  } else out.set(prefix, Array.isArray(value) ? JSON.stringify(value) : String(value));
+  } else
+    out.set(
+      prefix,
+      Array.isArray(value) ? JSON.stringify(value) : String(value),
+    );
   return out;
 }
 
@@ -162,6 +178,8 @@ export const baselineMetadataSchema = z
       })
       .strict(),
     approvedAt: z.iso.datetime(),
+    // Masked element boxes in the approved image; not compared.
+    maskedRegions: z.array(visualRectSchema).max(500),
     // The run whose capture was approved.
     source: z
       .object({ results: z.string().min(1), attempt: z.number().int().min(1) })
@@ -186,7 +204,10 @@ export function baselineFiles(
   id: string,
 ): { png: string; json: string } {
   const directory = baselineDirectory(root, key);
-  return { png: join(directory, `${id}.png`), json: join(directory, `${id}.json`) };
+  return {
+    png: join(directory, `${id}.png`),
+    json: join(directory, `${id}.json`),
+  };
 }
 
 const sameKey = (a: VisualKey, b: VisualKey) =>
@@ -323,10 +344,13 @@ export type ImageComparison = {
   mismatch: boolean;
 };
 
+// Pixels inside `masked` boxes (both images' masked elements) are not
+// compared; `total` counts the compared pixels only.
 export function compareImages(
   baselinePng: Buffer,
   currentPng: Buffer,
   tolerance: VisualTolerance,
+  masked: readonly VisualRect[] = [],
 ): ImageComparison {
   const baseline = PNG.sync.read(baselinePng);
   const current = PNG.sync.read(currentPng);
@@ -335,6 +359,15 @@ export function compareImages(
   const sizeChanged =
     baseline.width !== current.width || baseline.height !== current.height;
   const output = new PNG({ width, height });
+  const ignore = new Uint8Array(width * height);
+  let ignored = 0;
+  for (const rect of masked)
+    for (let y = rect.y; y < Math.min(height, rect.y + rect.height); y++)
+      for (let x = rect.x; x < Math.min(width, rect.x + rect.width); x++)
+        if (!ignore[y * width + x]) {
+          ignore[y * width + x] = 1;
+          ignored++;
+        }
   // Faded current image underneath, changed pixels on top.
   const diffPixels = pixelmatch(
     padded(baseline, width, height),
@@ -348,6 +381,7 @@ export function compareImages(
       alpha: 0.1,
       diffColor: DIFF_COLOR,
       diffColorAlt: DIFF_COLOR_DARKER,
+      ...(ignored ? { ignoreMask: ignore } : {}),
     },
   );
   // pixelmatch paints unchanged pixels grey (r = g = b) and anti-aliasing
@@ -366,7 +400,7 @@ export function compareImages(
       changed[index] = 1;
   }
   const regions = diffPixels ? regionsOf(changed, width, height) : [];
-  const total = width * height;
+  const total = width * height - ignored;
   const ratio = total ? diffPixels / total : 0;
   return {
     pixels: { diff: diffPixels, total, ratio, sizeChanged },
@@ -382,7 +416,12 @@ export function compareImages(
 
 export function imageOf(file: string, png: Buffer): VisualImage {
   const image = PNG.sync.read(png);
-  return { file, width: image.width, height: image.height, sha256: sha256(png) };
+  return {
+    file,
+    width: image.width,
+    height: image.height,
+    sha256: sha256(png),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +435,8 @@ export type VisualCompareInput = {
   settings: VisualBaselineConfig;
   // The settled capture, or null when the page never settled.
   current: Buffer | null;
+  // Boxes of the masked elements in the current capture.
+  maskedRegions: VisualRect[];
   captures: number;
   masks: VisualComparison['masks'];
   // Null when no baseline directory was supplied.
@@ -422,10 +463,7 @@ export async function compareCheckpoint(
 ): Promise<AuditOutput & { visual: VisualComparison }> {
   const { key, environment, settings, directory } = input;
   const id = environmentId(environment);
-  const stem = join(
-    directory,
-    `visual-${key.checkpoint.replace(':', '-')}`,
-  );
+  const stem = join(directory, `visual-${key.checkpoint.replace(':', '-')}`);
   const tolerance: VisualTolerance = {
     threshold: settings.threshold,
     maxDiffPixels: settings.maxDiffPixels,
@@ -450,6 +488,7 @@ export async function compareCheckpoint(
     regionCount: 0,
     tolerance,
     masks: input.masks,
+    maskedRegions: input.maskedRegions,
     captures: input.captures,
   };
   const limitations = [...LIMITATIONS, ...input.limitations];
@@ -490,7 +529,10 @@ export async function compareCheckpoint(
         detail: `missing: no approved baseline for ${keyText(key)}; ${approveHint(key)}`,
         findings: [],
       };
-    const incompatible = environmentDifferences(approved[0]!.environment, environment);
+    const incompatible = environmentDifferences(
+      approved[0]!.environment,
+      environment,
+    );
     return {
       ...base,
       visual: { ...visual, status: 'incompatible', incompatible },
@@ -506,7 +548,10 @@ export async function compareCheckpoint(
       `Baseline image ${files.png} does not match its approved checksum; re-approve it`,
     );
   await copyFile(files.png, `${stem}-baseline.png`);
-  const compared = compareImages(baselinePng, input.current, tolerance);
+  const compared = compareImages(baselinePng, input.current, tolerance, [
+    ...match.maskedRegions,
+    ...input.maskedRegions,
+  ]);
   await writeFile(`${stem}-diff.png`, compared.diff, { mode: 0o600 });
   const result: VisualComparison = {
     ...visual,
@@ -514,6 +559,7 @@ export async function compareCheckpoint(
     baseline: {
       ...imageOf(`${stem}-baseline.png`, baselinePng),
       approvedAt: match.approvedAt,
+      maskedRegions: match.maskedRegions,
     },
     diff: `${stem}-diff.png`,
     pixels: compared.pixels,
@@ -537,7 +583,11 @@ export async function compareCheckpoint(
             description: `Region at ${region.x},${region.y}, ${region.width}x${region.height} px: ${region.diffPixels} changed pixels`,
             selector: null,
           })),
-          files: [`${stem}-current.png`, `${stem}-baseline.png`, `${stem}-diff.png`],
+          files: [
+            `${stem}-current.png`,
+            `${stem}-baseline.png`,
+            `${stem}-diff.png`,
+          ],
         },
       ]
     : [];

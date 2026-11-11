@@ -10,11 +10,20 @@ import type { AuditId } from '../audits/config.js';
 import { axeAuditOutput } from '../audits/accessibility.js';
 import { scanAccessibility } from './playwright-axe.js';
 import { layoutResponsivePlaywrightAudit } from './playwright-layout.js';
+import type { ScreenshotProtection } from '../evidence/protection.js';
+import {
+  visualBaselinePlaywrightAudit,
+  type PlaywrightBuild,
+} from './playwright-visual.js';
 import type { DriverAuditRequest } from './types.js';
 
 export type PlaywrightAudit = (
   page: Page,
   request: DriverAuditRequest,
+  // How the session's browser was launched (audits that key by it).
+  build?: PlaywrightBuild,
+  // The run's screenshot protection, for audits that capture images.
+  protection?: ScreenshotProtection,
 ) => Promise<AuditOutput>;
 
 // Leaves the runner's own deadline the last word only when the scan hangs:
@@ -24,7 +33,9 @@ const SCAN_DEADLINE_MARGIN_MS = 250;
 export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
   async 'accessibility.axe'(page, { config, timeoutMs }) {
     if (config.id !== 'accessibility.axe')
-      throw new Error(`Expected the accessibility.axe config, got ${config.id}`);
+      throw new Error(
+        `Expected the accessibility.axe config, got ${config.id}`,
+      );
     return axeAuditOutput(
       await scanAccessibility(page, {
         include: config.include,
@@ -35,16 +46,23 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
     );
   },
   'layout.responsive': layoutResponsivePlaywrightAudit,
+  async 'visual.baseline'(page, request, build, protection) {
+    if (!build)
+      throw new Error('visual.baseline needs the session browser build');
+    return visualBaselinePlaywrightAudit(page, request, build, protection);
+  },
 };
 
 export async function runPlaywrightAudit(
   page: Page,
   request: DriverAuditRequest,
+  build?: PlaywrightBuild,
+  protection?: ScreenshotProtection,
 ): Promise<AuditOutput> {
   const audit = PLAYWRIGHT_AUDITS[request.config.id];
   if (!audit)
     throw new Error(
       `The Playwright driver has no implementation for audit ${request.config.id}`,
     );
-  return audit(page, request);
+  return audit(page, request, build, protection);
 }

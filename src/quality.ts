@@ -26,7 +26,8 @@ export const NOT_IMPLEMENTED_CHECKS: QualityGap[] = [
   },
   {
     id: 'visual.baseline',
-    reason: 'No reviewed visual baseline comparison in this engine version',
+    reason:
+      'No visual baseline comparison was configured (add visual.baseline to audits.checks and pass --baselines DIR)',
   },
   {
     id: 'keyboard.focus',
@@ -200,10 +201,14 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
   const skipped: QualityGap[] = [...audits.skipped];
   // A configured axe-core scan is reported as its own audit check, with the
   // scan's limitations on each run, so the not-configured gap is dropped.
+  // Likewise a configured visual.baseline audit replaces its gap.
   const axe = inputs.audits?.configured.includes('accessibility.axe');
+  const visual = inputs.audits?.configured.includes('visual.baseline');
   const unsupported: QualityGap[] = [
     ...NOT_IMPLEMENTED_CHECKS.filter(
-      (gap) => !(axe && gap.id === 'accessibility.audit'),
+      (gap) =>
+        !(axe && gap.id === 'accessibility.audit') &&
+        !(visual && gap.id === 'visual.baseline'),
     ),
     ...audits.unsupported,
   ];
