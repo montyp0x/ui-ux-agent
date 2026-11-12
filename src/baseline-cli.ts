@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { approveBaselines, listBaselines, visualKeyText } from './baselines.js';
 
 const USAGE =
-  'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --checkpoint ID | --all) [--replace] [--allow-failed-runs]\n' +
+  'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --environment NAME | --checkpoint ID | --all) [--replace] [--allow-failed-runs]\n' +
   'npm run baseline -- list --baselines DIR\n' +
   '\n' +
   'approve copies reviewed captures (visual-*-current.png in the run directory, see report.html) into DIR as the baseline for the environment they were rendered in. ' +
@@ -19,6 +19,7 @@ const { values, positionals } = (() => {
         baselines: { type: 'string' },
         journey: { type: 'string' },
         viewport: { type: 'string' },
+        environment: { type: 'string' },
         checkpoint: { type: 'string' },
         all: { type: 'boolean' },
         replace: { type: 'boolean' },
@@ -47,6 +48,7 @@ try {
       baselines: values.baselines,
       journey: values.journey,
       viewport: values.viewport,
+      environment: values.environment,
       checkpoint: values.checkpoint,
       all: values.all,
       replace: values.replace,

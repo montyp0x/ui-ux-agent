@@ -20,6 +20,8 @@ export type JourneyAuditOptions = {
   suite: Suite;
   journey: Journey;
   viewport: { name: string; width: number; height: number };
+  // The suite environment's name (src/environments.ts), null without one.
+  environment?: string | null;
   directory: string;
   // The user-supplied visual baseline directory, or null.
   baselines?: string | null;
@@ -252,6 +254,7 @@ export class JourneyAudits {
             config,
             checkpoint,
             viewport: { ...this.options.viewport },
+            environment: this.options.environment ?? null,
             directory,
             scope: { suite: suite.name, journey: this.options.journey.id },
             baselines: this.options.baselines ?? null,

@@ -7075,6 +7075,179 @@
         "publicValues"
       ],
       "additionalProperties": false
+    },
+    "environments": {
+      "minItems": 1,
+      "maxItems": 12,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "colorScheme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark",
+              "no-preference"
+            ]
+          },
+          "reducedMotion": {
+            "type": "string",
+            "enum": [
+              "reduce",
+              "no-preference"
+            ]
+          },
+          "forcedColors": {
+            "type": "string",
+            "enum": [
+              "active",
+              "none"
+            ]
+          },
+          "contrast": {
+            "type": "string",
+            "enum": [
+              "more",
+              "no-preference"
+            ]
+          },
+          "pseudoLocalization": {
+            "type": "object",
+            "properties": {
+              "expansion": {
+                "type": "number",
+                "minimum": 0.1,
+                "maximum": 3
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "combinations": {
+      "minItems": 1,
+      "maxItems": 24,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "viewport": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "required": [
+          "environment",
+          "viewport"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "matrix": {
+      "type": "object",
+      "properties": {
+        "environments": {
+          "minItems": 1,
+          "maxItems": 12,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "viewports": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "exclude": {
+          "default": [],
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "viewport": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              }
+            },
+            "required": [
+              "environment",
+              "viewport"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "include": {
+          "default": [],
+          "maxItems": 24,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "viewport": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              }
+            },
+            "required": [
+              "environment",
+              "viewport"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        }
+      },
+      "required": [
+        "environments",
+        "viewports",
+        "exclude",
+        "include",
+        "max"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [

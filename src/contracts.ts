@@ -7,6 +7,7 @@ import {
 import { targetSchema, type Target } from './target.js';
 import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
 import { referencePathsSchema } from './friction/contract.js';
+import { environmentSuiteShape, selectCombinations } from './environments.js';
 
 export { targetSchema, type Target };
 
@@ -357,9 +358,16 @@ const suiteObject = z
     // Reset, setup and cleanup hooks on a local fixture service for
     // authorized write flows (see src/lifecycle.ts). Web only.
     dataLifecycle: dataLifecycleSchema.optional(),
+    // Named environments (locale, time zone, colour scheme, reduced motion,
+    // forced colours, contrast, pseudo-localized long text) and the explicit
+    // environment × viewport combinations, or capped matrix, that run them
+    // (see src/environments.ts). Web only.
+    ...environmentSuiteShape,
   })
   .strict()
   .superRefine((suite, ctx) => {
+    for (const message of selectCombinations(suite).issues)
+      ctx.addIssue({ code: 'custom', message });
     // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
     // trace or video would record it.
     if (fillSecrets(suite).length)

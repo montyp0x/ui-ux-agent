@@ -31,6 +31,14 @@ import {
 } from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
 import { focusKey } from './playwright-keyboard.js';
+import {
+  ENVIRONMENT_PROBE,
+  environmentContextOptions,
+  environmentProbeSchema,
+  markPseudoLocalized,
+  pseudoLocalizationScript,
+  unappliedSettings,
+} from '../environments.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -91,6 +99,7 @@ export async function playwrightDriver(
       suite,
       journey,
       viewport,
+      environment,
       directory,
       storageState,
       video,
@@ -125,6 +134,8 @@ export async function playwrightDriver(
       }
       const contextOptions = {
         viewport,
+        // Locale, time zone and media emulation of the suite environment.
+        ...environmentContextOptions(environment ?? null),
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
         ...(recorded ? { recordVideo: { dir: directory } } : {}),
@@ -139,6 +150,14 @@ export async function playwrightDriver(
       const page = browser
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
+      // Pseudo-localized long text: expand the application's text in every
+      // page the session loads (src/environments.ts).
+      if (environment?.pseudoLocalization) {
+        await context.addInitScript({
+          content: pseudoLocalizationScript(environment.pseudoLocalization),
+        });
+        markPseudoLocalized(page);
+      }
       if (!browser && profileVersion === null)
         profileVersion =
           /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
@@ -249,6 +268,25 @@ export async function playwrightDriver(
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
           });
+          if (environment) {
+            // The page, not the configuration, says what was emulated: a
+            // setting the browser did not apply fails the run instead of
+            // measuring another environment.
+            const measured = environmentProbeSchema.parse(
+              await page.evaluate(ENVIRONMENT_PROBE),
+            );
+            const missing = unappliedSettings(environment, measured);
+            await log('environment_applied', {
+              environment: environment.name,
+              measured,
+              pseudoLocalization: !!environment.pseudoLocalization,
+              unapplied: missing,
+            });
+            if (missing.length)
+              throw new Error(
+                `Environment ${environment.name}: ${suite.browser} did not apply ${missing.join(', ')}`,
+              );
+          }
         },
         setTimeout(timeoutMs) {
           page.setDefaultTimeout(timeoutMs);

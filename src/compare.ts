@@ -60,6 +60,8 @@ export const findingInstanceSchema = z
     kind: z.enum(['audit', 'observed', 'hypothesis']),
     journey: z.string(),
     viewport: z.string(),
+    // The suite environment (src/environments.ts); absent without one.
+    environment: z.string().optional(),
     auditId: z.string().nullable(),
     ruleId: z.string().min(1),
     // The gate rule key: <audit id>/<rule id>, or finding/<category>.
@@ -178,6 +180,7 @@ export const comparisonSchema = z
         .object({
           journey: z.string(),
           viewport: z.string(),
+          environment: z.string().optional(),
           base: sideOutcome,
           candidate: sideOutcome,
           // Passed in every base run, not in every candidate run.
@@ -222,6 +225,7 @@ export const comparisonSchema = z
         .object({
           journey: z.string(),
           viewport: z.string(),
+          environment: z.string().optional(),
           auditId: z.string().min(1),
           checkpoint: z.string().min(1),
           base: checkStateSchema,
@@ -528,6 +532,14 @@ const severityRank = (severity: Severity | null): number =>
 // The findings of one result, with stable identities.
 export function findingInstances(result: Result): FindingInstance[] {
   const marker = result.marker;
+  // Findings are per environment: the same rule on the same page in another
+  // environment is another finding. Without environments the ids are as
+  // before (the cell is the viewport name).
+  const environment = result.environment?.name;
+  const cell = environment
+    ? `${result.viewport}@${environment}`
+    : result.viewport;
+  const where = environment ? { environment } : {};
   const norm = (text: string): string =>
     marker ? text.replaceAll(marker, '{{marker}}') : text;
   const out = new Map<string, FindingInstance>();
@@ -554,7 +566,7 @@ export function findingInstances(result: Result): FindingInstance[] {
     const group = [
       'audit',
       result.journey,
-      result.viewport,
+      cell,
       finding.auditId,
       finding.ruleId,
       checkpoint,
@@ -575,6 +587,7 @@ export function findingInstances(result: Result): FindingInstance[] {
         kind: 'audit',
         journey: result.journey,
         viewport: result.viewport,
+        ...where,
         auditId: finding.auditId,
         ruleId: finding.ruleId,
         gateKey: `${finding.auditId}/${finding.ruleId}`,
@@ -603,7 +616,7 @@ export function findingInstances(result: Result): FindingInstance[] {
     const instanceId = hash16([
       'finding',
       result.journey,
-      result.viewport,
+      cell,
       finding.kind,
       finding.category,
       withoutDigits(norm(finding.description)),
@@ -614,6 +627,7 @@ export function findingInstances(result: Result): FindingInstance[] {
       kind: finding.kind,
       journey: result.journey,
       viewport: result.viewport,
+      ...where,
       auditId: null,
       ruleId: finding.category,
       gateKey: `finding/${finding.category}`,
@@ -654,14 +668,26 @@ function runInstances(results: Result[]): Map<string, FindingInstance> {
 
 // ------------------------------------------------------------- coverage
 
-const pairKey = (journey: string, viewport: string) =>
-  `${journey}\u0000${viewport}`;
+// Runs pair up per journey, viewport and environment: only like-for-like
+// runs are compared.
+const pairKey = (journey: string, viewport: string, environment?: string) =>
+  `${journey}\u0000${viewport}\u0000${environment ?? ''}`;
 const checkKey = (
   journey: string,
   viewport: string,
+  environment: string | undefined,
   auditId: string,
   checkpoint: string,
-) => [journey, viewport, auditId, checkpoint].join('\u0000');
+) => [journey, viewport, environment ?? '', auditId, checkpoint].join('\u0000');
+// journey/viewport, or journey/environment/viewport.
+const cellName = (entry: {
+  journey: string;
+  viewport: string;
+  environment?: string;
+}) =>
+  entry.environment
+    ? `${entry.journey}/${entry.environment}/${entry.viewport}`
+    : `${entry.journey}/${entry.viewport}`;
 
 const STATE_RANK: CheckState[] = [
   'assessed',
@@ -677,6 +703,7 @@ type Coverage = Map<
   {
     journey: string;
     viewport: string;
+    environment?: string;
     auditId: string;
     checkpoint: string;
     state: CheckState;
@@ -694,10 +721,18 @@ function coverage(results: Result[]): Coverage {
     state: CheckState,
     path: string | null | undefined,
   ) => {
-    const key = checkKey(result.journey, result.viewport, auditId, checkpoint);
+    const environment = result.environment?.name;
+    const key = checkKey(
+      result.journey,
+      result.viewport,
+      environment,
+      auditId,
+      checkpoint,
+    );
     const entry = map.get(key) ?? {
       journey: result.journey,
       viewport: result.viewport,
+      ...(environment ? { environment } : {}),
       auditId,
       checkpoint,
       state,
@@ -781,17 +816,25 @@ export function compareRuns(
   // Functional outcomes per journey/viewport.
   const pairs = new Map<
     string,
-    { journey: string; viewport: string; base: Result[]; candidate: Result[] }
+    {
+      journey: string;
+      viewport: string;
+      environment?: string;
+      base: Result[];
+      candidate: Result[];
+    }
   >();
   for (const [side, results] of [
     ['base', baseResults],
     ['candidate', candidateResults],
   ] as const)
     for (const result of results) {
-      const key = pairKey(result.journey, result.viewport);
+      const environment = result.environment?.name;
+      const key = pairKey(result.journey, result.viewport, environment);
       const entry = pairs.get(key) ?? {
         journey: result.journey,
         viewport: result.viewport,
+        ...(environment ? { environment } : {}),
         base: [],
         candidate: [],
       };
@@ -812,11 +855,12 @@ export function compareRuns(
     comparison.outcomes.push({
       journey: pair.journey,
       viewport: pair.viewport,
+      ...(pair.environment ? { environment: pair.environment } : {}),
       base: b,
       candidate: c,
       regression,
     });
-    const name = `${pair.journey}/${pair.viewport}`;
+    const name = cellName(pair);
     if (b && !c && gate.unassessed === 'fail')
       failures.push({
         code: 'run_missing',
@@ -854,6 +898,7 @@ export function compareRuns(
     comparison.checks.push({
       journey: entry.journey,
       viewport: entry.viewport,
+      ...(entry.environment ? { environment: entry.environment } : {}),
       auditId: entry.auditId,
       checkpoint: entry.checkpoint,
       base: baseState,
@@ -863,7 +908,7 @@ export function compareRuns(
     if (coverageLost && gate.unassessed === 'fail')
       failures.push({
         code: 'coverage_lost',
-        message: `${entry.auditId} at ${entry.checkpoint} on ${entry.journey}/${entry.viewport} was assessed in the base and is ${candidateState} in the candidate`,
+        message: `${entry.auditId} at ${entry.checkpoint} on ${cellName(entry)} was assessed in the base and is ${candidateState} in the candidate`,
         finding: null,
       });
   }
@@ -878,7 +923,7 @@ export function compareRuns(
       instance,
     ]);
   const label = (instance: FindingInstance) =>
-    `${instance.gateKey}${instance.severity ? ` (${instance.severity})` : ''} on ${instance.journey}/${instance.viewport}${instance.checkpoint ? ` at ${instance.checkpoint}` : ''}${instance.path ? ` ${instance.path}` : ''}${instance.target ? `: ${instance.target.selector ?? instance.target.description}` : ''}`;
+    `${instance.gateKey}${instance.severity ? ` (${instance.severity})` : ''} on ${cellName(instance)}${instance.checkpoint ? ` at ${instance.checkpoint}` : ''}${instance.path ? ` ${instance.path}` : ''}${instance.target ? `: ${instance.target.selector ?? instance.target.description}` : ''}`;
   for (const instance of baseFindings.values()) {
     const found = candidateFindings.get(instance.id);
     if (found) {
@@ -906,7 +951,9 @@ export function compareRuns(
     }
     const unassessed = whyUnassessed(
       instance,
-      pairs.get(pairKey(instance.journey, instance.viewport))?.candidate
+      pairs.get(
+        pairKey(instance.journey, instance.viewport, instance.environment),
+      )?.candidate
         .length ?? 0,
       candidateCoverage,
       candidateGroups,
@@ -972,7 +1019,7 @@ function whyUnassessed(
   if (!candidateRuns)
     return {
       reason: 'run_missing',
-      detail: `The candidate did not run ${instance.journey}/${instance.viewport}`,
+      detail: `The candidate did not run ${cellName(instance)}`,
     };
   // A run finding is assessed by the run itself.
   if (instance.kind !== 'audit') return null;
@@ -980,6 +1027,7 @@ function whyUnassessed(
     checkKey(
       instance.journey,
       instance.viewport,
+      instance.environment,
       instance.auditId!,
       instance.checkpoint!,
     ),
