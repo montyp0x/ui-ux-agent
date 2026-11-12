@@ -4,10 +4,17 @@
 // imports a browser library. A feature that was not executed on an engine is
 // reported `unsupported` there with the reason below, never assumed to behave
 // like Chromium. Changing a row needs the execution that proves it.
-import type { AuditId } from './audits/config.js';
+import type { AuditConfig, AuditId } from './audits/config.js';
+import type { PerformanceMetric } from './audits/performance-contract.js';
 import type { Environment } from './environments.js';
 
 export type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
+
+const ENGINE_LABEL: Record<BrowserEngine, string> = {
+  chromium: 'Chromium',
+  firefox: 'Firefox',
+  webkit: 'WebKit',
+};
 
 // A run-wide gap, listed in quality.unsupported (src/quality.ts).
 export type EngineGap = { id: string; reason: string };
@@ -78,12 +85,51 @@ export const KEYBOARD_JOURNEY_UNSUPPORTED: Partial<
   webkit: `Keyboard-only journeys are refused on WebKit: ${WEBKIT_TAB.replace(/^Not supported on WebKit: /, '')}`,
 };
 
-// Why an audit does not run on an engine, or null when it is verified there.
+const CDP_CONDITIONS = (engine: BrowserEngine) =>
+  `Not supported on ${ENGINE_LABEL[engine]}: performance.web applies network and CPU conditions through Chromium's DevTools protocol, so a ${engine} session cannot be measured under them, and is not measured at all rather than unthrottled`;
+
+// Options of an audit that is verified on the engine, but that the engine
+// cannot apply: a run configured with one is `unsupported` there with the
+// reason (never run without the option). Keyed by the option's field in the
+// audit's configuration.
+export const ENGINE_AUDIT_OPTIONS: Record<
+  BrowserEngine,
+  Partial<Record<AuditId, Record<string, string>>>
+> = {
+  chromium: {},
+  webkit: { 'performance.web': { conditions: CDP_CONDITIONS('webkit') } },
+  firefox: { 'performance.web': { conditions: CDP_CONDITIONS('firefox') } },
+};
+
+// The performance.web metrics an engine does not report (its
+// PerformanceObserver lacks the entry type), as executed
+// (test/cross-browser.test.ts compares a real run with this list). Those
+// metrics are null and listed in the measurement's `unsupported`, and a
+// budget on one is `unsupported`. null: never executed on the engine.
+export const ENGINE_PERFORMANCE_UNREPORTED: Record<
+  BrowserEngine,
+  PerformanceMetric[] | null
+> = {
+  chromium: [],
+  webkit: ['cls', 'blockingTimeMs'],
+  firefox: null,
+};
+
+// Why an audit, as configured, does not run on an engine, or null when it is
+// verified there: the audit itself, then any configured option the engine
+// cannot apply.
 export function engineAuditGap(
   engine: BrowserEngine,
-  id: AuditId,
+  config: AuditConfig,
 ): string | null {
-  return ENGINE_AUDIT_SUPPORT[engine][id];
+  const audit = ENGINE_AUDIT_SUPPORT[engine][config.id];
+  if (audit) return audit;
+  const options = ENGINE_AUDIT_OPTIONS[engine][config.id] ?? {};
+  for (const [option, reason] of Object.entries(options)) {
+    const value = (config as Record<string, unknown>)[option];
+    if (value !== undefined && value !== null) return reason;
+  }
+  return null;
 }
 
 // Browser-context emulation of user settings, by engine, as executed
@@ -134,12 +180,6 @@ export const ENGINE_EMULATION: Record<
     timezoneId: 'untested',
     pseudoLocalization: 'untested',
   },
-};
-
-const ENGINE_LABEL: Record<BrowserEngine, string> = {
-  chromium: 'Chromium',
-  firefox: 'Firefox',
-  webkit: 'WebKit',
 };
 
 // Environment fields (src/environments.ts) and the setting each emulates,

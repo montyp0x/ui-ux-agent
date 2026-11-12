@@ -243,8 +243,10 @@ export class JourneyAudits {
         null,
         started,
       );
-    // Supported by the driver, but not verified on this session's engine.
-    const engineGap = this.options.session.auditUnsupported?.(config.id);
+    // Supported by the driver, but not verified on this session's engine,
+    // or configured with an option the engine cannot apply
+    // (src/browser-support.ts).
+    const engineGap = this.options.session.auditUnsupported?.(config);
     if (engineGap)
       return this.push(
         config,
@@ -307,15 +309,6 @@ export class JourneyAudits {
         started,
       );
     }
-    if (output.unsupported)
-      return this.push(
-        config,
-        checkpoint,
-        'unsupported',
-        output.unsupported,
-        { ...output, findings: [], performance: null },
-        started,
-      );
     const status: AuditStatus = !output.complete
       ? 'incomplete'
       : output.findings.some((finding) => finding.certainty === 'violation')

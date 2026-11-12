@@ -284,8 +284,8 @@ export async function playwrightDriver(
         },
         engineGaps: ENGINE_GAPS[browserName],
         environmentGaps: emulation?.unsupported ?? [],
-        auditUnsupported(id) {
-          return engineAuditGap(browserName, id);
+        auditUnsupported(config) {
+          return engineAuditGap(browserName, config);
         },
         async start(timeoutMs) {
           if (

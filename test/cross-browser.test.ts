@@ -20,8 +20,12 @@ import {
   ENGINE_GAPS,
   ENGINE_TYPED_OM,
   KEYBOARD_JOURNEY_UNSUPPORTED,
+  ENGINE_PERFORMANCE_UNREPORTED,
+  engineAuditGap,
   environmentEmulation,
 } from '../src/browser-support.js';
+import { auditConfigSchema } from '../src/audits/config.js';
+import { auditOutputSchema } from '../src/audits/contract.js';
 import {
   MAX_RUN_COMBINATIONS,
   pseudoLocalizationScript,
@@ -309,6 +313,36 @@ test('an environment setting is emulated only where the engine applies it; elsew
   assert.deepEqual(
     environmentEmulation('firefox', { name: 'default' }).unsupported,
     [],
+  );
+});
+
+test('performance.web is declared per engine: throttling needs Chromium, unreported metrics are listed, Firefox is unsupported', () => {
+  const plain = auditConfigSchema.parse({ id: 'performance.web' });
+  const throttled = auditConfigSchema.parse({
+    id: 'performance.web',
+    conditions: { cpuSlowdown: 4 },
+  });
+  assert.equal(engineAuditGap('chromium', plain), null);
+  assert.equal(engineAuditGap('chromium', throttled), null);
+  assert.equal(engineAuditGap('webkit', plain), null);
+  // Conditions are applied through Chromium's DevTools protocol: a throttled
+  // run on another engine is unsupported, never measured unthrottled.
+  assert.match(engineAuditGap('webkit', throttled) ?? '', /Chromium's DevTools protocol/);
+  assert.match(engineAuditGap('firefox', plain) ?? '', /Firefox/);
+  // The metrics each engine does not report, as executed (Firefox: never
+  // run, so nothing is declared).
+  assert.deepEqual(ENGINE_PERFORMANCE_UNREPORTED.chromium, []);
+  assert.ok(ENGINE_PERFORMANCE_UNREPORTED.webkit?.includes('cls'));
+  assert.ok(ENGINE_PERFORMANCE_UNREPORTED.webkit?.includes('blockingTimeMs'));
+  assert.equal(ENGINE_PERFORMANCE_UNREPORTED.firefox, null);
+  // One mechanism: an audit's own output cannot declare itself unsupported.
+  assert.equal(
+    auditOutputSchema.safeParse({
+      complete: false,
+      findings: [],
+      unsupported: 'not in this session',
+    }).success,
+    false,
   );
 });
 
@@ -657,6 +691,44 @@ for (const engine of ENGINES) {
       } else {
         assert.equal(applied.data.measured.forcedColors, 'active');
         assert.equal(result.quality.verdict, 'pass', result.quality.reason);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test(`${engine}: performance.web measures exactly the metrics the support table declares; throttled runs follow the table`, { skip }, async () => {
+    const app = await site(CLEAN_START);
+    try {
+      const runs = async (performance: Record<string, unknown>) =>
+        (
+          await run(engine, app.url, {
+            journeys: [plainJourney],
+            audits: { checks: [{ id: 'performance.web', at: ['ready'], ...performance }] },
+          })
+        ).result.audits.runs.filter((entry) => entry.auditId === 'performance.web');
+      const [plain] = await runs({});
+      assert.ok(plain);
+      const declared = ENGINE_PERFORMANCE_UNREPORTED[engine];
+      if (declared === null) {
+        assert.equal(plain.status, 'unsupported');
+      } else {
+        assert.ok(plain.performance, `${engine}: ${plain.status} ${plain.detail}`);
+        assert.deepEqual(plain.performance.unsupported, declared);
+        assert.equal(plain.performance.browser, engine);
+      }
+      const throttledConfig = { conditions: { cpuSlowdown: 2 } };
+      const [throttled] = await runs(throttledConfig);
+      const gap = engineAuditGap(
+        engine,
+        auditConfigSchema.parse({ id: 'performance.web', ...throttledConfig }),
+      );
+      if (gap) {
+        assert.equal(throttled!.status, 'unsupported');
+        assert.equal(throttled!.detail, gap);
+        assert.equal(throttled!.performance, undefined);
+      } else {
+        assert.ok(throttled!.performance?.conditions.applied);
       }
     } finally {
       await app.close();

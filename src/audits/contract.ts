@@ -168,10 +168,6 @@ export const auditOutputSchema = z
     // The measurement of a performance.web run; null for every other audit
     // (src/audits/performance-contract.ts).
     performance: performanceMeasurementSchema.nullable().default(null),
-    // Set when the driver supports the audit but not this configuration in
-    // this session (for example throttling outside Chromium): the run is
-    // `unsupported` with this reason and its findings are ignored.
-    unsupported: z.string().min(1).max(500).nullable().default(null),
   })
   .strict();
 export type AuditOutput = z.input<typeof auditOutputSchema>;

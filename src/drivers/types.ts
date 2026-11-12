@@ -82,7 +82,9 @@ export interface UISession {
   // on the result's environment and in quality.unsupported, and the quality
   // verdict cannot pass. Omitted or empty: the whole environment applied.
   readonly environmentGaps?: EngineGap[];
-  auditUnsupported?(id: AuditId): string | null;
+  // Checked per configured audit, so an option the engine cannot apply
+  // (performance.web conditions outside Chromium) is unsupported too.
+  auditUnsupported?(config: AuditConfig): string | null;
   start(timeoutMs: number): Promise<void>;
   setTimeout(timeoutMs: number): void;
   location(): string;

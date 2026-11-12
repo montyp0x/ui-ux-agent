@@ -121,8 +121,6 @@ export class PerformanceRecorder {
   screenshots = 0;
   screenshotMs = 0;
   readonly intervals: HarnessInterval[] = [];
-  // Set when the configured conditions cannot be applied in this browser.
-  unsupported: string | null = null;
   // Set when applying them failed in Chromium.
   failure: string | null = null;
 
@@ -176,8 +174,10 @@ export async function preparePerformance(
     content: `${COLLECTOR}(${JSON.stringify(config.interactionTargets)})`,
   });
   if (!config.conditions) return recorder;
+  // Outside Chromium the runner never calls the audit: the engine support
+  // table (src/browser-support.ts ENGINE_AUDIT_OPTIONS) reports configured
+  // conditions unsupported there. Nothing is applied.
   if (browserName !== 'chromium') {
-    recorder.unsupported = `Network and CPU conditions are applied through Chromium's DevTools protocol; this ${browserName} session cannot be measured under them, so it is not measured at all`;
     await log('performance_conditions', {
       applied: false,
       browser: browserName,
@@ -244,12 +244,6 @@ export async function performanceWebPlaywrightAudit(
     throw new Error(
       'performance.web needs the collector installed when the session opened',
     );
-  if (recorder.unsupported)
-    return {
-      complete: false,
-      unsupported: recorder.unsupported,
-      findings: [],
-    };
   if (recorder.failure)
     throw new Error(
       `Could not apply the performance conditions: ${recorder.failure}`,
