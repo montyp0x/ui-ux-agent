@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { failOnSchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
+import { visualAuditConfigShape } from './visual.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
 // (each of the journey's declared `states`, once, when it first holds) and
@@ -80,10 +81,25 @@ const layoutResponsiveConfig = z
   })
   .strict();
 
+// A screenshot of each checkpoint compared with a reviewed baseline from a
+// user-supplied directory (src/audits/visual.ts). Runs never approve a
+// baseline; a missing or incompatible baseline is never a pass. The default
+// checkpoint is ready: the state before any agent action, the one most
+// likely to repeat run after run.
+const visualBaselineConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('visual.baseline'),
+    at: auditAtSchema.default(['ready']),
+    ...visualAuditConfigShape,
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
   layoutResponsiveConfig,
+  visualBaselineConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

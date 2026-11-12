@@ -253,7 +253,23 @@ export async function playwrightDriver(
           await capture(path);
         },
         runAudit(request) {
-          return runPlaywrightAudit(page, request);
+          return runPlaywrightAudit(
+            page,
+            request,
+            {
+              browser: browserName,
+              build: suite.browserChannel
+                ? `channel:${suite.browserChannel}`
+                : suite.browserExecutable
+                  ? 'executable'
+                  : 'bundled',
+              headless,
+            },
+            // The run's screenshot protection: visual captures get the same
+            // pre-capture masks as every other screenshot, on top of the
+            // audit's own dynamic-region masks.
+            evidence?.screenshots,
+          );
         },
         async finish(trace) {
           const recording = page.video();

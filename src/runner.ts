@@ -16,6 +16,7 @@ import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
+import { baselineDirectoryForRun } from './baselines.js';
 import { evaluateQuality } from './quality.js';
 import {
   OUTCOME_CODES,
@@ -50,6 +51,9 @@ export type RunOptions = {
   // the suite's redactEnv variables and of credential-named variables never
   // appear in evidence or model payloads.
   env?: Record<string, string | undefined>;
+  // A user-supplied directory of approved visual baselines (outside Git),
+  // read by the visual.baseline audit; runs never write into it.
+  baselines?: string;
 };
 export type Logger = EventLogger;
 
@@ -211,6 +215,7 @@ async function runJourney(
   attempt: number,
   usage: Usage,
   protection: EvidenceProtection,
+  baselines: string | null = null,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -228,6 +233,7 @@ async function runJourney(
       height: 0,
     },
     directory,
+    baselines,
     session,
     log,
   });
@@ -1003,6 +1009,10 @@ export async function runSuite(
   const repeat = options.repeat ?? 1;
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
+  // Checked before the run starts: an existing directory outside Git.
+  const baselines = options.baselines
+    ? await baselineDirectoryForRun(options.baselines)
+    : null;
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
@@ -1102,6 +1112,7 @@ export async function runSuite(
               attempt,
               usage,
               protection,
+              baselines,
             );
             if (runJourneyConfig !== journey) result.marker = marker;
             results.push(result);

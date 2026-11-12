@@ -4936,6 +4936,103 @@
                   "matrix"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 120000
+                  },
+                  "id": {
+                    "type": "string",
+                    "const": "visual.baseline"
+                  },
+                  "at": {
+                    "default": [
+                      "ready"
+                    ],
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "states",
+                        "completion"
+                      ]
+                    }
+                  },
+                  "mask": {
+                    "default": [],
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  },
+                  "fullPage": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "threshold": {
+                    "default": 0.1,
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "maxDiffPixels": {
+                    "default": 0,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10000000
+                  },
+                  "maxDiffRatio": {
+                    "default": 0,
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "severity": {
+                    "default": "serious",
+                    "type": "string",
+                    "enum": [
+                      "minor",
+                      "moderate",
+                      "serious",
+                      "critical"
+                    ]
+                  },
+                  "maxCaptures": {
+                    "default": 5,
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 20
+                  },
+                  "networkIdleMs": {
+                    "default": 2000,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 30000
+                  }
+                },
+                "required": [
+                  "id",
+                  "at",
+                  "mask",
+                  "fullPage",
+                  "threshold",
+                  "maxDiffPixels",
+                  "maxDiffRatio",
+                  "severity",
+                  "maxCaptures",
+                  "networkIdleMs"
+                ],
+                "additionalProperties": false
               }
             ]
           }

@@ -583,6 +583,8 @@ test('a matrix entry named like the session viewport is measured once; another s
         screenshot: null,
       },
       directory,
+      scope: { suite: 'layout', journey: 'matrix' },
+      baselines: null,
       timeoutMs: 15000,
       viewport: { name: 'mobile', width: 390, height: 844 },
     });

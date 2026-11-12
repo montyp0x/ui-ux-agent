@@ -1,4 +1,9 @@
 import { relative, sep } from 'node:path';
+import type { AuditRun } from './audits/contract.js';
+import type {
+  VisualComparison,
+  VisualStatus,
+} from './audits/visual-contract.js';
 import type { Quality, Result } from './results.js';
 import { summarize } from './summary.js';
 
@@ -10,6 +15,43 @@ export function escapeHTML(value: string): string {
         char
       ]!,
   );
+}
+
+const VISUAL_LABEL: Record<VisualStatus, string> = {
+  match: 'MATCH',
+  mismatch: 'MISMATCH',
+  missing: 'NO APPROVED BASELINE (not a pass)',
+  incompatible: 'INCOMPATIBLE BASELINE (not compared, not a pass)',
+  unstable: 'UNSTABLE CAPTURE (not compared, not a pass)',
+};
+
+// Baseline, current and diff images of each visual.baseline run, with the
+// aggregate and per-region difference, or why nothing was compared.
+function visualHTML(runs: AuditRun[], link: (file: string) => string): string {
+  const visual = runs.flatMap((run) => (run.visual ? [run.visual] : []));
+  if (!visual.length) return '';
+  const figure = (label: string, file: string | null | undefined) =>
+    file
+      ? `<figure style="margin:0;flex:1;min-width:200px"><figcaption><small>${label}</small></figcaption><a href="${link(file)}"><img src="${link(file)}" alt="${label}" loading="lazy"></a></figure>`
+      : `<figure style="margin:0;flex:1;min-width:200px"><figcaption><small>${label}: none</small></figcaption></figure>`;
+  const item = (entry: VisualComparison) => {
+    const { pixels, tolerance } = entry;
+    const aggregate = pixels
+      ? `${pixels.diff} of ${pixels.total} pixels differ (${(pixels.ratio * 100).toFixed(3)}%)${pixels.sizeChanged ? ' · image size changed' : ''} · tolerance ${tolerance.maxDiffPixels} pixels and ${(tolerance.maxDiffRatio * 100).toFixed(3)}% at colour threshold ${tolerance.threshold}`
+      : 'not compared';
+    const regions = entry.regions.length
+      ? `<table><thead><tr><th>Region (x, y, width × height)</th><th>Changed pixels</th></tr></thead><tbody>${entry.regions.map((region) => `<tr><td>${region.x}, ${region.y}, ${region.width} × ${region.height}</td><td>${region.diffPixels}</td></tr>`).join('')}</tbody></table>${entry.regionCount > entry.regions.length ? `<p><small>${entry.regions.length} of ${entry.regionCount} regions shown.</small></p>` : ''}`
+      : '';
+    const incompatible = entry.incompatible.length
+      ? `<table><thead><tr><th>Environment field</th><th>Approved baseline</th><th>This run</th></tr></thead><tbody>${entry.incompatible.map((field) => `<tr><td><code>${escapeHTML(field.field)}</code></td><td>${escapeHTML(field.baseline)}</td><td>${escapeHTML(field.current)}</td></tr>`).join('')}</tbody></table>`
+      : '';
+    const env = entry.environment;
+    const masks = entry.masks.length
+      ? ` · masks ${escapeHTML(entry.masks.map((mask) => `${mask.selector} (${mask.matched})`).join(', '))}`
+      : '';
+    return `<section><p><strong class="visual-${entry.status}">${VISUAL_LABEL[entry.status]}</strong> <code>${escapeHTML(entry.key.checkpoint)}</code> · ${escapeHTML(aggregate)}${entry.baseline ? ` · baseline approved ${escapeHTML(entry.baseline.approvedAt)}` : ''}</p><p><small>Environment <code>${entry.environmentId}</code>: ${escapeHTML(`${env.browser.name} ${env.browser.version}${env.browser.headless ? ' headless' : ''} (${env.browser.build}) · ${env.os.platform}-${env.os.arch} ${env.os.release} · ${env.viewport.width}×${env.viewport.height} @${env.deviceScaleFactor} · ${env.locale} · ${env.timezone} · ${env.colorScheme}${env.capture.fullPage ? ' · full page' : ''}${env.capture.protected ? ' · evidence protection applied' : ''}`)}${masks} · ${entry.captures} captures</small></p>${incompatible}${regions}<div style="display:flex;gap:8px;flex-wrap:wrap">${figure('Approved baseline', entry.baseline?.file)}${figure('Current', entry.current?.file)}${figure('Diff (red: changed, blue: darker now)', entry.diff)}</div></section>`;
+  };
+  return `<h3>Visual comparisons</h3><p><small>Captures are never approved by a run; review the current image, then approve it with <code>npm run baseline -- approve</code>.</small></p>${visual.map(item).join('')}`;
 }
 
 const VERDICT_LABEL: Record<Quality['verdict'], string> = {
@@ -114,7 +156,11 @@ export function reportHTML(
       outcome.category === 'budget_exhausted' && auditMs > 0
         ? `<p><small>Audits took ${(auditMs / 1000).toFixed(1)} s of this run's ${(durationMs / 1000).toFixed(1)} s (${Math.round((auditMs / Math.max(1, durationMs)) * 100)}%); audit time counts against the journey deadline.</small></p>`
         : '';
-    return `${budgetNote}<details><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
+    // Opened when a visual comparison did not match, so it is not missed.
+    const attention = audits.runs.some(
+      (run) => run.visual && run.visual.status !== 'match',
+    );
+    return `${budgetNote}<details${attention ? ' open' : ''}><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${visualHTML(audits.runs, link)}${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
   };
   // What each evidence format captured or why it was disabled.
   const evidence = ({ evidence }: Result) => {
@@ -128,7 +174,7 @@ export function reportHTML(
     return `<details><summary>Evidence: ${disabled.length ? `${disabled.length} format(s) disabled (${escapeHTML(disabled.map((format) => format.format).join(', '))})` : 'all formats enabled'} · ${evidence.declaredPatterns} suite pattern(s), ${evidence.redactedEnv.length} redacted environment value(s), ${evidence.masks} mask(s)</summary><ul>${items}</ul></details>`;
   };
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(name)}</title>
-<style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}</style>
+<style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}.visual-match{color:#176339}.visual-mismatch{color:#a12727}.visual-missing,.visual-incompatible,.visual-unstable{color:#895700}</style>
 <h1>${escapeHTML(name)}</h1><p>${results.filter((result) => result.status === 'passed').length}/${results.length} runs reached their asserted outcome. Quality verdicts, kept separate from that outcome: ${verdicts.pass} pass, ${verdicts.fail} fail, ${verdicts.not_evaluated} not evaluated (not evaluated is not a pass). Model concerns require human review. These runs are synthetic task probes, not measured human usability.${scanned.length ? ` Automated audits ran at configured checkpoints (${escapeHTML(scanned.join(', '))}); an automated scan does not establish accessibility or standards conformance.` : ' No automated audit ran; this is not an accessibility audit.'}</p>
 <table><thead><tr><th>Journey</th><th>Viewport</th><th>Passed</th><th>Other outcomes</th><th>Quality (pass / fail / not evaluated)</th><th>Median actions</th><th>Median duration</th><th>Model calls (planner / selector)</th><th>Tokens (in / out)</th></tr></thead><tbody>${summarize(
     results,

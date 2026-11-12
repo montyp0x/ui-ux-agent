@@ -32,6 +32,12 @@ export type DriverAuditRequest = {
   viewport: { name: string; width: number; height: number };
   // The run directory: evidence files the audit writes go here.
   directory: string;
+  // The suite and journey being run, for audits that key stored state
+  // (visual baselines) by them.
+  scope: { suite: string; journey: string };
+  // The user-supplied baseline directory (--baselines), or null. Read-only
+  // for audits: only an explicit approval writes into it.
+  baselines: string | null;
   // The audit must finish within this; the runner also enforces it.
   timeoutMs: number;
 };

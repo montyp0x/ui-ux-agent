@@ -43,6 +43,7 @@ const options = {
   'sign-in': { type: 'boolean' },
   'prune-runs': { type: 'string' },
   'dry-run': { type: 'boolean' },
+  baselines: { type: 'string' },
 } as const;
 // Unknown flags (including the removed --from-browser, which read sessions out
 // of an installed browser's personal profile) are rejected with exit code 2.
@@ -74,11 +75,13 @@ if (values.help) {
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --checkpoint ID | --all) [--replace]\n' +
       '\n' +
       'npm run run -- --prune-runs runs [--dry-run]   (deletes run directories whose evidence.retentionDays have passed)\n' +
       '\n' +
       '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.\n' +
+      '--baselines DIR is your local directory of approved visual baselines, outside Git; runs only read it, and --prune-runs never touches it.\n' +
       'Runs are never overwritten, uploaded or deleted automatically.',
   );
 } else if (values['prune-runs']) {
@@ -247,6 +250,7 @@ if (values.help) {
             journey: values.journey,
             viewport: values.viewport,
             repeat: values.repeat ? Number(values.repeat) : 1,
+            baselines: values.baselines,
           },
         );
         // The exit code follows the functional outcome only; the quality
