@@ -193,6 +193,16 @@ if (values.help) {
             `runs/${new Date().toISOString().replace(/[:.]/g, '-')}`,
         );
         console.log(`Live action log: ${directory}/events.jsonl`);
+        // Ctrl-C cancels: the current run stops, its data cleanup still
+        // runs and no further run starts. A second Ctrl-C exits at once.
+        const cancel = new AbortController();
+        process.once('SIGINT', () => {
+          console.error(
+            'Cancelling: finishing data cleanup for the current run (Ctrl-C again to exit now)',
+          );
+          cancel.abort();
+          process.once('SIGINT', () => process.exit(130));
+        });
         const results = await runSuite(
           suite,
           (log) =>
@@ -214,6 +224,7 @@ if (values.help) {
             journey: values.journey,
             viewport: values.viewport,
             repeat: values.repeat ? Number(values.repeat) : 1,
+            signal: cancel.signal,
           },
         );
         // The exit code follows the functional outcome only; the quality
@@ -227,10 +238,20 @@ if (values.help) {
             console.log(
               `${row.journey}/${row.viewport}: ${row.passed}/${row.runs} passed, median ${row.medianSteps} actions, ${(row.medianDurationMs / 1000).toFixed(1)}s`,
             );
+        const unclean = results.filter(
+          (result) => result.dataLifecycle && !result.dataLifecycle.clean,
+        );
+        for (const result of unclean)
+          console.error(
+            `CLEANUP FAILED: ${result.journey}/${result.viewport} run ${result.dataLifecycle!.run} on ${result.dataLifecycle!.service}: ${result.dataLifecycle!.cleanup?.detail ?? 'cleanup did not run'}`,
+          );
         console.log(`Report: ${directory}/report.html`);
-        process.exitCode = results.some((result) => result.status !== 'passed')
-          ? 1
-          : 0;
+        // A failed data cleanup fails the command even when every run passed.
+        process.exitCode =
+          unclean.length ||
+          results.some((result) => result.status !== 'passed')
+            ? 1
+            : 0;
       }
     }
   } catch (caught) {

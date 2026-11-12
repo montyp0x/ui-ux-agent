@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
 import { targetSchema, type Target } from './target.js';
+import { dataLifecycleSchema } from './lifecycle.js';
 
 export { targetSchema, type Target };
 
@@ -295,6 +296,9 @@ const suiteObject = z
     // Objective audits run at configured checkpoints (see src/audits/).
     // Default: the horizontal overflow audit at completion, fail on serious.
     audits: auditsConfigSchema.prefault({}),
+    // Reset, setup and cleanup hooks on a local fixture service for
+    // authorized write flows (see src/lifecycle.ts). Web only.
+    dataLifecycle: dataLifecycleSchema.optional(),
   })
   .strict()
   .superRefine((suite, ctx) => {
@@ -316,7 +320,8 @@ const suiteObject = z
         suite.applicationOrigins.length ||
         suite.allowedRequests.length ||
         suite.readOnlyPosts.length ||
-        suite.requiresAuth
+        suite.requiresAuth ||
+        suite.dataLifecycle
       )
         ctx.addIssue({
           code: 'custom',
@@ -425,6 +430,11 @@ const suiteObject = z
       (check.at as string[]).includes('states'),
     );
     for (const journey of suite.journeys) {
+      if (!suite.dataLifecycle && JSON.stringify(journey).includes('{{data.'))
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id} uses {{data.*}} values, which only dataLifecycle setup provides`,
+        });
       if (journey.keyboard && journey.input !== 'keyboard')
         ctx.addIssue({
           code: 'custom',

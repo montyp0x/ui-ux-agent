@@ -218,8 +218,8 @@ export function scriptedDecisions(scripts: Record<string, string[]>): Models {
   };
 }
 
-// The scripts for examples/states.json and examples/keyboard.json, by
-// journey id.
+// The scripts for examples/states.json, examples/keyboard.json and
+// examples/notes.json, by journey id.
 export const STATE_SCRIPTS: Record<string, string[]> = {
   'form-validation': [
     'Enter an invalid email',
@@ -232,6 +232,7 @@ export const STATE_SCRIPTS: Record<string, string[]> = {
   'dialog-edit': ['Open the profile dialog', 'Change the display name', 'Save the profile'],
   'menu-archive': ['Open the actions menu', 'Click menuitem Archive'],
   'table-pagination': ['Open Next page', 'Open Next page'],
+  'save-note': ['Write the note', 'Save the note'],
   'dialog-keyboard': [
     'Press Tab',
     'Press Enter',

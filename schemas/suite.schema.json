@@ -6519,6 +6519,103 @@
         "timeoutMs"
       ],
       "additionalProperties": false
+    },
+    "dataLifecycle": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string",
+          "format": "uri"
+        },
+        "reset": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "POST",
+                "DELETE"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\/(?!\\/)"
+            }
+          },
+          "required": [
+            "method",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "POST",
+                "PUT"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\/(?!\\/)"
+            }
+          },
+          "required": [
+            "method",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "cleanup": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "POST",
+                "DELETE"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\/(?!\\/)"
+            }
+          },
+          "required": [
+            "method",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "verify": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^\\/(?!\\/)"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "timeoutMs": {
+          "default": 10000,
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000
+        }
+      },
+      "required": [
+        "service",
+        "cleanup",
+        "timeoutMs"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
