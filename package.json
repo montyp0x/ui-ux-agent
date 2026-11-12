@@ -11,6 +11,7 @@
     "run": "tsx src/cli.ts",
     "schema": "tsx src/schema.ts",
     "baseline": "tsx src/baseline-cli.ts",
+    "benchmark": "tsx src/benchmark/cli.ts",
     "demo": "tsx examples/demo.ts",
     "demo:macos": "tsx examples/macos-demo.ts",
     "demo:states": "tsx examples/states-demo.ts",
