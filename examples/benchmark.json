@@ -1,0 +1,32 @@
+{
+  "benchmarkVersion": 1,
+  "name": "Example: documentation discovery, pinned planner and selector",
+  "targets": [
+    {
+      "id": "docs-install-desktop",
+      "suite": "website.json",
+      "journey": "find-installation",
+      "viewport": "desktop",
+      "reviewed": {
+        "by": "REPLACE with the reviewer's name",
+        "on": "2026-11-11"
+      }
+    }
+  ],
+  "model": {
+    "plannerURL": "https://openrouter.ai/api/v1/chat/completions",
+    "plannerModel": "openai/gpt-6-astra",
+    "selectorProtocol": "typesafe",
+    "selectorURL": "https://api.typesafe.ai/v1/systemone",
+    "selectorModel": "jev-latest",
+    "plannerRateLimit": { "rpm": 60, "concurrency": 2 },
+    "selectorRateLimit": { "rpm": 300, "concurrency": 4 }
+  },
+  "repeat": 5,
+  "ceilings": {
+    "maxModelCalls": 150,
+    "maxTokens": 1500000,
+    "maxWallTimeMs": 900000,
+    "unknownUsage": "stop"
+  }
+}
