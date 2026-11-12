@@ -18,6 +18,7 @@ import {
 import type { DriverAuditRequest } from './types.js';
 import type { Journey } from '../contracts.js';
 import { keyboardFocusPlaywrightAudit } from './playwright-keyboard.js';
+import { designTokensPlaywrightAudit } from './playwright-design.js';
 
 // What the session knows beyond the page, for audits that read it.
 export type PlaywrightAuditContext = {
@@ -77,6 +78,7 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
       context.screenshotAt,
     );
   },
+  'design.tokens': designTokensPlaywrightAudit,
 };
 
 export async function runPlaywrightAudit(

@@ -18,6 +18,9 @@ const FIREFOX_UNVERIFIED =
 const WEBKIT_TAB =
   'Not supported on WebKit: WebKit (macOS default keyboard navigation) moves Tab focus only between form fields, never to links or buttons, so focus order and indicators would be measured against a different tab model than Chromium and Firefox';
 
+const DESIGN_WEBKIT_UNVERIFIED =
+  'Not verified on WebKit: design.tokens has not been executed on WebKit yet';
+
 // null: verified on that engine. Every audit must be declared for every
 // engine, so a new audit cannot be assumed to work on an engine it never ran
 // on.
@@ -32,6 +35,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'visual.baseline': null,
     'journey.state-checks': null,
     'keyboard.focus': null,
+    'design.tokens': null,
   },
   webkit: {
     'layout.horizontal-overflow': null,
@@ -40,6 +44,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'visual.baseline': null,
     'journey.state-checks': null,
     'keyboard.focus': WEBKIT_TAB,
+    'design.tokens': DESIGN_WEBKIT_UNVERIFIED,
   },
   firefox: {
     'layout.horizontal-overflow': FIREFOX_UNVERIFIED,
@@ -48,6 +53,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'visual.baseline': FIREFOX_UNVERIFIED,
     'journey.state-checks': FIREFOX_UNVERIFIED,
     'keyboard.focus': FIREFOX_UNVERIFIED,
+    'design.tokens': FIREFOX_UNVERIFIED,
   },
 };
 

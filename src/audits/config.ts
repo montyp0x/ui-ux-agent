@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
 import { visualAuditConfigShape } from './visual.js';
+import { designTokensConfigShape } from './design-tokens.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
 // (each of the journey's declared `states`, once, when it first holds) and
@@ -126,6 +127,18 @@ const keyboardFocusConfig = z
   })
   .strict();
 
+// Computed styles of in-scope elements compared with a suite-owned token set
+// (src/audits/design-tokens.ts). Objective values only: no design-file
+// comparison or judgement of looks.
+const designTokensConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('design.tokens'),
+    at: auditAtSchema.default(['ready', 'completion']),
+    ...designTokensConfigShape,
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
@@ -133,6 +146,7 @@ export const auditConfigSchema = z.discriminatedUnion('id', [
   visualBaselineConfig,
   stateChecksConfig,
   keyboardFocusConfig,
+  designTokensConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

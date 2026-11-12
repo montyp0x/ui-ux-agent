@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 import { modelOptionsFromEnv } from '../config.js';
 import { suiteSchema, type Suite } from '../contracts.js';
+import { loadDesignTokens } from '../audits/design-tokens.js';
 import type { ModelOptions } from '../models.js';
 
 export const BENCHMARK_VERSION = 1;
@@ -157,7 +158,10 @@ export async function loadBenchmark(path: string): Promise<LoadedBenchmark> {
       throw new Error(
         `Target ${target.id}: ${target.suite} does not match its pinned sha256 (found ${digest}); review the suite and update the pin`,
       );
-    const parsed = suiteSchema.parse(JSON.parse(bytes.toString('utf8')));
+    const parsed = await loadDesignTokens(
+      suiteSchema.parse(JSON.parse(bytes.toString('utf8'))),
+      suitePath,
+    );
     if (
       target.journey &&
       !parsed.journeys.some((journey) => journey.id === target.journey)
