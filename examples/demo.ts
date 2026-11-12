@@ -44,6 +44,17 @@ const suite = suiteSchema.parse({
           },
         },
       ],
+      // A reviewed route, compared in each run's task-friction summary.
+      referencePaths: [
+        {
+          name: 'via-documentation',
+          waypoints: [
+            { kind: 'page', pattern: '^/docs$' },
+            { kind: 'action', action: 'link', to: '^/docs/install$' },
+          ],
+          expectedActions: 2,
+        },
+      ],
     },
   ],
 });
@@ -75,7 +86,7 @@ try {
   const results = await runSuite(suite, decisions, { directory, video: true });
   for (const result of results)
     console.log(
-      `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · quality ${result.quality.verdict}`,
+      `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · quality ${result.quality.verdict} · agent friction: ${result.friction?.actions.product ?? 0} product action(s), ${result.friction?.counts.backtracks ?? 0} backtrack(s), closest reference path ${result.friction?.reference?.closest ?? 'none'}`,
     );
   console.log(`Report: ${directory}/report.html`);
   process.exitCode = results.every((result) => result.status === 'passed')

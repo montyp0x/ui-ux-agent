@@ -8,11 +8,13 @@
 // src/evidence/policy.ts) and makes `trace` null when no trace was captured;
 // it also adds `dataLifecycle` (the reset/setup/cleanup hooks of authorized
 // write flows, see src/lifecycle.ts), the data_setup_failed and run_cancelled
-// codes and the cancelled category.
+// codes and the cancelled category. The optional `friction` summary was added
+// within version 4 (readers of earlier version-4 results see it absent).
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
 import { evidenceReportSchema } from './evidence/policy.js';
 import { dataLifecycleResultSchema } from './lifecycle.js';
+import { frictionSchema } from './friction/contract.js';
 
 export const RESULT_VERSION = 4;
 
@@ -250,6 +252,10 @@ export const resultSchema = z
     video: z.string().nullable(),
     // Evidence formats captured or disabled for this run, and their protection.
     evidence: evidenceReportSchema,
+    // Task friction of the agent run, computed from its events.jsonl events
+    // (src/friction). Optional: added within version 4, absent in results
+    // written before it. Descriptive only; never changes outcome or quality.
+    friction: frictionSchema.optional(),
   })
   .strict()
   .superRefine((result, ctx) => {

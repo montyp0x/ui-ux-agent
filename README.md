@@ -133,6 +133,47 @@ A journey can name pages that resemble its destination but are not it:
 
 Up to ten path regexes. When the agent reaches a matching path, the runner records an observed `detour` finding with the screenshot and the reviewed description, plus the number of observed steps spent there. Each visit is logged as a `detour` event. Success checks are unchanged: a detour never counts as reaching the destination. The planner is not told about detours, so the finding reflects what a user without inside knowledge would do. Use it when look-alike pages are a usability question rather than a test bug.
 
+### Task friction
+
+Every run's result carries `friction`: a summary of how the agent's run went, computed only from the run's own events in `events.jsonl` (`src/friction`), so it can be recomputed from the log and reconciles with it exactly (`eventLogRuns` and `computeFriction` do that for a consumer). It counts and links; it judges nothing, gates nothing and never changes the outcome or the quality verdict.
+
+- **Actions:** `product` (actions the selector chose on the product, waits excluded), `waits`, and `recovery` (the runner's no-match recovery scrolls). `overhead` keeps planner and runner work apart from product actions: planner refreshes with their reasons, `no_match` decisions, replans before revisiting a tried state, and recovery actions.
+- **Items**, each linked to its `events.jsonl` line, the observation step, its URL and the screenshots of that state and the next one:
+  - `backtrack`: a browser-history **Go back**, or a navigation to a page (URL without fragment) observed earlier in the run;
+  - `repeat`: an action dispatched again in a state where it was already tried (the loop check's second or third visit);
+  - `recovery`: a runner recovery after two `no_match` decisions;
+  - `detour`: an observed step on a configured [detour](#detours);
+  - `failed_attempt`: an action whose dispatch failed (`stale:` when a guard rejected it, else `error:`);
+  - `no_effect`: an action after which the observed state did not change (waits excluded).
+- **Review rubric:** four fixed questions for a human reviewer (`discoverability`, `feedback`, `clarity`, `recovery`), each with the run's counts that bear on it. No dimension is scored; every one is `review: "pending"`, and `no_signals` means nothing was counted, not that the dimension is good. Model concerns stay `hypothesis` findings; `friction.hypotheses` points at the plan events that raised them.
+
+A journey can list up to five reviewed `referencePaths`, alternate valid routes to its goal:
+
+```json
+{
+  "referencePaths": [
+    {
+      "name": "via-docs",
+      "waypoints": [
+        { "kind": "page", "pattern": "^/docs$" },
+        { "kind": "action", "action": "link", "to": "^/docs/install$" }
+      ],
+      "expectedActions": 2
+    },
+    {
+      "name": "via-search",
+      "ordered": false,
+      "waypoints": [{ "kind": "page", "pattern": "^/search$" }, { "kind": "page", "pattern": "^/docs/install$" }],
+      "allow": [{ "description": "cookies" }]
+    }
+  ]
+}
+```
+
+A `page` waypoint matches an observed page path (regex); an `action` waypoint matches an agent action that did not fail by `action` kind, a `description` regex and, for links and history back, a `to` regex on the destination path (at least one of the three). Waypoints are matched in order unless `ordered` is false; an unmatched waypoint is reported and does not block later ones. `expectedActions` (default: the number of action waypoints) is compared with the run's product actions minus those matching an `allow` entry (a cookie banner, say); the difference is `extraActions`. Each run is compared with every path and names the `closest` (most waypoints matched, then fewest extra actions). Reference paths are not sent to the HTTP model adapters, which read only the goal and persona.
+
+What this does not establish: these are counts from an automated agent's run. Agent actions, agent duration and synthetic success rates are not human task time, success rate or satisfaction, and extra actions alone do not establish poor usability: a route the reference paths do not list may be just as valid. Read the linked steps before drawing a conclusion. Friction text comes from the redacted event log and the result is redacted again, like other evidence.
+
 ### Content readiness
 
 Route/page-shell checks prove arrival, not loaded content. Optionally add `contentReady` to a journey:
@@ -459,6 +500,7 @@ Current macOS limits: accessibility quality varies by app (custom-drawn UI may e
 - `src/auth.ts`: session (storage-state) parsing and origin scoping.
 - `src/planning.ts`: semantic action signatures and bounded planner refresh rules.
 - `src/report.ts`: local evidence report.
+- `src/friction/`: task-friction summaries computed from a run's event stream, reference-path comparison and the review rubric.
 
 `runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites, browser applications and macOS apps; other native platforms (Windows, mobile) are not implemented.
 
@@ -502,10 +544,10 @@ Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N
 
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, and evidence links. Results are redacted text, so a recorded path can contain `[REDACTED:<label>]` when a secret is part of it; the report still links the file without printing the secret: a path whose secret is only in the run (or baseline) directory's own location is linked relative to the run directory, and a path redacted below it is matched to the one file it names and linked through `evidence-links/<content sha256, 16 hex>.<ext>` in the run directory (a hard link to a file inside the run, a private copy of one outside it, such as an approved baseline). A redacted path that names no file or several is not guessed: it links to the in-page anchor `#evidence-path-redacted`.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median agent actions and agent duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, its [task friction](#task-friction) with links to the observed steps, and evidence links. Results are redacted text, so a recorded path can contain `[REDACTED:<label>]` when a secret is part of it; the report still links the file without printing the secret: a path whose secret is only in the run (or baseline) directory's own location is linked relative to the run directory, and a path redacted below it is matched to the one file it names and linked through `evidence-links/<content sha256, 16 hex>.<ext>` in the run directory (a hard link to a file inside the run, a private copy of one outside it, such as an approved baseline). A redacted path that names no file or several is not guessed: it links to the in-page anchor `#evidence-path-redacted`.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, the redacted environment names and setup value keys, and the protection's limitations for the run, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, the redacted environment names and setup value keys, and the protection's limitations for the run, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category, and the optional `friction` summary (see [Task friction](#task-friction); absent in results written before it).
 - Per journey/viewport: screenshots, Playwright trace and optional video, when the evidence policy allows them.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
