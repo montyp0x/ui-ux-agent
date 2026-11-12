@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
-import { evidencePolicySchema } from './evidence/policy.js';
+import {
+  evidencePolicySchema,
+  type EvidencePolicy,
+} from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
 import { dataLifecycleSchema } from './lifecycle.js';
 
@@ -352,6 +355,16 @@ const suiteObject = z
   })
   .strict()
   .superRefine((suite, ctx) => {
+    // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
+    // trace or video would record it.
+    if (fillSecrets(suite).length)
+      for (const format of ['trace', 'video'] as const)
+        if (suite.evidence[format] === 'local')
+          ctx.addIssue({
+            code: 'custom',
+            path: ['evidence', format],
+            message: `evidence.${format}: 'local' cannot be sanitized and this suite types a secret from fill valueEnv; use 'auto' or 'off'`,
+          });
     for (const values of [
       suite.journeys.map((j) => j.id),
       suite.viewports.map((v) => v.name),
@@ -528,7 +541,9 @@ const suiteObject = z
         });
       if (
         (journey.states ?? []).some((state) => state.expect?.length) &&
-        !suite.audits.checks.some((check) => check.id === 'journey.state-checks')
+        !suite.audits.checks.some(
+          (check) => check.id === 'journey.state-checks',
+        )
       )
         ctx.addIssue({
           code: 'custom',
@@ -562,6 +577,54 @@ const suiteObject = z
   });
 export const suiteSchema = z.preprocess(nativeDefaults, suiteObject);
 export type Suite = z.infer<typeof suiteObject>;
+
+// The fill interactions (journey interactions and setup) that type a value
+// from an environment variable.
+function fillSecrets(suite: {
+  journeys: Pick<Journey, 'interactions' | 'setup'>[];
+}): { valueEnv: string; target: Target }[] {
+  return suite.journeys.flatMap((journey) =>
+    [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+      (interaction) =>
+        interaction.kind === 'fill' && interaction.valueEnv
+          ? [{ valueEnv: interaction.valueEnv, target: interaction.target }]
+          : [],
+    ),
+  );
+}
+
+// The evidence policy a run applies: the suite's own, plus every fill
+// valueEnv treated as a declared secret. Its variable joins redactEnv, so the
+// value is redacted from all text evidence (accessibility snapshots in
+// observation events included) and the suite counts as sensitive (traces and
+// video are off under 'auto'); on the web the filled field is also masked in
+// every screenshot. macOS window captures cannot be masked; there the
+// declared secret keeps screenshots from the planner instead.
+export function suiteEvidencePolicy(
+  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys'>,
+): EvidencePolicy {
+  const fills = fillSecrets(suite);
+  if (!fills.length) return suite.evidence;
+  const key = (target: Target) => JSON.stringify(target);
+  const masked = new Set(suite.evidence.masks.map(key));
+  const masks = [...suite.evidence.masks];
+  if (suite.platform !== 'macos')
+    for (const { target } of fills)
+      if (!masked.has(key(target))) {
+        masked.add(key(target));
+        masks.push(target);
+      }
+  return {
+    ...suite.evidence,
+    redactEnv: [
+      ...new Set([
+        ...suite.evidence.redactEnv,
+        ...fills.map((fill) => fill.valueEnv),
+      ]),
+    ],
+    masks,
+  };
+}
 export type Action =
   | {
       kind: 'link';

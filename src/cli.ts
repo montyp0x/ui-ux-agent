@@ -12,7 +12,7 @@ import {
 import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
 import { browserLaunchOptions } from './drivers/playwright.js';
-import { suiteSchema } from './contracts.js';
+import { suiteEvidencePolicy, suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
@@ -127,7 +127,7 @@ if (values.help) {
       const suite = suiteSchema.parse(raw);
       redactor = new Redactor({
         patterns: suite.evidence.redact,
-        envNames: suite.evidence.redactEnv,
+        envNames: suiteEvidencePolicy(suite).redactEnv,
         env: process.env,
       });
       if (values.url)
@@ -220,7 +220,7 @@ if (values.help) {
         // Credentials loaded from .env are redacted too.
         redactor = new Redactor({
           patterns: suite.evidence.redact,
-          envNames: suite.evidence.redactEnv,
+          envNames: suiteEvidencePolicy(suite).redactEnv,
           env: process.env,
         });
         const options = modelOptionsFromEnv(process.env);
@@ -285,8 +285,7 @@ if (values.help) {
         console.log(`Report: ${directory}/report.html`);
         // A failed data cleanup fails the command even when every run passed.
         process.exitCode =
-          unclean.length ||
-          results.some((result) => result.status !== 'passed')
+          unclean.length || results.some((result) => result.status !== 'passed')
             ? 1
             : 0;
       }

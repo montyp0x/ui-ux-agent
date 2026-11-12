@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
-import { missingFillEnv } from './contracts.js';
+import { missingFillEnv, suiteEvidencePolicy } from './contracts.js';
 import type {
   Action,
   Journey,
@@ -1091,10 +1091,21 @@ export async function runSuite(
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
-  await writeRunManifest(options.directory, suite.evidence.retentionDays);
+  // The suite's evidence policy with every fill valueEnv as a secret.
+  const policy = suiteEvidencePolicy(suite);
+  await writeRunManifest(options.directory, policy.retentionDays);
   const protection = evidenceProtection(
-    suite.evidence,
-    options.env ?? process.env,
+    policy,
+    {
+      ...(options.env ?? process.env),
+      // Fills read process.env (fillValue): their values are redacted from
+      // the same source, whatever environment the caller passed.
+      ...Object.fromEntries(
+        policy.redactEnv.flatMap((name) =>
+          process.env[name] === undefined ? [] : [[name, process.env[name]]],
+        ),
+      ),
+    },
     {
       platform: suite.platform,
       authenticated: !!(options.storageState || options.profile),
