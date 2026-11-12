@@ -200,7 +200,7 @@ GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless conf
 
 ### State coverage
 
-A declared journey state can carry its own `expect` checks, evaluated once at the first observed state where its `when` holds, independently of the journey's `success` checks. A loading, empty, error or success state is then verified on its own terms (the error state offers a retry, the empty state explains itself) whatever the journey's outcome:
+A declared journey state can carry its own `expect` checks, evaluated once at the first observed state where its `when` holds, independently of the journey's `success` checks. States are checked right after each observation; when the success checks pass while a declared state is still unreached (the page loaded between the observation and the checks), the runner takes one more observation of the same step (`state_observation` in `events.jsonl`) and checks the pending states against it before deciding, so a state the passing page shows is not skipped. A loading, empty, error or success state is then verified on its own terms (the error state offers a retry, the empty state explains itself) whatever the journey's outcome:
 
 ```json
 {
