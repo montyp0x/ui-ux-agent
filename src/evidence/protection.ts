@@ -6,8 +6,8 @@ import type { Target } from '../target.js';
 import {
   evidenceFormats,
   sensitive,
-  type EvidencePolicy,
   type EvidenceReport,
+  type RunEvidencePolicy,
   type FormatContext,
   type FormatStatus,
 } from './policy.js';
@@ -27,15 +27,20 @@ export const MASK_COLOR = '#FF00FF';
 
 export type EvidenceProtection = {
   redactor: Redactor;
+  // Its patterns are read at every capture, so values a run learns
+  // (beginRun) are masked in screenshots of sessions opened before.
   screenshots: ScreenshotProtection;
   formats: FormatStatus[];
   // The suite declared content it wants protected.
   sensitive: boolean;
+  // Starts a run (runs are sequential): its dataLifecycle setup values,
+  // except the keys in publicValues, become secrets of the suite from now on.
+  beginRun(data: Record<string, string>, publicValues: readonly string[]): void;
   report(sanitizedFiles: number): EvidenceReport;
 };
 
 export function evidenceProtection(
-  policy: EvidencePolicy,
+  policy: RunEvidencePolicy,
   env: Record<string, string | undefined>,
   context: FormatContext,
 ): EvidenceProtection {
@@ -45,21 +50,34 @@ export function evidenceProtection(
     env,
   });
   const formats = evidenceFormats(policy, context);
+  // The current run's redacted setup value keys.
+  let redactedData: string[] = [];
   return {
     redactor,
     screenshots: {
       masks: policy.masks,
-      patterns: redactor.patterns,
+      get patterns() {
+        return redactor.patterns;
+      },
       maskColor: MASK_COLOR,
     },
     formats,
     sensitive: sensitive(policy),
+    beginRun(data, publicValues) {
+      redactedData = [];
+      for (const [key, value] of Object.entries(data)) {
+        if (publicValues.includes(key)) continue;
+        if (redactor.addSecret(`data:${key}`, value)) redactedData.push(key);
+      }
+    },
     report: (sanitizedFiles) => ({
       declaredPatterns: redactor.declared.length,
       builtInPatterns: redactor.builtIn.length,
-      redactedEnv: redactor.literals.map((entry) =>
-        entry.label.replace(/^env:/, ''),
+      redactedEnv: redactor.literals.flatMap((entry) =>
+        entry.label.startsWith('env:') ? [entry.label.slice('env:'.length)] : [],
       ),
+      redactedData: [...redactedData],
+      limitations: [],
       masks: policy.masks.length,
       formats,
       sanitizedFiles,

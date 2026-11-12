@@ -6909,12 +6909,22 @@
           "type": "integer",
           "minimum": 1000,
           "maximum": 60000
+        },
+        "publicValues": {
+          "default": [],
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"
+          }
         }
       },
       "required": [
         "service",
         "cleanup",
-        "timeoutMs"
+        "timeoutMs",
+        "publicValues"
       ],
       "additionalProperties": false
     }

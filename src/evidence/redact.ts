@@ -108,6 +108,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function literal(label: string, value: string): TextPattern {
+  return { label, source: escapeRegExp(value), flags: 'g' };
+}
+
 // Credential values from the environment: every variable listed by the suite
 // (MIN_DECLARED_LENGTH or longer) and every variable whose name marks it as a
 // credential (MIN_DISCOVERED_LENGTH or longer), plus model gateway header
@@ -144,32 +148,51 @@ export function credentialEnvValues(
 }
 
 export class Redactor {
-  // Literal secret values (environment), as patterns, longest first.
-  readonly literals: readonly TextPattern[];
+  // Literal secret values (environment, then values a run learns), as
+  // patterns, longest first.
+  private literalPatterns: TextPattern[];
   // Suite-declared patterns.
   readonly declared: readonly TextPattern[];
   readonly builtIn: readonly TextPattern[] = BUILT_IN_PATTERNS;
-  private readonly compiled: { label: string; regex: RegExp }[];
+  private compiled: { label: string; regex: RegExp }[] = [];
   constructor(options: RedactorOptions = {}) {
     const env = options.env ?? {};
-    this.literals = credentialEnvValues(env, options.envNames ?? []).map(
-      ({ name, value }) => ({
-        label: `env:${name}`,
-        source: escapeRegExp(value),
-        flags: 'g',
-      }),
-    );
+    this.literalPatterns = credentialEnvValues(
+      env,
+      options.envNames ?? [],
+    ).map(({ name, value }) => literal(`env:${name}`, value));
     this.declared = (options.patterns ?? []).map((entry, index) => ({
       label: entry.label ?? `suite-${index + 1}`,
       source: entry.pattern,
       flags: entry.ignoreCase ? 'gi' : 'g',
     }));
-    this.compiled = [...this.literals, ...this.declared, ...this.builtIn].map(
+    this.compile();
+  }
+  get literals(): readonly TextPattern[] {
+    return this.literalPatterns;
+  }
+  private compile(): void {
+    this.compiled = [...this.literalPatterns, ...this.declared, ...this.builtIn].map(
       (pattern) => ({
         label: pattern.label,
         regex: new RegExp(pattern.source, pattern.flags),
       }),
     );
+  }
+  // A secret value known only while the suite runs (a dataLifecycle setup
+  // value), redacted as [REDACTED:<label>] from then on, in text and in
+  // screenshot masks. Values shorter than MIN_DECLARED_LENGTH are not added
+  // (returns false); an already known value keeps its first label.
+  addSecret(label: string, value: string): boolean {
+    if (value.length < MIN_DECLARED_LENGTH) return false;
+    const source = escapeRegExp(value);
+    if (this.literalPatterns.some((pattern) => pattern.source === source))
+      return true;
+    this.literalPatterns = [...this.literalPatterns, literal(label, value)].sort(
+      (a, b) => b.source.length - a.source.length,
+    );
+    this.compile();
+    return true;
   }
   // Every pattern a screenshot mask should look for in page text and values.
   get patterns(): readonly TextPattern[] {

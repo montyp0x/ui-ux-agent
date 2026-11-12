@@ -70,6 +70,8 @@ const run = (
       declaredPatterns: 0,
       builtInPatterns: 0,
       redactedEnv: [],
+      redactedData: [],
+      limitations: [],
       masks: 0,
       formats: [],
       sanitizedFiles: 0,

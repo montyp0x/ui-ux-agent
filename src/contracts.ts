@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
 import {
   evidencePolicySchema,
-  type EvidencePolicy,
+  type RunEvidencePolicy,
 } from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
-import { dataLifecycleSchema } from './lifecycle.js';
+import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
 
 export { targetSchema, type Target };
 
@@ -365,6 +365,16 @@ const suiteObject = z
             path: ['evidence', format],
             message: `evidence.${format}: 'local' cannot be sanitized and this suite types a secret from fill valueEnv; use 'auto' or 'off'`,
           });
+    // So is a secret setup value (see suiteEvidencePolicy).
+    const secretData = secretDataKeys(suite);
+    if (secretData.length)
+      for (const format of ['trace', 'video'] as const)
+        if (suite.evidence[format] === 'local')
+          ctx.addIssue({
+            code: 'custom',
+            path: ['evidence', format],
+            message: `evidence.${format}: 'local' cannot be sanitized and this suite uses secret dataLifecycle setup values (${secretData.join(', ')}); use 'auto' or 'off', or list values that are not secret in dataLifecycle.publicValues`,
+          });
     for (const values of [
       suite.journeys.map((j) => j.id),
       suite.viewports.map((v) => v.name),
@@ -593,6 +603,25 @@ function fillSecrets(suite: {
   );
 }
 
+// The {{data.<key>}} keys in `value` that are secret: every setup value
+// except those listed in dataLifecycle.publicValues.
+function dataKeysIn(value: unknown, publicValues: readonly string[]): string[] {
+  const keys = [...JSON.stringify(value).matchAll(DATA_PLACEHOLDER)].map(
+    (match) => match[1]!,
+  );
+  return [...new Set(keys)].filter((key) => !publicValues.includes(key));
+}
+
+// The secret setup value keys the suite's journeys use, sorted.
+export function secretDataKeys(
+  suite: Pick<Suite, 'journeys'> & {
+    dataLifecycle?: Pick<NonNullable<Suite['dataLifecycle']>, 'publicValues'>;
+  },
+): string[] {
+  if (!suite.dataLifecycle) return [];
+  return dataKeysIn(suite.journeys, suite.dataLifecycle.publicValues).sort();
+}
+
 // The evidence policy a run applies: the suite's own, plus every fill
 // valueEnv treated as a declared secret. Its variable joins redactEnv, so the
 // value is redacted from all text evidence (accessibility snapshots in
@@ -600,16 +629,35 @@ function fillSecrets(suite: {
 // video are off under 'auto'); on the web the filled field is also masked in
 // every screenshot. macOS window captures cannot be masked; there the
 // declared secret keeps screenshots from the planner instead.
+//
+// Secret dataLifecycle setup values ({{data.<key>}} not in publicValues) are
+// treated the same way: `secretData` lists the keys the journeys use, which
+// makes the suite sensitive, and every fill whose value reads one is masked.
+// The values themselves are redacted once setup returns them
+// (EvidenceProtection.beginRun).
 export function suiteEvidencePolicy(
-  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys'>,
-): EvidencePolicy {
+  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys' | 'dataLifecycle'>,
+): RunEvidencePolicy {
   const fills = fillSecrets(suite);
-  if (!fills.length) return suite.evidence;
+  const publicValues = suite.dataLifecycle?.publicValues ?? [];
+  const secretData = secretDataKeys(suite);
+  const dataFills = secretData.length
+    ? suite.journeys.flatMap((journey) =>
+        [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+          (interaction) =>
+            interaction.kind === 'fill' &&
+            dataKeysIn(interaction.value ?? '', publicValues).length
+              ? [interaction.target]
+              : [],
+        ),
+      )
+    : [];
+  if (!fills.length && !secretData.length) return suite.evidence;
   const key = (target: Target) => JSON.stringify(target);
   const masked = new Set(suite.evidence.masks.map(key));
   const masks = [...suite.evidence.masks];
   if (suite.platform !== 'macos')
-    for (const { target } of fills)
+    for (const target of [...fills.map((fill) => fill.target), ...dataFills])
       if (!masked.has(key(target))) {
         masked.add(key(target));
         masks.push(target);
@@ -623,6 +671,7 @@ export function suiteEvidencePolicy(
       ]),
     ],
     masks,
+    ...(secretData.length ? { secretData } : {}),
   };
 }
 export type Action =

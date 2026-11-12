@@ -1091,7 +1091,8 @@ export async function runSuite(
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
-  // The suite's evidence policy with every fill valueEnv as a secret.
+  // The suite's evidence policy with every fill valueEnv and secret setup
+  // value as a secret.
   const policy = suiteEvidencePolicy(suite);
   await writeRunManifest(options.directory, policy.retentionDays);
   const protection = evidenceProtection(
@@ -1182,6 +1183,12 @@ export async function runSuite(
                 viewport: viewport.name,
               })
             : null;
+          // Setup values (except publicValues) are secrets from here on:
+          // redacted from every event, result and file, masked in screenshots.
+          protection.beginRun(
+            data?.values ?? {},
+            suite.dataLifecycle?.publicValues ?? [],
+          );
           if (data) {
             const filled = withData(runJourneyConfig, data.values);
             if (filled.missing && !data.setupFailure)

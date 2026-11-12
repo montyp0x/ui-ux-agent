@@ -90,14 +90,23 @@ export const evidencePolicySchema = z
   });
 export type EvidencePolicy = z.infer<typeof evidencePolicySchema>;
 
+// The policy a run applies (see suiteEvidencePolicy in contracts.ts): the
+// suite's own, plus the keys of the secret dataLifecycle setup values its
+// journeys use. Those values are only known once setup answers, but that a
+// journey uses them is known at load, so they count as sensitive content.
+export type RunEvidencePolicy = EvidencePolicy & {
+  secretData?: readonly string[];
+};
+
 // The suite declares content it wants protected.
 export function sensitive(
-  policy: Pick<EvidencePolicy, 'redact' | 'redactEnv' | 'masks'>,
+  policy: Pick<RunEvidencePolicy, 'redact' | 'redactEnv' | 'masks' | 'secretData'>,
 ): boolean {
   return (
     policy.redact.length > 0 ||
     policy.redactEnv.length > 0 ||
-    policy.masks.length > 0
+    policy.masks.length > 0 ||
+    (policy.secretData?.length ?? 0) > 0
   );
 }
 
@@ -133,6 +142,12 @@ export const evidenceReportSchema = z
     builtInPatterns: z.number().int().nonnegative(),
     // Environment variables whose values are redacted (names only).
     redactedEnv: z.array(z.string()),
+    // Keys of the run's dataLifecycle setup values that are redacted (the
+    // values are never recorded).
+    redactedData: z.array(z.string()).default([]),
+    // What the protection could not cover in this run, for example a secret
+    // too short to redact from text.
+    limitations: z.array(z.string()).default([]),
     masks: z.number().int().nonnegative(),
     formats: z.array(formatStatusSchema),
     // Text files in the journey directory rewritten by the final sweep
@@ -152,7 +167,7 @@ export type FormatContext = {
 
 // What each evidence format does for this suite and run.
 export function evidenceFormats(
-  policy: EvidencePolicy,
+  policy: RunEvidencePolicy,
   context: FormatContext,
 ): FormatStatus[] {
   const declared = sensitive(policy);
