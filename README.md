@@ -311,6 +311,7 @@ Built-in audits:
 - `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
 - `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
 - `visual.baseline`: an opt-in screenshot comparison with reviewed baselines; see [Visual baselines](#visual-baselines).
+- `design.tokens`: an opt-in check of computed styles against a suite-owned token set; see [Design tokens](#design-tokens).
 - `layout.responsive` (opt-in; default checkpoints `ready` and `completion`): deterministic layout measurement at the session's viewport, then at each extra `matrix.breakpoints` entry and a reflow case, resized in place and restored (viewport and scroll position) before the journey continues. Rules (`rules`, default all three):
   - `clipping`: text or a control cut off by an `overflow: hidden`/`clip` ancestor, by more than `clipping.tolerancePx` (default 1). Severity `serious` when a control is cut, `moderate` for text. Visually hidden (1px) and collapsed containers are skipped. Declared truncation (`text-overflow: ellipsis`, `-webkit-line-clamp`) is a `needs_review` item, never a violation.
   - `occlusion`: a control scrolled into view (block and inline centre) is hit-tested at a 3x3 grid; another element covering its centre or at least `occlusion.minCoveredFraction` (default 0.3) of the points is a violation, smaller overlaps are `needs_review`. Its own labels and descendants do not count; controls behind an open modal are skipped. Checks the `requiredControls` targets (severity `serious`; a target that matches nothing makes the run `incomplete`), or every rendered interactive control when none are configured (`moderate`). Elements with `pointer-events: none` are transparent to hit testing and are not reported.
@@ -404,6 +405,61 @@ The compatibility environment is part of every baseline: viewport size, browser 
 Approval: `approve` reads the run's `results.json`, checks each selected capture against the checksum the run recorded and writes it as the baseline for the environment it was rendered in. `results.json` is redacted text, so when the suite's redaction rewrote a recorded path (a secret value that is part of the run directory's path, for example), the capture is found inside the run directory by that checksum; a suite name the suite's own patterns redacted is skipped, since its baseline location is unknown. Without `--journey`/`--viewport`/`--checkpoint` it requires `--all`. A capture that differs from an approved baseline is approved only with `--replace`; captures that already match or did not settle are skipped; captures from runs whose functional outcome did not pass need `--allow-failed-runs`. The run's `--baselines` directory must exist; `approve` creates it. Either refuses a directory inside a Git work tree unless Git ignores it (`.baselines/` is ignored in this repository), and a directory inside a run directory, which `--prune-runs` would delete with the run; pruning never deletes a baseline directory, which carries no run manifest. Baselines and diff images are run evidence and are never committed; shared storage needs an approved destination and privacy policy.
 
 Calibration (`test/visual-baseline.test.ts`, local Chromium, prints its numbers as test diagnostics): five fresh captures of each fixture page (gradients, shadows, SVG, a raster image, a focused field, a CSS transition and an infinite animation) differ by 0 pixels; seeded changes differ by about 700 pixels (one word on a button), 3,900 (an accent colour) and 7,600 (a 2px move). The default tolerance is therefore 0 changed pixels at colour threshold 0.1: comparisons are only made within one rendering environment, where rendering was deterministic. Raise `maxDiffPixels` per suite if a target shows nondeterministic rendering, after measuring it. Web only: unsupported on macOS.
+
+### Design tokens
+
+`design.tokens` is an opt-in driver audit that reads the computed styles of the elements in scope and reports every value that is not one of the suite's design tokens. It checks objective values only: whether a colour, font family, font size, spacing or corner radius the browser computed is in the token set, within a stated tolerance. It does not compare the page with design files or mockups (Figma, Sketch), judge visual similarity or assess aesthetics; those are not attempted, and every run says so in its limitations. For a reviewed picture of the page, use [Visual baselines](#visual-baselines). [examples/design-tokens.json](examples/design-tokens.json) shows it in a suite, with its token file in [examples/design/tokens.json](examples/design/tokens.json):
+
+```json
+{
+  "id": "design.tokens",
+  "at": ["ready", "completion"],
+  "tokens": "design/tokens.json",
+  "include": ["main"],
+  "exclude": ["#support-chat"],
+  "exceptions": [{ "selector": ".partner-offer", "rules": ["color"], "reason": "Partner offers use the partner's brand colours" }]
+}
+```
+
+| Option        | Purpose                                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `at`          | Checkpoints: `ready`, `states`, `completion`; default ready and completion                                                      |
+| `tokens`      | A token file path, relative to the suite file, or an inline token set in the native format                                     |
+| `include`     | CSS selectors of the regions to measure; empty measures the body. A selector that matches nothing is an audit `error`          |
+| `exclude`     | CSS selectors of regions to leave out, such as a third-party widget                                                            |
+| `rules`       | `color`, `font-family`, `font-size`, `spacing`, `radius`; default every rule whose category the set defines. Selecting a rule whose category is missing is an `error` |
+| `tolerance`   | `colorDeltaE` (CIEDE2000, default 1, about one just-noticeable difference), `alpha` (default 0.02), `lengthPx` (default 0.5)     |
+| `severity`    | Severity of an off-token finding, gating at or above `failOn`; default `moderate`, so it reports without failing under the default `failOn: serious` |
+| `exceptions`  | Intentional values: a CSS `selector` matched against the element or an ancestor, a `reason`, and optionally the `rules` it exempts (all when omitted) |
+| `maxElements` | Elements measured at most (default 3000); past it the run is `incomplete`                                                      |
+| `timeoutMs`   | Bound on one run, overriding `audits.timeoutMs`                                                                                |
+
+The native token format (Zod-validated at load; an unknown key, an invalid colour or length, an empty category or a set with no category is an error naming the file):
+
+```json
+{
+  "version": 1,
+  "name": "Storefront design tokens",
+  "color": { "ink": "#1a1f36", "brand": "#0b5fff", "overlay": "rgba(16, 24, 40, 0.6)" },
+  "fontFamily": { "body": ["Inter", "Arial", "sans-serif"], "mono": "\"JetBrains Mono\", monospace" },
+  "fontSize": { "sm": "14px", "md": "1rem", "lg": 20 },
+  "spacing": { "1": "4px", "2": "8px", "4": "16px" },
+  "radius": { "sm": "4px", "pill": "9999px" }
+}
+```
+
+Colours are hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`) or `rgb()`/`rgba()`; lengths are numbers (CSS px) or `"<n>px"` / `"<n>rem"` strings, with rem converted using the page's root font size. A token file without `"version"` is read as a [W3C Design Tokens Community Group](https://tr.designtokens.org/format/) document: nested groups, `$type` inherited from groups and `{group.token}` aliases are resolved; `color` tokens (hex strings, or `srgb` objects with `components` or `hex`) and `fontFamily` tokens (a string or a list) are used directly; `dimension` tokens are used when their group names their purpose (`fontSize`/`font.size`, `spacing`/`space`, `radius`/`radii`/`borderRadius`), since the format itself does not say what a dimension is for. Token names are their dotted paths. Tokens of other types (`fontWeight`, `shadow`, `typography` ...), dimensions in other groups and unsupported values are listed in the run's limitations, never silently dropped; an alias cycle or an unknown alias is a load error. The CLI (`--suite`, including `--validate`) and the benchmark load the file relative to the suite; programmatic `runSuite` callers call `loadDesignTokens(suite, suitePath)` first or give the set inline, and an unloaded path is an `error` run that says so.
+
+What is measured, on each rendered element in scope (open shadow roots included; elements with `display: none` or `opacity: 0` and their subtrees, `visibility: hidden` elements, SVG and frames are skipped):
+
+- `color`: the text colour of elements with their own text (and form controls), the background colour when not transparent and each visible border's colour. A colour is on token when some token is within `colorDeltaE` (CIEDE2000) and `alpha`. Other colour syntaxes (`oklch()`, `color()` ...) are converted to sRGB first.
+- `font-family` and `font-size`: on elements with their own text. Font family compares the primary (first) family of the computed stack with each token's primary family, case-insensitively.
+- `spacing`: margins, paddings and, on flex and grid containers, gaps. Zero is always on token; `auto` margins and relative values (percentages, `calc()` with percentages) are counted and not compared; negative margins are compared by magnitude. Needs CSS Typed OM (`computedStyleMap`); a browser without it makes the run `incomplete`.
+- `radius`: each corner's radius; zero is on token, percentages are counted and not compared.
+
+Each distinct off-token value of a rule is one `violation` finding with the configured severity, for example `Off-token background-color #ff5a1f on 3 elements; nearest token danger (#e5484d), ΔE2000 6.1` or `Off-token spacing 10px (padding) on 1 element; nearest token 2 (8px), 2px away`; a font family lists the allowed families instead. Its targets are up to ten elements (tag with id or classes, selector, and the measured value with its nearest token as `reason`; no page text). Values under a configured exception are listed in the run's `exemptions`, never as findings; an exception that matched no measured element is noted in the limitations. Every off-token and exempted value with all its elements, the counts and the tolerance are written to `design-tokens-<checkpoint>-step<N>.json` in the run directory and listed in each finding's evidence files. A run that measures nothing (no rendered element in scope) or stops at `maxElements` is `incomplete`, never clean; its detail counts the elements measured and the values compared.
+
+Not checked, and listed on every run: comparisons with design files or mockups, visual similarity and aesthetics; whether the declared font actually loaded (a fallback font passes if the declared family is a token); pseudo-elements (`::before`, `::after`, `::placeholder`), SVG content, gradients and background images, shadows, outlines, line height, letter spacing and font weight; hover, focus and other interaction states (only the audited state is measured); closed shadow roots and frames. The audit raises no `needs_review` items: anything it cannot measure objectively is not attempted. Web only: unsupported on macOS.
 
 ## Authentication and browser selection
 
