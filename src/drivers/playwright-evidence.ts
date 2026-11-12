@@ -64,6 +64,40 @@ export async function screenshotMasks(
       )
       .catch(() => [] as number[]);
     masks.push(...matching.map((index) => fields.nth(index)));
+    // A closed select draws its chosen option's text, which is not page text
+    // getByText can cover: cover the select when the chosen option's value
+    // or text matches (the value can name a secret the label does not show).
+    // A list box (multiple, or size above 1) draws every option.
+    const selects = page.locator('select');
+    const chosen = await selects
+      .evaluateAll(
+        (elements, sources) => {
+          const tests = sources.map(
+            ([source, flags]) => new RegExp(source!, flags),
+          );
+          return elements.flatMap((element, index) => {
+            const select = element as HTMLSelectElement;
+            const options = Array.from(
+              select.multiple || select.size > 1
+                ? select.options
+                : select.selectedOptions,
+            );
+            const shown = options.flatMap((option) => [
+              option.value,
+              option.label,
+              option.text,
+            ]);
+            return shown.some(
+              (text) => text && tests.some((test) => test.test(text)),
+            )
+              ? [index]
+              : [];
+          });
+        },
+        regexes.map((regex) => [regex.source, regex.flags]),
+      )
+      .catch(() => [] as number[]);
+    masks.push(...chosen.map((index) => selects.nth(index)));
   }
   return masks;
 }

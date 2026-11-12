@@ -637,7 +637,8 @@ export function secretDataKeys(
 //
 // Secret dataLifecycle setup values ({{data.<key>}} not in publicValues) are
 // treated the same way: `secretData` lists the keys the journeys use, which
-// makes the suite sensitive, and every fill whose value reads one is masked.
+// makes the suite sensitive, and every fill or select whose value reads one
+// is masked.
 // The values themselves are redacted once setup returns them
 // (EvidenceProtection.beginRun).
 export function suiteEvidencePolicy(
@@ -646,11 +647,13 @@ export function suiteEvidencePolicy(
   const fills = fillSecrets(suite);
   const publicValues = suite.dataLifecycle?.publicValues ?? [];
   const secretData = secretDataKeys(suite);
-  const dataFills = secretData.length
+  // Fields that show a secret setup value: a fill typed from one, or a
+  // select set to one (a closed select draws the chosen option's text).
+  const dataFields = secretData.length
     ? suite.journeys.flatMap((journey) =>
         [...journey.interactions, ...(journey.setup ?? [])].flatMap(
           (interaction) =>
-            interaction.kind === 'fill' &&
+            (interaction.kind === 'fill' || interaction.kind === 'select') &&
             dataKeysIn(interaction.value ?? '', publicValues).length
               ? [interaction.target]
               : [],
@@ -662,7 +665,7 @@ export function suiteEvidencePolicy(
   const masked = new Set(suite.evidence.masks.map(key));
   const masks = [...suite.evidence.masks];
   if (suite.platform !== 'macos')
-    for (const target of [...fills.map((fill) => fill.target), ...dataFills])
+    for (const target of [...fills.map((fill) => fill.target), ...dataFields])
       if (!masked.has(key(target))) {
         masked.add(key(target));
         masks.push(target);

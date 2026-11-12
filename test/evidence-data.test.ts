@@ -182,6 +182,117 @@ test('setup values are redacted from text and masked in screenshots once a run l
   }
 });
 
+test('a select whose value reads a secret setup value is masked in screenshots, with its displayed option text', async () => {
+  const url = 'http://127.0.0.1:4174';
+  const OWNER = 'owner-fixture-5521';
+  // The select's target is masked like a fill typed from data.
+  const chosen = suiteEvidencePolicy(
+    await notesSuite(url, {
+      journey: {
+        interactions: [
+          {
+            kind: 'select',
+            target: { by: 'label', value: 'Owner' },
+            value: '{{data.owner}}',
+            description: 'Pick the owner',
+          },
+        ],
+      },
+    }),
+  );
+  assert.deepEqual(chosen.masks, [{ by: 'label', value: 'Owner' }]);
+  // A public value is not masked.
+  const open = suiteEvidencePolicy(
+    await notesSuite(url, {
+      journey: {
+        interactions: [
+          {
+            kind: 'select',
+            target: { by: 'label', value: 'Owner' },
+            value: '{{data.owner}}',
+            description: 'Pick the owner',
+          },
+        ],
+      },
+      dataLifecycle: { publicValues: ['owner'] },
+    }),
+  );
+  assert.deepEqual(open.masks, []);
+
+  // Without any declared mask, a select whose current value or shown option
+  // text matches a secret is covered once the run learns the value: the
+  // closed select draws the option text, which getByText cannot cover.
+  const protection = evidenceProtection(
+    { ...suiteEvidencePolicy(await notesSuite(url)), masks: [] },
+    {},
+    { platform: 'web', authenticated: false, videoRequested: false },
+  );
+  protection.beginRun({ owner: OWNER }, []);
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({
+      viewport: { width: 800, height: 400 },
+    });
+    const decoder = await browser.newPage();
+    for (const [name, option] of [
+      [
+        'value and label',
+        `<option value="${OWNER}" selected>${OWNER}</option>`,
+      ],
+      // The value is the secret; the label the select draws is not text
+      // the redactor knows, but it names the secret choice.
+      [
+        'value only',
+        `<option value="${OWNER}" selected>Team red owner</option>`,
+      ],
+      ['label only', `<option value="o1" selected>${OWNER}</option>`],
+    ] as const) {
+      await page.setContent(`<!doctype html><body style="font:32px sans-serif;background:#fff">
+        <label>Owner <select style="color:#f00;font-size:32px;width:600px;background:#fff">
+          <option value="other">Other</option>${option}
+        </select></label>
+      </body>`);
+      assert.ok(
+        (await pixelCounts(decoder, await page.screenshot())).red > 300,
+        `${name}: the planted option text is drawn`,
+      );
+      const masked = await pixelCounts(
+        decoder,
+        await protectedScreenshot(page, protection.screenshots),
+      );
+      assert.equal(masked.red, 0, `${name}: the selected option is masked`);
+      assert.ok(masked.mask > 300, name);
+    }
+    // A select showing an unrelated choice stays visible.
+    await page.setContent(`<!doctype html><body style="font:32px sans-serif;background:#fff">
+      <select style="color:#f00;font-size:32px;width:600px;background:#fff">
+        <option value="other" selected>Other</option><option value="${OWNER}">${OWNER}</option>
+      </select></body>`);
+    const visible = await pixelCounts(
+      decoder,
+      await protectedScreenshot(page, protection.screenshots),
+    );
+    assert.ok(visible.red > 300, 'an unselected secret option is not drawn');
+    assert.equal(visible.mask, 0);
+    // A list box draws every option, chosen or not.
+    await page.setContent(`<!doctype html><body style="font:32px sans-serif;background:#fff">
+      <select size="3" style="color:#f00;font-size:32px;width:600px;background:#fff">
+        <option value="other">Other</option><option value="o1">${OWNER}</option>
+      </select></body>`);
+    assert.ok(
+      (await pixelCounts(decoder, await page.screenshot())).red > 300,
+      'the list box draws the secret option',
+    );
+    const listed = await pixelCounts(
+      decoder,
+      await protectedScreenshot(page, protection.screenshots),
+    );
+    assert.equal(listed.red, 0, 'the list box is masked');
+  } finally {
+    await browser.close();
+  }
+});
+
 test('setup values never reach run evidence; traces and video stay off', async () => {
   const app = await notesFixture();
   try {
