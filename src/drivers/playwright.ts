@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import {
   chromium,
@@ -26,6 +27,7 @@ import type { UIDriver } from './types.js';
 import { runPlaywrightAudit } from './playwright-audits.js';
 import { protectedScreenshot } from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
+import { focusKey } from './playwright-keyboard.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -116,6 +118,8 @@ export async function playwrightDriver(
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
       const browserErrors: string[] = [];
+      // Screenshot path of each observation step, for audit evidence.
+      const screenshots = new Map<number, string>();
       const policyBlocks: string[] = [];
       const suiteHosts = new Set(suiteOrigins(suite));
       let unauthorized = false;
@@ -225,8 +229,15 @@ export async function playwrightDriver(
         check(condition) {
           return check(page, condition);
         },
-        observe(step, screenshot) {
-          return observe(page, step, screenshot, capture);
+        async observe(step, screenshot) {
+          screenshots.set(step, screenshot);
+          const observation = await observe(page, step, screenshot, capture);
+          // Keyboard focus is part of a keyboard-only journey's state.
+          if (journey.input === 'keyboard')
+            observation.fingerprint = createHash('sha256')
+              .update(observation.fingerprint + (await focusKey(page)))
+              .digest('hex');
+          return observation;
         },
         candidates() {
           return candidates(
@@ -257,10 +268,10 @@ export async function playwrightDriver(
           await capture(path);
         },
         runAudit(request) {
-          return runPlaywrightAudit(
-            page,
-            request,
-            {
+          return runPlaywrightAudit(page, request, {
+            journey,
+            screenshotAt: (step) => screenshots.get(step) ?? null,
+            build: {
               browser: browserName,
               build: suite.browserChannel
                 ? `channel:${suite.browserChannel}`
@@ -272,8 +283,8 @@ export async function playwrightDriver(
             // The run's screenshot protection: visual captures get the same
             // pre-capture masks as every other screenshot, on top of the
             // audit's own dynamic-region masks.
-            evidence?.screenshots,
-          );
+            protection: evidence?.screenshots,
+          });
         },
         async finish(trace) {
           const recording = page.video();

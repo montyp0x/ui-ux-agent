@@ -1,0 +1,89 @@
+{
+  "name": "Authorized write flow with data lifecycle (local fixture: examples/notes-fixture.ts)",
+  "baseURL": "http://127.0.0.1:4174",
+  "requiresAuth": false,
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1280,
+      "height": 800
+    }
+  ],
+  "allowedRequests": [
+    {
+      "origin": "http://127.0.0.1:4174",
+      "path": "/api/notes",
+      "method": "POST"
+    }
+  ],
+  "dataLifecycle": {
+    "service": "http://127.0.0.1:4174",
+    "reset": {
+      "method": "POST",
+      "path": "/__fixture/reset"
+    },
+    "setup": {
+      "method": "POST",
+      "path": "/__fixture/setup"
+    },
+    "cleanup": {
+      "method": "POST",
+      "path": "/__fixture/cleanup"
+    },
+    "verify": {
+      "path": "/__fixture/verify"
+    },
+    "timeoutMs": 5000
+  },
+  "journeys": [
+    {
+      "id": "save-note",
+      "goal": "Save a note",
+      "persona": "A signed-in user with a disposable test identity",
+      "startPath": "/notes?owner={{data.owner}}",
+      "allowedPaths": [
+        "/notes"
+      ],
+      "ready": {
+        "kind": "text",
+        "target": {
+          "by": "testId",
+          "value": "owner"
+        },
+        "pattern": "^{{data.owner}}$"
+      },
+      "interactions": [
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Note"
+          },
+          "value": "Note {{marker}}",
+          "description": "Write the note"
+        },
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Save note"
+          },
+          "description": "Save the note"
+        }
+      ],
+      "success": [
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "notes"
+          },
+          "pattern": "Note {{marker}}"
+        }
+      ],
+      "maxSteps": 6,
+      "maxDurationMs": 30000
+    }
+  ]
+}

@@ -231,6 +231,17 @@ export class JourneyAudits {
       let raw: unknown;
       if (definition.evaluate)
         raw = definition.evaluate({ checkpoint, config, observations });
+      else if (definition.inspect)
+        raw = await within(
+          definition.inspect({
+            checkpoint,
+            config,
+            observations,
+            journey: this.options.journey,
+            check: (condition) => session.check(condition),
+          }),
+          timeoutMs,
+        );
       else if (!session.runAudit)
         throw new Error(
           `The ${this.driver} session does not implement runAudit for ${config.id}`,

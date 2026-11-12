@@ -32,7 +32,7 @@ export const NOT_IMPLEMENTED_CHECKS: QualityGap[] = [
   {
     id: 'keyboard.focus',
     reason:
-      'Keyboard-only and focus behaviour is not checked in this engine version',
+      'Keyboard focus behaviour was not checked (run a keyboard-only journey with the keyboard.focus audit)',
   },
 ];
 
@@ -204,11 +204,14 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
   // Likewise a configured visual.baseline audit replaces its gap.
   const axe = inputs.audits?.configured.includes('accessibility.axe');
   const visual = inputs.audits?.configured.includes('visual.baseline');
+  // Likewise a configured keyboard.focus audit reports its own coverage.
+  const keyboard = inputs.audits?.configured.includes('keyboard.focus');
   const unsupported: QualityGap[] = [
     ...NOT_IMPLEMENTED_CHECKS.filter(
       (gap) =>
         !(axe && gap.id === 'accessibility.audit') &&
-        !(visual && gap.id === 'visual.baseline'),
+        !(visual && gap.id === 'visual.baseline') &&
+        !(keyboard && gap.id === 'keyboard.focus'),
     ),
     ...audits.unsupported,
   ];

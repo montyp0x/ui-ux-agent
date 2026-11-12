@@ -16,14 +16,26 @@ import {
   type PlaywrightBuild,
 } from './playwright-visual.js';
 import type { DriverAuditRequest } from './types.js';
+import type { Journey } from '../contracts.js';
+import { keyboardFocusPlaywrightAudit } from './playwright-keyboard.js';
+
+// What the session knows beyond the page, for audits that read it.
+export type PlaywrightAuditContext = {
+  journey: Journey;
+  // The screenshot the session took for an observation step, if any.
+  screenshotAt(step: number): string | null;
+  // How the session's browser was launched (audits that key by it).
+  build: PlaywrightBuild;
+  // The run's screenshot protection, for audits that capture images;
+  // undefined only for sessions opened without an evidence policy.
+  protection: ScreenshotProtection | undefined;
+};
 
 export type PlaywrightAudit = (
   page: Page,
   request: DriverAuditRequest,
-  // How the session's browser was launched (audits that key by it).
-  build?: PlaywrightBuild,
-  // The run's screenshot protection, for audits that capture images.
-  protection?: ScreenshotProtection,
+  // Given by the session; audits that only read the page ignore it.
+  context?: PlaywrightAuditContext,
 ) => Promise<AuditOutput>;
 
 // Leaves the runner's own deadline the last word only when the scan hangs:
@@ -46,23 +58,36 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
     );
   },
   'layout.responsive': layoutResponsivePlaywrightAudit,
-  async 'visual.baseline'(page, request, build, protection) {
-    if (!build)
-      throw new Error('visual.baseline needs the session browser build');
-    return visualBaselinePlaywrightAudit(page, request, build, protection);
+  async 'visual.baseline'(page, request, context) {
+    if (!context) throw new Error('visual.baseline needs the session context');
+    return visualBaselinePlaywrightAudit(
+      page,
+      request,
+      context.build,
+      context.protection,
+    );
+  },
+  // Reads the focus transitions the journey's own key presses recorded; it
+  // presses no key itself.
+  async 'keyboard.focus'(page, _request, context) {
+    if (!context) throw new Error('keyboard.focus needs the session context');
+    return keyboardFocusPlaywrightAudit(
+      page,
+      context.journey,
+      context.screenshotAt,
+    );
   },
 };
 
 export async function runPlaywrightAudit(
   page: Page,
   request: DriverAuditRequest,
-  build?: PlaywrightBuild,
-  protection?: ScreenshotProtection,
+  context: PlaywrightAuditContext,
 ): Promise<AuditOutput> {
   const audit = PLAYWRIGHT_AUDITS[request.config.id];
   if (!audit)
     throw new Error(
       `The Playwright driver has no implementation for audit ${request.config.id}`,
     );
-  return audit(page, request, build, protection);
+  return audit(page, request, context);
 }

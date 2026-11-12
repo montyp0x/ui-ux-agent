@@ -2,20 +2,24 @@
 // other driver it is reported as unsupported at each checkpoint, never run
 // and never counted as clean.
 //
-// Two kinds of audit:
+// Three kinds of audit:
 // - core audits (`evaluate`) read the observations the runner already
 //   recorded, so they need no driver call;
-// - driver audits (no `evaluate`) run inside the driver via
+// - session audits (`inspect`) use only the driver-neutral UISession
+//   interface (check), so any driver that evaluates checks can run them;
+// - driver audits (neither) run inside the driver via
 //   UISession.runAudit, which dispatches to the driver's own implementation
 //   (for Playwright, src/drivers/playwright-audits.ts). Their output is
 //   parsed with auditOutputSchema at that boundary.
-import type { Observation } from '../contracts.js';
+import type { Check, Journey, Observation } from '../contracts.js';
 import type { AuditConfig, AuditId } from './config.js';
 import type { AuditCheckpoint, AuditOutput, DriverKind } from './contract.js';
 import { axeAudit } from './accessibility.js';
 import { horizontalOverflowAudit } from './horizontal-overflow.js';
 import { layoutResponsiveAudit } from './layout-output.js';
 import { visualBaselineAudit } from './visual.js';
+import { keyboardFocusAudit } from './keyboard.js';
+import { stateChecksAudit } from './state-checks.js';
 
 export type AuditContext<C extends AuditConfig = AuditConfig> = {
   checkpoint: AuditCheckpoint;
@@ -24,6 +28,13 @@ export type AuditContext<C extends AuditConfig = AuditConfig> = {
   // state included), or the checkpoint's state alone when none are new.
   observations: Observation[];
 };
+
+export type SessionAuditContext<C extends AuditConfig = AuditConfig> =
+  AuditContext<C> & {
+    journey: Journey;
+    // The session's check, against its current state.
+    check: (condition: Check) => Promise<boolean>;
+  };
 
 export type AuditDefinition<C extends AuditConfig = AuditConfig> = {
   id: C['id'];
@@ -34,6 +45,7 @@ export type AuditDefinition<C extends AuditConfig = AuditConfig> = {
   // Reason reported where the driver is not in `drivers`.
   unsupported: string;
   evaluate?: (context: AuditContext<C>) => AuditOutput;
+  inspect?: (context: SessionAuditContext<C>) => Promise<AuditOutput>;
 };
 
 type Registry = {
@@ -45,6 +57,8 @@ export const AUDITS: Registry = {
   'accessibility.axe': axeAudit,
   'layout.responsive': layoutResponsiveAudit,
   'visual.baseline': visualBaselineAudit,
+  'journey.state-checks': stateChecksAudit,
+  'keyboard.focus': keyboardFocusAudit,
 };
 
 export const auditDefinition = (id: AuditId): AuditDefinition =>

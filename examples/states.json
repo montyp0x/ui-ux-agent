@@ -1,0 +1,839 @@
+{
+  "name": "State coverage examples (local fixture: examples/state-fixture.ts)",
+  "baseURL": "http://127.0.0.1:4173",
+  "requiresAuth": false,
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1280,
+      "height": 800
+    }
+  ],
+  "audits": {
+    "checks": [
+      {
+        "id": "journey.state-checks"
+      },
+      {
+        "id": "layout.horizontal-overflow",
+        "at": [
+          "completion"
+        ]
+      }
+    ],
+    "failOn": "serious"
+  },
+  "journeys": [
+    {
+      "id": "form-validation",
+      "goal": "Create an account with a valid email address",
+      "persona": "A new user who mistypes their email first",
+      "startPath": "/form",
+      "allowedPaths": [
+        "/form"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Sign-up form"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Email"
+          },
+          "value": "not-an-email",
+          "description": "Enter an invalid email"
+        },
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Email"
+          },
+          "value": "ada@example.test",
+          "description": "Enter a valid email"
+        },
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Create account"
+          },
+          "description": "Create the account"
+        }
+      ],
+      "success": [
+        {
+          "kind": "visible",
+          "target": {
+            "by": "testId",
+            "value": "created"
+          }
+        }
+      ],
+      "states": [
+        {
+          "name": "validation-error",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "email-error"
+            }
+          },
+          "expect": [
+            {
+              "kind": "anyRendered",
+              "target": {
+                "by": "css",
+                "value": "[data-testid=\"email-error\"][role=\"alert\"]"
+              }
+            },
+            {
+              "kind": "text",
+              "target": {
+                "by": "testId",
+                "value": "email-error"
+              },
+              "pattern": "valid email"
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#email[aria-invalid=\"true\"]"
+              }
+            },
+            {
+              "kind": "focused",
+              "target": {
+                "by": "label",
+                "value": "Email"
+              },
+              "within": false
+            }
+          ]
+        },
+        {
+          "name": "created",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "created"
+            }
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "email-error"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#email[aria-invalid=\"false\"]"
+              }
+            }
+          ]
+        }
+      ],
+      "maxSteps": 8
+    },
+    {
+      "id": "items-error-retry",
+      "goal": "See the item list after a failed load",
+      "persona": "A user on a flaky connection",
+      "startPath": "/items?mode=error",
+      "allowedPaths": [
+        "/items"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Items"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Retry"
+          },
+          "description": "Retry loading the items"
+        }
+      ],
+      "success": [
+        {
+          "kind": "visible",
+          "target": {
+            "by": "testId",
+            "value": "items"
+          }
+        }
+      ],
+      "states": [
+        {
+          "name": "loading",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "loading"
+            }
+          },
+          "expect": [
+            {
+              "kind": "anyRendered",
+              "target": {
+                "by": "css",
+                "value": "[role=\"status\"][aria-busy=\"true\"]"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "items"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "error"
+              }
+            }
+          ]
+        },
+        {
+          "name": "error",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "error"
+            }
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "[data-testid=\"error\"] [role=\"alert\"]"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Retry"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "loading"
+              }
+            }
+          ]
+        },
+        {
+          "name": "loaded",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "items"
+            }
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "loading"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "error"
+              }
+            },
+            {
+              "kind": "anyRendered",
+              "target": {
+                "by": "css",
+                "value": "[data-testid=\"items\"] tbody tr"
+              }
+            }
+          ]
+        }
+      ],
+      "maxSteps": 12
+    },
+    {
+      "id": "items-empty",
+      "goal": "Understand that there are no items yet",
+      "persona": "A first-time user",
+      "startPath": "/items?mode=empty",
+      "allowedPaths": [
+        "/items"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Items"
+        }
+      },
+      "success": [
+        {
+          "kind": "visible",
+          "target": {
+            "by": "testId",
+            "value": "empty"
+          }
+        }
+      ],
+      "states": [
+        {
+          "name": "empty",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "testId",
+              "value": "empty"
+            }
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Create item"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "loading"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "testId",
+                "value": "items"
+              }
+            }
+          ]
+        }
+      ],
+      "maxSteps": 8
+    },
+    {
+      "id": "dialog-edit",
+      "goal": "Change the profile's display name",
+      "persona": "A returning user",
+      "startPath": "/dialog",
+      "allowedPaths": [
+        "/dialog"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Profile"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Edit profile"
+          },
+          "description": "Open the profile dialog"
+        },
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Display name"
+          },
+          "value": "Grace",
+          "description": "Change the display name"
+        },
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Save profile"
+          },
+          "description": "Save the profile"
+        }
+      ],
+      "success": [
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "profile-name"
+          },
+          "pattern": "Grace"
+        }
+      ],
+      "states": [
+        {
+          "name": "dialog-open",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "role",
+              "role": "dialog",
+              "name": "Edit profile"
+            }
+          },
+          "expect": [
+            {
+              "kind": "focused",
+              "target": {
+                "by": "role",
+                "role": "dialog",
+                "name": "Edit profile"
+              },
+              "within": true
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Save profile"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Cancel"
+              }
+            }
+          ]
+        },
+        {
+          "name": "saved",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "profile-name"
+            },
+            "pattern": "Grace"
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "role",
+                "role": "dialog",
+                "name": "Edit profile"
+              }
+            },
+            {
+              "kind": "focused",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Edit profile"
+              },
+              "within": false
+            }
+          ]
+        }
+      ],
+      "maxSteps": 8
+    },
+    {
+      "id": "menu-archive",
+      "goal": "Archive the record from the actions menu",
+      "persona": "A user tidying up",
+      "startPath": "/menu",
+      "allowedPaths": [
+        "/menu"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Actions"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "click",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Actions"
+          },
+          "description": "Open the actions menu"
+        }
+      ],
+      "discoverRoles": [
+        "menuitem"
+      ],
+      "success": [
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "menu-status"
+          },
+          "pattern": "^Archived$"
+        }
+      ],
+      "states": [
+        {
+          "name": "menu-open",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "role",
+              "role": "menuitem",
+              "name": "Archive"
+            }
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#actions[aria-expanded=\"true\"]"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "menuitem",
+                "name": "Rename"
+              }
+            }
+          ]
+        },
+        {
+          "name": "archived",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "menu-status"
+            },
+            "pattern": "^Archived$"
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "role",
+                "role": "menuitem",
+                "name": "Archive"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#actions[aria-expanded=\"false\"]"
+              }
+            },
+            {
+              "kind": "focused",
+              "target": {
+                "by": "role",
+                "role": "button",
+                "name": "Actions"
+              },
+              "within": false
+            }
+          ]
+        }
+      ],
+      "maxSteps": 8
+    },
+    {
+      "id": "table-pagination",
+      "goal": "Find the last items in the table",
+      "persona": "A user browsing a long list",
+      "startPath": "/table?page=1",
+      "allowedPaths": [
+        "/table"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Item table"
+        }
+      },
+      "success": [
+        {
+          "kind": "path",
+          "pattern": "^/table$"
+        },
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "range"
+          },
+          "pattern": "21–25 of 25"
+        }
+      ],
+      "states": [
+        {
+          "name": "first-page",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "range"
+            },
+            "pattern": "^Showing 1–10 "
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Previous page"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Next page"
+              }
+            },
+            {
+              "kind": "anyRendered",
+              "target": {
+                "by": "css",
+                "value": "[data-testid=\"table\"] tbody tr:nth-child(10)"
+              }
+            }
+          ]
+        },
+        {
+          "name": "last-page",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "range"
+            },
+            "pattern": "21–25 of 25"
+          },
+          "expect": [
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Next page"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Previous page"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "css",
+                "value": "[data-testid=\"table\"] tbody tr:nth-child(6)"
+              }
+            }
+          ]
+        }
+      ],
+      "maxSteps": 8
+    },
+    {
+      "id": "wizard-steps",
+      "goal": "Finish the three-step setup",
+      "persona": "An administrator setting up a workspace",
+      "startPath": "/wizard/1",
+      "allowedPaths": [
+        "/wizard"
+      ],
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Setup wizard"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Workspace name"
+          },
+          "value": "Acme",
+          "description": "Name the workspace"
+        },
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Team size"
+          },
+          "value": "5",
+          "description": "Enter the team size"
+        },
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Region"
+          },
+          "value": "EU",
+          "description": "Choose the region"
+        }
+      ],
+      "success": [
+        {
+          "kind": "path",
+          "pattern": "^/wizard/done$"
+        },
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "progress"
+          },
+          "pattern": "^All set$"
+        }
+      ],
+      "states": [
+        {
+          "name": "step-1",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "progress"
+            },
+            "pattern": "^Step 1 of 3$"
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#continue[aria-disabled=\"true\"]"
+              }
+            },
+            {
+              "kind": "notVisible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Back"
+              }
+            }
+          ]
+        },
+        {
+          "name": "step-2",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "progress"
+            },
+            "pattern": "^Step 2 of 3$"
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Back"
+              }
+            },
+            {
+              "kind": "visible",
+              "target": {
+                "by": "css",
+                "value": "#continue[aria-disabled=\"true\"]"
+              }
+            }
+          ]
+        },
+        {
+          "name": "step-3",
+          "when": {
+            "kind": "text",
+            "target": {
+              "by": "testId",
+              "value": "progress"
+            },
+            "pattern": "^Step 3 of 3$"
+          },
+          "expect": [
+            {
+              "kind": "visible",
+              "target": {
+                "by": "role",
+                "role": "link",
+                "name": "Back"
+              }
+            }
+          ]
+        }
+      ],
+      "maxSteps": 12
+    }
+  ]
+}

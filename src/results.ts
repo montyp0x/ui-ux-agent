@@ -5,10 +5,14 @@
 // and their findings, see src/audits/contract.ts); the horizontal overflow
 // check moved there from `findings`. Version 4 adds `evidence` (what each
 // evidence format captured and how it was protected, see
-// src/evidence/policy.ts); `trace` is null when no trace was captured.
+// src/evidence/policy.ts) and makes `trace` null when no trace was captured;
+// it also adds `dataLifecycle` (the reset/setup/cleanup hooks of authorized
+// write flows, see src/lifecycle.ts), the data_setup_failed and run_cancelled
+// codes and the cancelled category.
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
 import { evidenceReportSchema } from './evidence/policy.js';
+import { dataLifecycleResultSchema } from './lifecycle.js';
 
 export const RESULT_VERSION = 4;
 
@@ -61,6 +65,8 @@ export const outcomeCategorySchema = z.enum([
   'agent_no_path',
   // The step or time budget ran out before the outcome was observed.
   'budget_exhausted',
+  // The run was cancelled (for example Ctrl-C) before its outcome.
+  'cancelled',
   'auth_failure',
   'model_error',
   'infrastructure_error',
@@ -90,6 +96,8 @@ export const OUTCOME_CODES = {
   setup_not_offered: ['blocked', 'precondition_failure', 'unknown'],
   setup_action_failed: ['blocked', 'precondition_failure', 'unknown'],
   setup_stale_action: ['blocked', 'stale_action', 'harness'],
+  // The data lifecycle's reset or setup hook failed; the journey did not start.
+  data_setup_failed: ['blocked', 'precondition_failure', 'environment'],
   scope_exit: ['blocked', 'policy_block', 'harness'],
   unauthorized_response: ['blocked', 'auth_failure', 'environment'],
   repeated_action: ['failed', 'agent_loop', 'agent'],
@@ -111,6 +119,7 @@ export const OUTCOME_CODES = {
   driver_error: ['error', 'infrastructure_error', 'unknown'],
   evidence_capture_failed: ['error', 'infrastructure_error', 'unknown'],
   session_cleanup_failed: ['error', 'infrastructure_error', 'unknown'],
+  run_cancelled: ['error', 'cancelled', 'harness'],
   journey_not_finished: ['error', 'unknown', 'unknown'],
   unclassified_error: ['error', 'unknown', 'unknown'],
 } as const satisfies Record<
@@ -234,6 +243,8 @@ export const resultSchema = z
     // Objective audits at configured checkpoints; model hypotheses stay in
     // `findings`.
     audits: auditsResultSchema,
+    // The data lifecycle hooks of this run; absent without dataLifecycle.
+    dataLifecycle: dataLifecycleResultSchema.optional(),
     // Null when the trace was disabled (see evidence.formats).
     trace: z.string().nullable(),
     video: z.string().nullable(),

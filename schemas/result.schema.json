@@ -116,6 +116,7 @@
             "setup_not_offered",
             "setup_action_failed",
             "setup_stale_action",
+            "data_setup_failed",
             "scope_exit",
             "unauthorized_response",
             "repeated_action",
@@ -133,6 +134,7 @@
             "driver_error",
             "evidence_capture_failed",
             "session_cleanup_failed",
+            "run_cancelled",
             "journey_not_finished",
             "unclassified_error"
           ]
@@ -148,6 +150,7 @@
             "agent_loop",
             "agent_no_path",
             "budget_exhausted",
+            "cancelled",
             "auth_failure",
             "model_error",
             "infrastructure_error",
@@ -1559,6 +1562,166 @@
         "runs",
         "findings",
         "notReached"
+      ],
+      "additionalProperties": false
+    },
+    "dataLifecycle": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "failed"
+                  ]
+                },
+                "durationMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "status",
+                "durationMs",
+                "detail"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "setup": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "failed"
+                  ]
+                },
+                "durationMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "status",
+                "durationMs",
+                "detail"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cleanup": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "failed"
+                  ]
+                },
+                "durationMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "blocked",
+                    "timeout",
+                    "cancelled",
+                    "error"
+                  ]
+                },
+                "remaining": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "status",
+                "durationMs",
+                "detail",
+                "trigger",
+                "remaining"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clean": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "service",
+        "run",
+        "reset",
+        "setup",
+        "values",
+        "cleanup",
+        "clean"
       ],
       "additionalProperties": false
     },

@@ -13,6 +13,7 @@
     "baseline": "tsx src/baseline-cli.ts",
     "demo": "tsx examples/demo.ts",
     "demo:macos": "tsx examples/macos-demo.ts",
+    "demo:states": "tsx examples/states-demo.ts",
     "test:native": "node --import tsx --test test/macos.test.ts"
   },
   "dependencies": {

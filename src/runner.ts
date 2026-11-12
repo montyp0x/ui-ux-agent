@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
+import { missingFillEnv } from './contracts.js';
 import type {
   Action,
   Journey,
@@ -33,6 +34,12 @@ import {
 import { providerModels } from './evidence/provider.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
+import {
+  DataLifecycleHooks,
+  withData,
+  type CleanupTrigger,
+  type LifecycleRun,
+} from './lifecycle.js';
 
 export type RunOptions = {
   directory: string;
@@ -54,6 +61,9 @@ export type RunOptions = {
   // A user-supplied directory of approved visual baselines (outside Git),
   // read by the visual.baseline audit; runs never write into it.
   baselines?: string;
+  // Cancels the suite: the current run stops at its next stage, its data
+  // cleanup still runs, and no further run starts.
+  signal?: AbortSignal;
 };
 export type Logger = EventLogger;
 
@@ -69,6 +79,10 @@ export function withMarker(journey: Journey, marker: string): Journey {
 
 // A stage that would start after the journey deadline; reported as budget exhaustion.
 class BudgetExpired extends Error {}
+// The run was cancelled through RunOptions.signal.
+class RunCancelled extends Error {}
+// The data lifecycle's reset or setup failed; the journey does not start.
+class DataSetupFailed extends Error {}
 // A planner/selector call that failed, or returned output the runner cannot use.
 class ModelFailure extends Error {
   constructor(
@@ -215,14 +229,21 @@ async function runJourney(
   attempt: number,
   usage: Usage,
   protection: EvidenceProtection,
-  baselines: string | null = null,
+  baselines: string | null,
+  lifecycle: LifecycleRun | null = null,
+  cancel?: AbortSignal,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
   // Aborted at the deadline and passed to every model call, so queued or
   // in-flight planner and selector requests stop there. The reason is a
-  // TimeoutError, like AbortSignal.timeout's.
+  // TimeoutError, like AbortSignal.timeout's; a cancelled run aborts it with
+  // an AbortError.
   const deadlineAbort = new AbortController();
+  const onCancel = () =>
+    deadlineAbort.abort(new DOMException('Run cancelled', 'AbortError'));
+  if (cancel?.aborted) onCancel();
+  else cancel?.addEventListener('abort', onCancel, { once: true });
   // Audits run at their configured checkpoints only, never after every action.
   const audits = new JourneyAudits({
     suite,
@@ -347,10 +368,16 @@ async function runJourney(
         );
   const remaining = (next: string): number => {
     stage = next;
+    if (cancel?.aborted) throw new RunCancelled();
     if (Date.now() >= deadline) throw new BudgetExpired();
     return deadline - Date.now();
   };
   try {
+    if (lifecycle?.setupFailure) {
+      stage = 'setup';
+      throw new DataSetupFailed(lifecycle.setupFailure);
+    }
+    if (cancel?.aborted) throw new RunCancelled();
     if (journey.loopProgressTargets?.length && !session.repeatState)
       throw new DriverCapabilityMissing(
         'Driver must implement repeatState to support loopProgressTargets',
@@ -809,6 +836,7 @@ async function runJourney(
     }
   } catch (caught) {
     const notStarted = caught instanceof BudgetExpired;
+    const cancelled = !!cancel?.aborted || caught instanceof RunCancelled;
     // A model call that ended at the deadline is one outcome whichever fired
     // first: the journey signal, the call's own timeout, or the limiter's
     // slot wait expiring (RateLimitBudgetError).
@@ -817,7 +845,25 @@ async function runJourney(
       (deadlineAbort.signal.aborted || Date.now() >= deadline) &&
       (isTimeout(caught) || isAbort(caught) || isRateLimitBudget(caught));
     const rateLimited = !deadlineCut && isRateLimitBudget(caught);
-    if (
+    if (caught instanceof DataSetupFailed) {
+      decide('data_setup_failed', caught.message, {
+        step: -1,
+        events: ['data_setup'],
+        detail: firstLine(caught),
+      });
+    } else if (cancelled) {
+      decide(
+        'run_cancelled',
+        `The run was cancelled during ${stage} before its outcome was observed`,
+        { events: ['run_cancelled'] },
+      );
+      await log('run_cancelled', {
+        journey: journey.id,
+        viewport,
+        step: result.steps,
+        stage,
+      });
+    } else if (
       !session.unauthorized &&
       (notStarted ||
         deadlineCut ||
@@ -889,6 +935,7 @@ async function runJourney(
     }
   } finally {
     clearTimeout(deadlineTimer);
+    cancel?.removeEventListener('abort', onCancel);
     let evidenceComplete = false;
     try {
       // Evidence capture has its own bounded timeout, not the expired task timeout.
@@ -954,6 +1001,20 @@ async function runJourney(
         { detail: `${firstLine(caught)} (after ${result.outcome.code})` },
       );
     }
+    // Data cleanup runs after the browser session closed, whatever ended
+    // the run; its failure is reported, never hidden behind the outcome.
+    if (lifecycle) {
+      await lifecycle.cleanup(cleanupTrigger(result));
+      result.dataLifecycle = lifecycle.record;
+      if (!lifecycle.record.clean)
+        result.findings.push({
+          kind: 'observed',
+          category: 'data-cleanup',
+          description: `Data cleanup failed for run ${lifecycle.record.run} on ${lifecycle.record.service}: ${lifecycle.record.cleanup?.detail ?? 'cleanup did not run'}. Test data may remain; clean it up before the next run.`,
+          step: result.steps,
+          screenshot: finalScreenshot ?? join(directory, 'final.png'),
+        });
+    }
     const policyBlocks = new Set(session.policyBlocks ?? []).size;
     result.outcome.signals = {
       staleActions,
@@ -990,6 +1051,13 @@ async function runJourney(
   return result;
 }
 
+// What ended a run, as the data cleanup hook is told.
+export function cleanupTrigger(result: Result): CleanupTrigger {
+  if (result.outcome.code === 'run_cancelled') return 'cancelled';
+  if (result.outcome.category === 'budget_exhausted') return 'timeout';
+  return result.status;
+}
+
 export async function runSuite(
   suite: Suite,
   models: Models | ((log: Logger) => Models),
@@ -1002,6 +1070,12 @@ export async function runSuite(
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,
   );
+  // Fail before any run, naming every unset variable a fill reads.
+  const unset = missingFillEnv({ journeys });
+  if (unset.length)
+    throw new Error(
+      `Set the environment variable${unset.length > 1 ? 's' : ''} ${unset.join(', ')} read by fill valueEnv`,
+    );
   const viewports = suite.viewports.filter(
     (viewport) => !options.viewport || viewport.name === options.viewport,
   );
@@ -1067,10 +1141,14 @@ export async function runSuite(
           options.profile,
         ));
   const results: Result[] = [];
+  const lifecycle = suite.dataLifecycle
+    ? new DataLifecycleHooks(suite.dataLifecycle, log)
+    : null;
   try {
-    for (const journey of journeys) {
+    runs: for (const journey of journeys) {
       for (const viewport of viewports) {
         for (let attempt = 1; attempt <= repeat; attempt++) {
+          if (options.signal?.aborted) break runs;
           const directory = join(
             options.directory,
             repeat > 1
@@ -1082,43 +1160,65 @@ export async function runSuite(
           // (typed values, checks), so a run's own effects can be traced.
           const marker =
             `UIUX-${journey.id}-${attempt}-${Date.now().toString(36)}`.toUpperCase();
-          const runJourneyConfig = withMarker(journey, marker);
+          let runJourneyConfig = withMarker(journey, marker);
+          // Reset (once) and setup run before the session; setup's values
+          // replace {{data.<key>}}.
+          const data = lifecycle
+            ? await lifecycle.begin(marker, {
+                journey: journey.id,
+                viewport: viewport.name,
+              })
+            : null;
+          if (data) {
+            const filled = withData(runJourneyConfig, data.values);
+            if (filled.missing && !data.setupFailure)
+              data.missingValue(filled.missing);
+            runJourneyConfig = filled.journey;
+          }
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,
             attempt,
-            ...(runJourneyConfig !== journey ? { marker } : {}),
+            ...(runJourneyConfig !== journey || data ? { marker } : {}),
           });
-          const session = await driver.openSession({
-            suite,
-            journey: runJourneyConfig,
-            viewport,
-            directory,
-            storageState: options.storageState,
-            video: options.video,
-            log,
-            evidence: protection,
-          });
-          const usage = emptyUsage();
-          currentUsage = usage;
           try {
-            const result = await runJourney(
-              session,
+            const session = await driver.openSession({
               suite,
-              runJourneyConfig,
-              viewport.name,
+              journey: runJourneyConfig,
+              viewport,
               directory,
-              engine,
+              storageState: options.storageState,
+              video: options.video,
               log,
-              attempt,
-              usage,
-              protection,
-              baselines,
-            );
-            if (runJourneyConfig !== journey) result.marker = marker;
-            results.push(result);
+              evidence: protection,
+            });
+            const usage = emptyUsage();
+            currentUsage = usage;
+            try {
+              const result = await runJourney(
+                session,
+                suite,
+                runJourneyConfig,
+                viewport.name,
+                directory,
+                engine,
+                log,
+                attempt,
+                usage,
+                protection,
+                baselines,
+                data,
+                options.signal,
+              );
+              if (runJourneyConfig !== journey || data) result.marker = marker;
+              results.push(result);
+            } finally {
+              currentUsage = null;
+            }
           } finally {
-            currentUsage = null;
+            // A run that never produced a result (the session failed to
+            // open) still cleans up; a no-op once runJourney cleaned up.
+            await data?.cleanup('error');
           }
           await writeFile(
             join(options.directory, 'results.json'),

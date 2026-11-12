@@ -12,6 +12,7 @@ Requires Node 22 or newer.
 npm ci
 npx playwright install chromium
 npm run demo
+npm run demo:states
 ```
 
 The demo starts a disposable local documentation website, runs desktop and narrow-screen journeys, and produces `runs/demo-*/report.html` with screenshots, video and traces. It uses deterministic decisions and needs no credentials. It verifies browser execution and evidence capture; it does not measure model quality.
@@ -90,11 +91,12 @@ Use [examples/website.json](examples/website.json) as a template. [schemas/suite
 | `applicationOrigins` | Backend origins whose 401 responses block the journey                         |
 | `allowedRequests`    | Explicit method/origin rules for write requests in authorized test flows, each with an exact `path` or a `pathPattern` (regex on the URL path) |
 | `readOnlyPosts`      | Exact origin/path rules for POST-based read/search endpoints                  |
+| `dataLifecycle`      | Reset, setup and cleanup hooks on a local fixture service for write flows (see [Write flows and test data](#write-flows-and-test-data)) |
 | `journeys`           | Goals, personas, starting paths, allowed paths, actions, checks and budgets   |
 
 A journey offers visible links within its configured paths and origins. `"/"` permits the homepage only; `/docs` permits `/docs` and its descendants. Paths apply to all permitted navigation origins. Auth/logout routes, new tabs and popups are excluded. `discoverRoles` optionally enables discovery of visible, uniquely named buttons, tabs or menu items. It defaults to an empty list.
 
-Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code. `{{marker}}` anywhere in a journey (typed values, check patterns) is replaced by a value unique to each run, recorded as the result's `marker`, so a run can find its own effects.
+Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code. A `fill` takes either a literal `value` or `valueEnv`, the name of an environment variable read when the field is filled, so a test password never sits in a suite file: actions, decisions, results and the run's `suite.json` carry only the variable name, and a run fails before it starts, naming every unset variable. The page's own rendering of a filled field (its accessibility snapshot in `observation` events, screenshots, traces) is page evidence, not configuration. `{{marker}}` anywhere in a journey (typed values, check patterns) is replaced by a value unique to each run, recorded as the result's `marker`, so a run can find its own effects.
 
 ```json
 {
@@ -105,7 +107,7 @@ Locators support accessible roles/names, labels, placeholders, CSS selectors and
 }
 ```
 
-Checks support route patterns, visible content, any visible match, text patterns and absence. `anyRendered` accepts any Playwright-visible match, including below the viewport; it proves layout presence, not that the user inspected it. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
+Checks support route patterns, visible content, any visible match, text patterns, absence and, on the web, keyboard focus (`{ "kind": "focused", "target": …, "within": true }`: the target has focus, or with `within` focus is inside it, such as inside a dialog). `anyRendered` accepts any Playwright-visible match, including below the viewport; it proves layout presence, not that the user inspected it. Success requires every check. The agent cannot declare its own completion. Actions and visible-content checks use the current viewport, including ancestor clipping and modal boundaries. Before execution, selected controls are checked for identity, semantic state, availability and dialog context, and navigation must still match the observed URL. Unrelated page updates do not invalidate a selection. Each reachable region gets separate scroll directions, so an outer page can move independently of a nested feed. Scroll actions recheck their wheel recipient after moving the pointer, plus its position, viewport size and dialog context. Wheel gestures settle for 550ms before the next observation; waits tolerate page updates. Scrolling tracks the document, nested containers and open shadow roots.
 
 ### Setup
 
@@ -153,6 +155,84 @@ After every `success` assertion passes, the runner polls content checks every 20
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. A blocked non-navigation request to one of the suite's own origins becomes an observed `policy-block` finding. The page under test may show errors caused by the harness rather than the application, so add genuine reads such as search POSTs to `readOnlyPosts`. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 
+### State coverage
+
+A declared journey state can carry its own `expect` checks, evaluated once at the first observed state where its `when` holds, independently of the journey's `success` checks. A loading, empty, error or success state is then verified on its own terms (the error state offers a retry, the empty state explains itself) whatever the journey's outcome:
+
+```json
+{
+  "audits": { "checks": [{ "id": "journey.state-checks" }] },
+  "journeys": [
+    {
+      "states": [
+        {
+          "name": "error",
+          "when": { "kind": "visible", "target": { "by": "testId", "value": "error" } },
+          "expect": [
+            { "kind": "visible", "target": { "by": "css", "value": "[data-testid=error] [role=alert]" } },
+            { "kind": "visible", "target": { "by": "role", "role": "button", "name": "Retry" } }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+The `journey.state-checks` audit (runs at `states` only; `severity`, default `serious`) reports each failed expectation as a `state-expectation` violation tagged `state:<name>`; an expectation that throws makes the run `incomplete`; a state never reached is listed in `audits.notReached`. A journey with `expect` checks needs the audit configured. It uses only the driver's checks, so it runs on the web and on macOS. [examples/states.json](examples/states.json) covers form validation, loading/empty/error/success states, a dialog, a menu, a paginated table and a three-step flow against the local fixture in [examples/state-fixture.ts](examples/state-fixture.ts); `npm run demo:states` runs it with scripted decisions (no model calls), and `npm run demo:states -- --defects` turns on one deliberate defect per page to show the state checks failing while the journeys still pass.
+
+### Keyboard-only journeys
+
+A web journey with `"input": "keyboard"` is operated with the keyboard alone. At every state it is offered key presses on whatever has focus (`Tab`, `Shift+Tab`, `Enter`, `Space`, `Escape`, the arrow keys, `Home`, `End`, `PageUp`, `PageDown`; each description says where focus is), its configured `fill` and `press` interactions once keys have focused their target, and a wait. Links, clicks, scrolling and history are never offered, and the driver refuses any other action, so a keyboard journey cannot fall back to the pointer; keys are pressed through the browser's own keyboard input, never by focusing elements programmatically. `click`, `select` and `check` interactions and `discoverRoles` are rejected for keyboard journeys, and macOS suites reject them (the native driver never synthesizes input). The focused element is part of the observed state, so a key that only moves focus counts as a change.
+
+```json
+{
+  "input": "keyboard",
+  "keyboard": {
+    "focusOrder": [{ "by": "label", "value": "Display name" }, { "by": "role", "role": "button", "name": "Save profile" }],
+    "dialogs": { "closeOnEscape": true, "restoreFocus": true }
+  }
+}
+```
+
+The `keyboard.focus` audit (default checkpoint `completion`; `states` is also allowed) reads the focus transition each key press recorded: what had focus before and after it, whether the newly focused element's computed style changed when it received focus, and which modal dialog was open. It presses no key itself. Rules:
+
+- `focus-visible` (`serious` violation, WCAG 2.4.7): focus moved to an element whose computed outline, box shadow, border, background, colour, text decoration or shadow, opacity, transform or filter (on the element, its `::before`/`::after`, or its parent's outline, shadow, background or border colour) did not change; a `moderate` `needs_review` when the element appeared with the key press and could not be compared.
+- `focus-not-shown` (`serious`, WCAG 2.4.11): focus moved to an element outside the viewport or not rendered visibly.
+- `dialog-initial-focus` and `dialog-focus-trap` (`serious`, WCAG 2.4.3): a modal dialog (`<dialog>` opened modally, or `aria-modal="true"`) opened without focus moving into it, or `Tab`/`Shift+Tab` moved focus out of an open one.
+- Explicit expectations only, from the journey's `keyboard` block: `dialog-escape` (`moderate`) when `Escape` leaves a modal open (`closeOnEscape`); `dialog-focus-restore` (`moderate`; `needs_review` when the opener could not be identified) when closing a modal does not return focus to the control that had focus when it opened (`restoreFocus`); and `focus-order` (`serious`) when a run of `Tab` presses reaches the `focusOrder` targets out of order (unlisted controls may sit between them; a wrap inside a modal starts a new run).
+- `focus-lost` (`moderate`) and `focus-stuck` (`serious`), both `needs_review`: a key removed the focused element and focus fell back to the document; `Tab` left focus on the same element while no modal dialog was open.
+
+Each finding points at the state after the key press. The audit only measures what the journey's own key presses reached: on a pointer journey it is `incomplete`, and a keyboard journey that pressed no key is `incomplete`, never clean. Indicator contrast and size, focus obscured by other content, and frames are not measured; each run lists these limitations. When `keyboard.focus` is configured, the `keyboard.focus` unsupported gap is dropped from the quality verdict. [examples/keyboard.json](examples/keyboard.json) is a keyboard-only journey through the fixture's dialog.
+
+### Write flows and test data
+
+Journeys that write need reviewed `allowedRequests`, and their data needs a lifecycle. `dataLifecycle` points the runner at an isolated **local** fixture service (an `http(s)` origin on `127.0.0.1`, `localhost` or `[::1]`; web only) and its hooks:
+
+```json
+{
+  "allowedRequests": [{ "origin": "http://127.0.0.1:4174", "path": "/api/notes", "method": "POST" }],
+  "dataLifecycle": {
+    "service": "http://127.0.0.1:4174",
+    "reset": { "method": "POST", "path": "/__fixture/reset" },
+    "setup": { "method": "POST", "path": "/__fixture/setup" },
+    "cleanup": { "method": "POST", "path": "/__fixture/cleanup" },
+    "verify": { "path": "/__fixture/verify" },
+    "timeoutMs": 5000
+  },
+  "journeys": [{ "startPath": "/notes?owner={{data.owner}}" }]
+}
+```
+
+- `reset` (optional) runs once before the suite's first run, to clear what an interrupted earlier run left.
+- `setup` (optional) runs before each run with `{"run": "<marker>"}` and may answer `{"values": {"owner": "…"}}`: disposable values, such as a test identity, that replace `{{data.<key>}}` anywhere in the journey. Only the keys are recorded. A failed reset or setup, or a `{{data.*}}` value setup did not return, ends the run as `blocked` (`data_setup_failed`) before the journey starts.
+- `cleanup` (required) runs after every run, after the browser session closed, whatever ended it, with `{"run": "<marker>", "trigger": "passed|failed|blocked|timeout|cancelled|error"}`.
+- `verify` (optional) is a `GET` with `?run=<marker>` answering `{"remaining": N}`; any remaining record is a cleanup failure.
+
+Each hook is bounded by `timeoutMs`, never follows redirects and parses its answer strictly. A cleanup that fails, times out, answers invalid output or leaves records keeps the functional outcome but is reported prominently: `dataLifecycle.clean` is `false` on the result, a `data-cleanup` finding is added, the report opens with a **CLEANUP FAILED** banner naming the runs, the CLI prints a `CLEANUP FAILED` line and exits 1. Hook calls are logged as `data_reset`, `data_setup` and `data_cleanup` events. Ctrl-C cancels a CLI run: the current run stops at its next stage (`run_cancelled`), its cleanup still runs, and no further run starts; a second Ctrl-C exits at once. Library callers pass `signal` to `runSuite`. [examples/notes.json](examples/notes.json) with [examples/notes-fixture.ts](examples/notes-fixture.ts) is the reference flow, also run by `npm run demo:states`.
+
+Uploads and downloads, frames, multi-tab flows and drag-and-drop are deliberately not supported yet; each needs its own capability and security design.
+
 ### Audits and checkpoints
 
 Audits are objective checks of the UI, run only at checkpoints the suite configures, never after every action:
@@ -182,6 +262,8 @@ Each audit finding carries its audit id, source and analyzer (name and version),
 
 Built-in audits:
 
+- `journey.state-checks`: each declared state's own `expect` checks; see [State coverage](#state-coverage).
+- `keyboard.focus`: focus behaviour of keyboard-only journeys; see [Keyboard-only journeys](#keyboard-only-journeys).
 - `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
 - `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
 - `visual.baseline`: an opt-in screenshot comparison with reviewed baselines; see [Visual baselines](#visual-baselines).
@@ -193,7 +275,7 @@ Built-in audits:
   - `exceptions`: intentional layouts, each one `rule`, one CSS `selector` matched against the reported element or an ancestor (for occlusion also the covering element, e.g. decorative art), a `reason`, and optionally `breakpoints` (suite viewport or matrix names). Exempted items are listed in the run's `exemptions` with the measurement they suppressed; an exception that matched nothing is noted in `limitations`; an invalid selector is an `error` run.
   - Each finding's description starts with `[breakpoint WIDTHxHEIGHT]` and its tags include `breakpoint:<name>` (and `reflow`); the reproduction viewport is the session's. Boxes and measured values for every breakpoint, the exemptions and the exception ledger are written to `layout-<checkpoint>-step<N>.json` in the run directory and listed in the findings' evidence files. See `examples/responsive-layout.json`. Playwright only; unsupported on macOS.
 
-Audits are registered in `src/audits/registry.ts` and declare the drivers that support them. Core audits read the states the runner already observed; driver audits run through the session's `runAudit` (for Playwright, `src/drivers/playwright-audits.ts`), which receives the audit config, checkpoint, the session's viewport, the run directory and the timeout, and only runs fixed engine code in the page. The report says which automated audits ran; an automated scan does not establish accessibility or standards conformance.
+Audits are registered in `src/audits/registry.ts` and declare the drivers that support them. Core audits read the states the runner already observed; session audits (`inspect`) use only the session's driver-neutral checks; driver audits run through the session's `runAudit` (for Playwright, `src/drivers/playwright-audits.ts`), which receives the audit config, checkpoint, the session's viewport, the run directory and the timeout, and only runs fixed engine code in the page. The report says which automated audits ran; an automated scan does not establish accessibility or standards conformance.
 
 ### Accessibility scan (axe-core)
 
@@ -223,7 +305,7 @@ What a scan does not establish (each run's `limitations` repeats the coverage li
 
 - An automated scan detects only a subset of accessibility issues. A run without violations does not establish WCAG conformance or any accessibility certification, and is not a substitute for a manual accessibility audit.
 - `needs_review` findings are undecided, not passes.
-- Keyboard operation and focus order are not tested by the scan; keyboard and focus checks are planned separately.
+- Keyboard operation and focus order are not tested by the scan; see [Keyboard-only journeys](#keyboard-only-journeys) and the `keyboard.focus` audit.
 - Cross-origin frames are not scanned. The scan runs in the page itself, so it opens no second page in the browser context.
 - HTML snippets are excerpts of the page under test and can contain its data; treat results like other run evidence.
 
@@ -422,7 +504,7 @@ Once the suite, credentials and session are supplied, the CLI executes without i
 - `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, and evidence links.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category.
 - Per journey/viewport: screenshots, Playwright trace and optional video, when the evidence policy allows them.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
@@ -453,7 +535,7 @@ Every result's `evidence` lists each format (`model_payloads`, `provider_screens
 
 **Redaction is not a guarantee.** It removes the patterns, values and elements it is given and well-known credential shapes; it cannot recognize arbitrary unknown sensitive content (names, addresses, free text, images). Declare what a suite's application shows, prefer test accounts and synthetic data, and keep run directories local.
 
-Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error. Exit codes follow the functional outcome only; the quality verdict is reported beside it and does not change the exit code.
+Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey or a failed data cleanup, **2** configuration/startup error. Exit codes follow the functional outcome (and data cleanup) only; the quality verdict is reported beside it and does not change the exit code.
 
 ### Outcome codes
 
@@ -468,12 +550,14 @@ Every result's `outcome` names why the journey ended with a stable `code`, its `
 | failed | `budget_max_steps`, `budget_deadline`, `budget_deadline_before_stage`, `budget_stage_timeout`, `budget_deadline_abort` | budget_exhausted | unknown |
 | failed | `budget_model_rate_limit` | budget_exhausted | model |
 | blocked | `ready_not_reached`, `setup_not_offered`, `setup_action_failed` | precondition_failure | unknown |
+| blocked | `data_setup_failed` | precondition_failure | environment |
 | blocked | `setup_stale_action` | stale_action | harness |
 | blocked | `scope_exit` | policy_block | harness |
 | blocked | `unauthorized_response` | auth_failure | environment |
 | error | `model_call_failed`, `model_invalid_output` | model_error | model |
 | error | `driver_capability_missing` | infrastructure_error | harness |
 | error | `driver_error`, `evidence_capture_failed`, `session_cleanup_failed` | infrastructure_error | unknown |
+| error | `run_cancelled` | cancelled | harness |
 | error | `journey_not_finished`, `unclassified_error` | unknown | unknown |
 
 Only `source: "assertion"` is evidence about the application: an independent outcome assertion was evaluated. A loop, a missing path or an exhausted budget describes the agent's run, not a product defect, and causes the tests cannot tell apart stay `unknown`. A content wait cut short by the journey deadline is `budget_deadline`, not `content_readiness_timeout`. The outcome also records the deciding `stage` and `step`, a `detail` (first error line), and `evidence`: the deciding screenshot, the `events.jsonl` event names that record the decision, and the indices of `checks` that were false. `signals` counts stale actions, action errors, request-policy blocks and browser errors during the run; they may explain an outcome without being its cause.
@@ -486,7 +570,7 @@ Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoi
 
 - `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
 
-The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. `visual.baseline` is listed as unsupported unless the opt-in [visual baseline](#visual-baselines) audit is configured. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Keyboard/focus checks are listed as unsupported unless the [`keyboard.focus`](#keyboard-only-journeys) audit is configured. `visual.baseline` is listed as unsupported unless the opt-in [visual baseline](#visual-baselines) audit is configured. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 

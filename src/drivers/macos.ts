@@ -14,6 +14,7 @@ import {
   DEFAULT_BLOCKED_CONTROLS,
   EXCLUDED_MENUS,
   MENU_BLOCKED_CONTROLS,
+  fillValue,
   type Action,
   type Check,
   type Observation,
@@ -519,6 +520,9 @@ export async function macosDriver(): Promise<UIDriver> {
           const snap = await snapshot();
           if (condition.kind === 'path')
             return new RegExp(condition.pattern).test(`/${snap.window.title}`);
+          // Rejected at suite load; keyboard focus is web-only.
+          if (condition.kind === 'focused')
+            throw new Error('focused checks are not supported on macOS');
           const { all, visible } = find(snap, condition.target);
           if (condition.kind === 'notVisible') return visible.length === 0;
           if (condition.kind === 'anyVisible') return visible.length > 0;
@@ -972,7 +976,7 @@ export async function macosDriver(): Promise<UIDriver> {
             await helper.call({
               cmd: 'setValue',
               ref: guard.ref,
-              value: action.value,
+              value: fillValue(action),
             });
           else if (action.kind === 'check') {
             const checked = current.value === '1';
