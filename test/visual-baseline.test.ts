@@ -7,7 +7,14 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,8 +34,10 @@ import type { VisualEnvironment } from '../src/audits/visual-contract.js';
 import {
   approveBaselines,
   assertOutsideGit,
+  baselineDirectoryForRun,
   listBaselines,
 } from '../src/baselines.js';
+import { pruneRuns } from '../src/evidence/retention.js';
 import {
   suiteSchema,
   type Action,
@@ -840,6 +849,66 @@ test("a journey's visual captures go through the suite's evidence protection: a 
     app.state.start = () => article({ token: 'sk-live-ROTATED9999' });
     const second = await journeyRun(app.url, baselines, 1280, evidence);
     assert.deepEqual(statuses(second.result)[0], ['ready', 'match']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('--prune-runs deletes an expired run and never the baselines approved from it; baselines inside a run directory are refused', async () => {
+  const app = await site();
+  const root = await mkdtemp(join(tmpdir(), 'ui-ux-visual-prune-'));
+  const baselines = join(root, '.baselines');
+  await mkdir(baselines);
+  try {
+    const first = await journeyRun(app.url, baselines);
+    await approveBaselines({ run: first.directory, baselines, all: true });
+    // The run, manifest included, moved under a runs root next to the
+    // baselines.
+    const runs = join(root, 'runs');
+    await mkdir(runs);
+    const expired = join(runs, 'first');
+    await rename(first.directory, expired);
+    const approved = await listBaselines(baselines);
+    assert.equal(approved.length, 2);
+    const snapshot = async () =>
+      Promise.all(
+        approved.flatMap((entry) =>
+          [entry.file, entry.file.replace(/\.png$/, '.json')].map((file) =>
+            readFile(file),
+          ),
+        ),
+      );
+    const before = await snapshot();
+    // Long after the run's retention: the run goes, the baselines stay, both
+    // when pruning the runs root and when pointed at their common parent or
+    // at the baseline directory itself.
+    const later = new Date(Date.now() + 3650 * 86400000);
+    for (const target of [root, baselines])
+      for (const entry of await pruneRuns(target, { now: later }))
+        assert.notEqual(entry.action, 'deleted', entry.directory);
+    assert.deepEqual(
+      (await pruneRuns(runs, { now: later })).map((entry) => entry.action),
+      ['deleted'],
+    );
+    assert.ok(!existsSync(expired));
+    assert.deepEqual(await snapshot(), before);
+    const second = await journeyRun(app.url, baselines);
+    assert.deepEqual(statuses(second.result), [
+      ['ready', 'match'],
+      ['completion', 'match'],
+    ]);
+
+    // A baseline directory under a run directory would be pruned with it.
+    const nested = join(second.directory, 'baselines');
+    await assert.rejects(
+      approveBaselines({ run: second.directory, baselines: nested, all: true }),
+      /inside the run directory/,
+    );
+    await mkdir(nested);
+    await assert.rejects(
+      baselineDirectoryForRun(nested),
+      /inside the run directory/,
+    );
   } finally {
     await app.close();
   }

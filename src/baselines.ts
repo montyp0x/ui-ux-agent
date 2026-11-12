@@ -14,6 +14,7 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { parseResults, type Result } from './results.js';
+import { RUN_MANIFEST, runManifestSchema } from './evidence/retention.js';
 import {
   BASELINE_METADATA_VERSION,
   baselineDirectory,
@@ -54,7 +55,29 @@ export async function assertOutsideGit(directory: string): Promise<void> {
   }
 }
 
-// The baseline directory a run reads: it must exist, and stay out of Git.
+// Baselines outlive runs: a baseline directory inside a run directory (one
+// carrying this tool's run manifest) would be deleted with that run by
+// --prune-runs, so it is refused.
+export async function assertOutsideRunDirectory(
+  directory: string,
+): Promise<void> {
+  for (let path = resolve(directory); ; path = dirname(path)) {
+    let manifest: unknown = null;
+    try {
+      manifest = JSON.parse(await readFile(join(path, RUN_MANIFEST), 'utf8'));
+    } catch {
+      // No readable manifest here: not a run directory.
+    }
+    if (manifest !== null && runManifestSchema.safeParse(manifest).success)
+      throw new Error(
+        `Baseline directory ${resolve(directory)} is inside the run directory ${path}, which --prune-runs deletes when its retention ends; keep baselines outside run directories`,
+      );
+    if (dirname(path) === path) return;
+  }
+}
+
+// The baseline directory a run reads: it must exist, stay out of Git and
+// outside every run directory.
 export async function baselineDirectoryForRun(
   directory: string,
 ): Promise<string> {
@@ -70,6 +93,7 @@ export async function baselineDirectoryForRun(
   if (!info.isDirectory())
     throw new Error(`Baseline path ${absolute} is not a directory`);
   await assertOutsideGit(absolute);
+  await assertOutsideRunDirectory(absolute);
   return absolute;
 }
 
@@ -137,6 +161,7 @@ export async function approveBaselines(
   const results: Result[] = parseResults(await readFile(resultsPath, 'utf8'));
   const root = resolve(options.baselines);
   await assertOutsideGit(root);
+  await assertOutsideRunDirectory(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const decisions: ApprovalDecision[] = [];
   // One approval per baseline file: the first selected capture wins and later
