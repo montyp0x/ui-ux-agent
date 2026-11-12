@@ -17,7 +17,7 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { after, before, test } from 'node:test';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -909,6 +909,105 @@ test('--prune-runs deletes an expired run and never the baselines approved from 
       baselineDirectoryForRun(nested),
       /inside the run directory/,
     );
+  } finally {
+    await app.close();
+  }
+});
+
+test('approval finds captures whose recorded path the evidence redaction rewrote, and skips a redacted suite name', async () => {
+  const app = await site();
+  const baselines = await mkdtemp(join(tmpdir(), 'ui-ux-visual-baselines-'));
+  try {
+    // The run directory's parent name is a secret value of the run: every
+    // path in results.json gets redacted.
+    const parent = await mkdtemp(join(tmpdir(), 'ui-ux-visual-tag-'));
+    const tag = basename(parent);
+    const directory = join(parent, 'run');
+    const suite = suiteSchema.parse({
+      name: 'LOCAL fixture — visual baselines',
+      baseURL: app.url,
+      requiresAuth: false,
+      viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+      journeys: [journey],
+      evidence: { redactEnv: ['UIUX_TEST_RUN_TAG'] },
+      audits: {
+        checks: [
+          {
+            id: 'visual.baseline',
+            at: ['ready', 'completion'],
+            mask: ['#clock'],
+          },
+        ],
+      },
+    });
+    const [result] = await runSuite(suite, deterministic, {
+      directory,
+      baselines,
+      env: { UIUX_TEST_RUN_TAG: tag },
+    });
+    assert.equal(result?.status, 'passed', result?.reason);
+    const results = await readFile(join(directory, 'results.json'), 'utf8');
+    assert.ok(!results.includes(tag));
+    for (const run of visualRuns(result!))
+      assert.match(
+        run.visual!.current!.file,
+        /\[REDACTED:env:UIUX_TEST_RUN_TAG\]/,
+      );
+    const approved = await approveBaselines({
+      run: directory,
+      baselines,
+      all: true,
+    });
+    assert.deepEqual(
+      approved.map((entry) => [entry.key.checkpoint, entry.action]),
+      [
+        ['ready', 'created'],
+        ['completion', 'created'],
+      ],
+    );
+    // The approved images are the run's captures, and the next run matches.
+    for (const entry of await listBaselines(baselines))
+      assert.equal(
+        createHash('sha256')
+          .update(await readFile(entry.file))
+          .digest('hex'),
+        entry.image.sha256,
+      );
+    const next = await journeyRun(app.url, baselines);
+    assert.deepEqual(statuses(next.result), [
+      ['ready', 'match'],
+      ['completion', 'match'],
+    ]);
+
+    // A suite name rewritten by the suite's own pattern would file the
+    // baseline under a key no run looks up: skipped, with the reason.
+    const named = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-visual-run-')),
+      'run',
+    );
+    const [redacted] = await runSuite(
+      suiteSchema.parse({
+        ...suite,
+        name: 'LOCAL fixture ACME-CASE-123456',
+        evidence: { redact: [{ pattern: 'ACME-CASE-\\d{6}' }] },
+      }),
+      deterministic,
+      { directory: named, baselines, env: {} },
+    );
+    assert.equal(redacted?.status, 'passed', redacted?.reason);
+    const skipped = await approveBaselines({
+      run: named,
+      baselines,
+      all: true,
+    });
+    assert.equal(skipped.length, 2);
+    for (const entry of skipped) {
+      assert.equal(entry.action, 'skipped');
+      assert.match(
+        entry.reason,
+        /suite name in this run's results was redacted/,
+      );
+    }
   } finally {
     await app.close();
   }

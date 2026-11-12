@@ -130,6 +130,73 @@ function inside(directory: string, file: string): boolean {
   return !!path && !path.startsWith('..') && !path.startsWith(sep);
 }
 
+// A token the evidence redactor leaves in place of a match.
+const REDACTED = /\[REDACTED(?::[^\]\s]*)?\]/;
+
+// Every PNG under the run directory (symlinks not followed), by SHA-256.
+function lazyChecksumIndex(
+  runDirectory: string,
+): () => Promise<Map<string, string>> {
+  let index: Promise<Map<string, string>> | null = null;
+  const build = async () => {
+    const found = new Map<string, string>();
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else if (entry.isFile() && entry.name.endsWith('.png'))
+          found.set(sha256(await readFile(path)), path);
+      }
+    };
+    await walk(runDirectory);
+    return found;
+  };
+  return () => (index ??= build());
+}
+
+// The capture a visual record names. results.json is redacted text, so a
+// suite pattern or secret value can rewrite the recorded path (a user name
+// in a home directory, for example); the image bytes are never redacted, so
+// the capture is then found by the checksum the run recorded, inside the
+// run directory only.
+async function locateCapture(
+  runDirectory: string,
+  current: { file: string; sha256: string },
+  byChecksum: () => Promise<Map<string, string>>,
+): Promise<
+  | { status: 'found'; png: Buffer; file: string }
+  | { status: 'skipped'; reason: string }
+> {
+  const recorded = resolve(runDirectory, current.file);
+  let changed = false;
+  if (!REDACTED.test(current.file) && inside(runDirectory, recorded)) {
+    try {
+      const png = await readFile(recorded);
+      if (sha256(png) === current.sha256)
+        return { status: 'found', png, file: recorded };
+      changed = true;
+    } catch {
+      // Missing at the recorded path: look it up by checksum.
+    }
+  }
+  const file = (await byChecksum()).get(current.sha256);
+  if (file) return { status: 'found', png: await readFile(file), file };
+  if (changed)
+    return {
+      status: 'skipped',
+      reason: `the capture ${recorded} changed after the run recorded it`,
+    };
+  if (!REDACTED.test(current.file) && !inside(runDirectory, recorded))
+    return {
+      status: 'skipped',
+      reason: `the capture ${recorded} is outside the run directory`,
+    };
+  return {
+    status: 'skipped',
+    reason: `the capture ${current.file} is missing from the run directory`,
+  };
+}
+
 async function writeAtomically(path: string, data: Buffer | string) {
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, data, { mode: 0o600 });
@@ -167,6 +234,8 @@ export async function approveBaselines(
   // One approval per baseline file: the first selected capture wins and later
   // repetitions of the same key and environment are skipped.
   const written = new Set<string>();
+  // Built on first use: every PNG in the run directory by checksum.
+  const capturesByChecksum = lazyChecksumIndex(runDirectory);
   for (const result of results)
     for (const auditRun of result.audits.runs) {
       const visual = auditRun.visual;
@@ -191,6 +260,15 @@ export async function approveBaselines(
           reason,
           file,
         });
+      // The suite's redaction rewrote the key in results.json: approving it
+      // would file the baseline where no run looks for it.
+      if (REDACTED.test(key.suite)) {
+        decide(
+          'skipped',
+          "the suite name in this run's results was redacted by the suite's evidence patterns, so the baseline location is unknown; rename the suite or narrow the pattern",
+        );
+        continue;
+      }
       if (result.status !== 'passed' && !options.allowFailedRuns) {
         decide(
           'skipped',
@@ -224,28 +302,16 @@ export async function approveBaselines(
         );
         continue;
       }
-      const current = resolve(runDirectory, visual.current.file);
-      if (!inside(runDirectory, current)) {
-        decide(
-          'skipped',
-          `the capture ${current} is outside the run directory`,
-        );
+      const found = await locateCapture(
+        runDirectory,
+        visual.current,
+        capturesByChecksum,
+      );
+      if (found.status !== 'found') {
+        decide('skipped', found.reason);
         continue;
       }
-      let png: Buffer;
-      try {
-        png = await readFile(current);
-      } catch {
-        decide('skipped', `the capture ${current} is missing`);
-        continue;
-      }
-      if (sha256(png) !== visual.current.sha256) {
-        decide(
-          'skipped',
-          `the capture ${current} changed after the run recorded it`,
-        );
-        continue;
-      }
+      const { png } = found;
       const image = imageOf(files.png, png);
       const metadata: BaselineMetadata = baselineMetadataSchema.parse({
         version: BASELINE_METADATA_VERSION,
