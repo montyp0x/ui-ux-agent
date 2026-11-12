@@ -48,10 +48,11 @@ export function detectDesign(input: DesignDetectInput): DesignMeasurement {
     typeof (Element.prototype as { computedStyleMap?: unknown })
       .computedStyleMap === 'function' &&
     typeof CSSUnitValue !== 'undefined' &&
-    typeof CSSKeywordValue !== 'undefined';
+    typeof CSSKeywordValue !== 'undefined' &&
+    typeof CSSNumericValue !== 'undefined';
   const nodes: DesignMeasurement['nodes'] = [];
   const samples: DesignSample[] = [];
-  const skipped = { relative: 0, auto: 0 };
+  const skipped = { relative: 0, auto: 0, unreadable: 0 };
   const g = {
     roots(): ParentNode[] {
       const roots: ParentNode[] = [document];
@@ -187,7 +188,10 @@ export function detectDesign(input: DesignDetectInput): DesignMeasurement {
       seen.add(key);
       own.push(sample);
     },
-    // A typed length in px; null (counted) for auto and relative values.
+    // A typed length in px; null (counted) for auto, relative and unreadable
+    // values. Some engines (WebKit) return lengths as untyped CSSStyleValue
+    // objects: their text is parsed with CSSNumericValue.parse and accepted
+    // only as a px length; anything else is unreadable, never guessed.
     typed(map: StylePropertyMapReadOnly, property: string): number | null {
       const value = map.get(property);
       if (value instanceof CSSKeywordValue) {
@@ -197,7 +201,21 @@ export function detectDesign(input: DesignDetectInput): DesignMeasurement {
       if (value instanceof CSSUnitValue && value.unit === 'px')
         return value.value;
       if (value instanceof CSSUnitValue && value.unit === 'number') return null;
-      skipped.relative++;
+      if (value instanceof CSSNumericValue) {
+        skipped.relative++;
+        return null;
+      }
+      if (value !== undefined) {
+        let parsed: CSSNumericValue | null = null;
+        try {
+          parsed = CSSNumericValue.parse(String(value));
+        } catch {
+          parsed = null;
+        }
+        if (parsed instanceof CSSUnitValue && parsed.unit === 'px')
+          return parsed.value;
+      }
+      skipped.unreadable++;
       return null;
     },
   };

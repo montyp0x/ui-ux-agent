@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { chromium, type Browser } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 import { auditConfigSchema, type AuditConfig } from '../src/audits/config.js';
 import {
   auditOutputSchema,
@@ -52,6 +52,8 @@ const config = (options: Record<string, unknown> = {}): AuditConfig =>
 async function audit(
   html: string,
   check: AuditConfig = config(),
+  // Runs in the page before the audit (test stubs of browser behaviour).
+  prepare?: (page: Page) => Promise<void>,
 ): Promise<{ output: ParsedAuditOutput; directory: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'ui-ux-design-'));
   const page = await browser.newPage({
@@ -59,6 +61,7 @@ async function audit(
   });
   try {
     await page.setContent(html);
+    await prepare?.(page);
     const request: DriverAuditRequest = {
       config: check,
       checkpoint: {
@@ -575,5 +578,60 @@ test('through a real journey: off-token values at ready, clean at completion', a
     assert.equal(result.quality.verdict, 'fail');
   } finally {
     await app.close();
+  }
+});
+
+// WebKit's computedStyleMap() can return lengths as untyped CSSStyleValue
+// objects instead of CSSUnitValue. Stubbed here in Chromium: every px length
+// the map would return for margin, padding and gap becomes an untyped value
+// with the same text, and `.card`'s padding-top an unreadable one when asked.
+// Plain page JavaScript (a string, so the test transpiler adds no helpers).
+const untypedLengths = (unreadable: string | null) => async (page: Page) => {
+  await page.evaluate(`(() => {
+    const unreadable = ${JSON.stringify(unreadable)};
+    const untyped = (text) =>
+      Object.assign(Object.create(CSSStyleValue.prototype), { toString: () => text });
+    const original = Element.prototype.computedStyleMap;
+    Element.prototype.computedStyleMap = function () {
+      const map = original.call(this);
+      const element = this;
+      return new Proxy(map, {
+        get(target, key) {
+          if (key !== 'get') return Reflect.get(target, key, target);
+          return (property) => {
+            if (unreadable !== null && element.classList.contains('card') && property === 'padding-top')
+              return untyped(unreadable);
+            const value = target.get(property);
+            return /^(margin|padding)-|gap$/.test(property) &&
+              value instanceof CSSUnitValue && value.unit === 'px'
+              ? untyped(value.toString())
+              : value;
+          };
+        },
+      });
+    };
+  })()`);
+};
+
+test('untyped Typed OM lengths are parsed as px, anything else leaves the run incomplete', async () => {
+  // Still measured: on token stays clean and complete...
+  const clean = await audit(onToken, config(), untypedLengths(null));
+  assert.deepEqual(clean.output.findings, []);
+  assert.equal(clean.output.complete, true, clean.output.detail ?? '');
+  // ...and the seeded 10px padding is still found, with its nearest token.
+  const off = await audit(offToken, config(), untypedLengths(null));
+  const [spacing] = byRule(off.output, 'spacing');
+  assert.ok(spacing, JSON.stringify(off.output.findings));
+  assert.match(
+    spacing.description,
+    /10px .*nearest token s2 \(8px\), 2px away/,
+  );
+  assert.equal(off.output.complete, true);
+  // A value that does not parse to a px length is not guessed: the run is
+  // incomplete and says why, whether it is unparseable or not a length.
+  for (const text of ['not-a-length', '5%', '2em']) {
+    const unreadable = await audit(onToken, config(), untypedLengths(text));
+    assert.equal(unreadable.output.complete, false, text);
+    assert.match(unreadable.output.detail ?? '', /1 untyped value/, text);
   }
 });

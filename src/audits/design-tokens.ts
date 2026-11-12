@@ -585,11 +585,13 @@ export const designMeasurementSchema = z
       .max(20000),
     samples: z.array(designSampleSchema).max(400000),
     // Values not compared: percentages and calc() with percentages
-    // (relative) and auto margins.
+    // (relative), auto margins, and untyped Typed OM values that did not
+    // parse to a px length (unreadable; they make the run incomplete).
     skipped: z
       .object({
         relative: z.number().int().nonnegative(),
         auto: z.number().int().nonnegative(),
+        unreadable: z.number().int().nonnegative(),
       })
       .strict(),
   })
@@ -954,6 +956,10 @@ export function designAuditOutput(
   if (measurement.truncated)
     gaps.push(
       `Stopped after maxElements (${config.maxElements}) elements; the rest of the scope was not measured`,
+    );
+  if (measurement.skipped.unreadable)
+    gaps.push(
+      `${measurement.skipped.unreadable} untyped value(s) from the browser's CSS Typed OM did not parse to a px length and were not measured`,
     );
   if (rules.includes('spacing') && !measurement.typedOM)
     gaps.push(
