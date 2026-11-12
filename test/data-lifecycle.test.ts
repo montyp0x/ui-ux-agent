@@ -11,8 +11,9 @@ import { test } from 'node:test';
 import { suiteSchema, type Suite } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { reportHTML } from '../src/report.js';
-import { parseResults } from '../src/results.js';
+import { parseResults, type Result } from '../src/results.js';
 import { runSuite, type RunOptions } from '../src/runner.js';
+import { exitCode } from '../src/summary.js';
 import { notesFixture, type NotesFaults } from '../examples/notes-fixture.js';
 import { STATE_SCRIPTS, scriptedDecisions } from '../examples/state-fixture.js';
 
@@ -264,6 +265,17 @@ test('a cancelled run still cleans up and no further run starts', async () => {
 });
 
 test('a failed or incomplete cleanup is reported on the result, as a finding and at the top of the report', async () => {
+  // The same journey with a clean cleanup: exit 0 and the reference verdict.
+  let clean!: Result;
+  await withNotes({}, async (app) => {
+    const [first] = await runSuite(await notesSuite(app.url), decisions(), {
+      directory: await directory(),
+    });
+    clean = first!;
+  });
+  assert.equal(clean.status, 'passed', clean.reason);
+  assert.equal(clean.dataLifecycle?.clean, true);
+  assert.equal(exitCode([clean]), 0);
   for (const [faults, detail] of [
     [{ cleanupError: true }, /HTTP 500/],
     [{ cleanupLeavesData: true }, /2 record\(s\) of the run remain/],
@@ -283,6 +295,14 @@ test('a failed or incomplete cleanup is reported on the result, as a finding and
         (entry) => entry.category === 'data-cleanup',
       );
       assert.match(finding?.description ?? '', /Data cleanup failed for run/);
+      // The cleanup failure touches only that finding, the banner and the
+      // exit code: the quality verdict and its checks are those of the same
+      // run with a clean cleanup.
+      assert.equal(exitCode([result!]), 1);
+      assert.deepEqual(
+        [result!.quality.verdict, result!.quality.executed],
+        [clean.quality.verdict, clean.quality.executed],
+      );
       const html = await readFile(join(out, 'report.html'), 'utf8');
       assert.match(html, /<p class="cleanup-failed" role="alert"><strong>CLEANUP FAILED<\/strong> for 1 of 1 run/);
       assert.equal(html, reportHTML((await notesSuite(app.url)).name, [result!], out));

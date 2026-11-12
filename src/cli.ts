@@ -16,7 +16,7 @@ import { suiteEvidencePolicy, suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
-import { summarize } from './summary.js';
+import { exitCode, summarize } from './summary.js';
 import { pruneRuns } from './evidence/retention.js';
 import { Redactor } from './evidence/redact.js';
 
@@ -284,10 +284,7 @@ if (values.help) {
           );
         console.log(`Report: ${directory}/report.html`);
         // A failed data cleanup fails the command even when every run passed.
-        process.exitCode =
-          unclean.length || results.some((result) => result.status !== 'passed')
-            ? 1
-            : 0;
+        process.exitCode = exitCode(results);
       }
     }
   } catch (caught) {

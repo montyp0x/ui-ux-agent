@@ -577,3 +577,27 @@ test('keyboard.focus does not call a pointer journey clean', () => {
   assert.equal(output.complete, false);
   assert.match(output.detail ?? '', /keyboard-only journeys/);
 });
+
+test('keyboard.focus runs at completion by default, may run at states, and never at ready', () => {
+  const at = (checks: unknown[]) =>
+    suiteFor('http://127.0.0.1:1', { audits: { checks } }).audits.checks.find(
+      (check) => check.id === 'keyboard.focus',
+    )?.at;
+  assert.deepEqual(at([{ id: 'keyboard.focus' }]), ['completion']);
+  assert.deepEqual(at([{ id: 'keyboard.focus', at: ['states', 'completion'] }]), [
+    'states',
+    'completion',
+  ]);
+  // Before the journey's first key press there is no focus transition to
+  // measure, so ready is refused rather than reported incomplete.
+  for (const checkpoints of [['ready'], ['ready', 'completion']])
+    assert.throws(
+      () => at([{ id: 'keyboard.focus', at: checkpoints }]),
+      (error: { issues?: { path: unknown[]; values?: unknown[] }[] }) =>
+        error.issues?.some(
+          (issue) =>
+            issue.path.join('.') === 'audits.checks.0.at.0' &&
+            JSON.stringify(issue.values) === '["states","completion"]',
+        ) === true,
+    );
+});
