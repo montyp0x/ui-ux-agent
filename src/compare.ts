@@ -184,6 +184,9 @@ export const performanceComparisonSchema = z
   .object({
     journey: z.string(),
     viewport: z.string(),
+    // The suite environment (src/environments.ts); absent without one.
+    // Measurements of different environments are never pooled or compared.
+    environment: z.string().optional(),
     checkpoint: z.string().min(1),
     path: z.string(),
     metric: performanceMetricSchema,
@@ -1065,6 +1068,7 @@ export function compareRuns(
 type Measured = {
   journey: string;
   viewport: string;
+  environment?: string;
   checkpoint: string;
   path: string;
   measurements: PerformanceMeasurement[];
@@ -1076,15 +1080,21 @@ function measurementsOf(results: Result[]): Map<string, Measured> {
     for (const run of result.audits.runs) {
       if (run.auditId !== 'performance.web' || !run.performance) continue;
       const path = run.performance.document.path;
+      // Per environment, like runs and findings: a dark-mode measurement is
+      // never pooled with a light one. The engine is not in the key but in
+      // conditionsKey, so another engine's values are incompatible.
+      const environment = result.environment?.name;
       const key = canonicalJSON([
         result.journey,
         result.viewport,
+        environment ?? null,
         run.checkpoint.id,
         path,
       ]);
       const entry = out.get(key) ?? {
         journey: result.journey,
         viewport: result.viewport,
+        ...(environment ? { environment } : {}),
         checkpoint: run.checkpoint.id,
         path,
         measurements: [],
@@ -1159,6 +1169,7 @@ export function comparePerformance(
       out.push({
         journey: where.journey,
         viewport: where.viewport,
+        ...(where.environment ? { environment: where.environment } : {}),
         checkpoint: where.checkpoint,
         path: where.path,
         metric,
@@ -1185,6 +1196,7 @@ export function comparePerformance(
     (x, y) =>
       x.journey.localeCompare(y.journey) ||
       x.viewport.localeCompare(y.viewport) ||
+      (x.environment ?? '').localeCompare(y.environment ?? '') ||
       x.checkpoint.localeCompare(y.checkpoint) ||
       x.path.localeCompare(y.path),
   );

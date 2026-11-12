@@ -15,6 +15,7 @@ import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
 import { parseResults, type Result } from '../src/results.js';
 import { reportHTML } from '../src/report.js';
+import { evaluateQuality, NOT_IMPLEMENTED_CHECKS } from '../src/quality.js';
 import {
   cumulativeLayoutShift,
   interactionToNextPaint,
@@ -24,7 +25,7 @@ import {
   type RawPerformance,
 } from '../src/audits/performance.js';
 import type { PerformanceMeasurement } from '../src/audits/performance-contract.js';
-import { compareRuns, loadRun } from '../src/compare.js';
+import { comparePerformance, compareRuns, loadRun } from '../src/compare.js';
 import { gateSchema } from '../src/gate.js';
 import { JourneyAudits } from '../src/audits/run.js';
 import { auditOutputSchema } from '../src/audits/contract.js';
@@ -635,6 +636,102 @@ test('compare: compatible measurements get medians and deltas; different conditi
       assert.equal(entry.delta, null);
       assert.match(entry.reason ?? '', /conditions/);
     }
+  } finally {
+    await site.close();
+  }
+});
+
+test('compare: measurements of different environments or engines are never compared with each other', async () => {
+  const site = await performanceSite();
+  try {
+    const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-performance-envs-')), 'run');
+    const results = await runSuite(
+      suiteFor(site.url, { at: ['completion'] }, {
+        environments: [
+          { name: 'light', colorScheme: 'light' },
+          { name: 'dark', colorScheme: 'dark' },
+        ],
+        combinations: [
+          { environment: 'light', viewport: 'desktop' },
+          { environment: 'dark', viewport: 'desktop' },
+        ],
+      }),
+      scripted,
+      { directory, env: {} },
+    );
+    assert.equal(results.length, 2);
+    // Each environment is its own comparison entry, with one sample: light
+    // and dark measurements are never pooled into one median.
+    const lcp = comparePerformance(results, results).filter(
+      (entry) => entry.metric === 'lcpMs',
+    );
+    assert.deepEqual(
+      lcp.map((entry) => [entry.environment, entry.status, entry.base?.samples]),
+      [
+        ['dark', 'compared', 1],
+        ['light', 'compared', 1],
+      ],
+    );
+    // The same environment measured on another engine is not compared.
+    const otherEngine = structuredClone(results).map((result) => {
+      for (const run of result.audits.runs)
+        if (run.performance) run.performance.browser = 'webkit';
+      return result;
+    });
+    for (const entry of comparePerformance(results, otherEngine)) {
+      assert.equal(entry.status, 'incompatible', `${entry.environment} ${entry.metric}`);
+      assert.equal(entry.delta, null);
+    }
+  } finally {
+    await site.close();
+  }
+});
+
+test('kept defaults: an unconfigured performance.web is no quality gap; a breach is one finding per checkpoint; comparison deltas never gate', async () => {
+  // Not configured: nothing about performance is listed as missing.
+  assert.ok(!NOT_IMPLEMENTED_CHECKS.some((gap) => /performance/.test(gap.id)));
+  const quality = evaluateQuality({
+    platform: 'web',
+    observations: 1,
+    findings: [],
+    policyBlocks: 0,
+    evidenceComplete: true,
+  });
+  assert.ok(
+    ![...quality.unsupported, ...quality.skipped].some((gap) => /performance/.test(gap.id)),
+  );
+  const site = await performanceSite();
+  try {
+    // A budget every page breaches: one finding at each checkpoint.
+    const breached = await run(
+      suiteFor(site.url, { budgets: [{ metric: 'loadMs', max: 0, severity: 'moderate' }] }),
+    );
+    const breaches = breached.result.audits.findings.filter(
+      (finding) => finding.ruleId === 'performance-budget.loadMs',
+    );
+    assert.deepEqual(
+      breaches.map((finding) => finding.checkpoints[0]).sort(),
+      ['completion', 'ready'],
+    );
+    // Without budgets, a candidate ten times slower changes the deltas only:
+    // the comparison gate passes.
+    const plain = await run(suiteFor(site.url, { at: ['completion'] }));
+    const base = await loadRun(plain.directory, 'base');
+    const slower = structuredClone(base.results!).map((result) => {
+      for (const entry of result.audits.runs)
+        if (entry.performance)
+          for (const metric of Object.keys(entry.performance.metrics) as (keyof typeof entry.performance.metrics)[])
+            if (entry.performance.metrics[metric] !== null)
+              entry.performance.metrics[metric] = entry.performance.metrics[metric]! * 10 + 100;
+      return result;
+    });
+    const comparison = compareRuns(
+      base,
+      { ...base, directory: `${plain.directory}-candidate`, results: slower },
+      gateSchema.parse({}),
+    );
+    assert.ok(comparison.performance.some((entry) => entry.status === 'compared' && entry.delta! > 0));
+    assert.equal(comparison.gate?.passed, true, JSON.stringify(comparison.gate?.failures));
   } finally {
     await site.close();
   }
