@@ -190,8 +190,10 @@ export function detectDesign(input: DesignDetectInput): DesignMeasurement {
     },
     // A typed length in px; null (counted) for auto, relative and unreadable
     // values. Some engines (WebKit) return lengths as untyped CSSStyleValue
-    // objects: their text is parsed with CSSNumericValue.parse and accepted
-    // only as a px length; anything else is unreadable, never guessed.
+    // objects: their text is parsed with CSSNumericValue.parse; a px length
+    // is measured, a percentage or calc() is relative (as when typed), and
+    // anything else (unparseable text, em and other units) is unreadable,
+    // never guessed.
     typed(map: StylePropertyMapReadOnly, property: string): number | null {
       const value = map.get(property);
       if (value instanceof CSSKeywordValue) {
@@ -214,6 +216,16 @@ export function detectDesign(input: DesignDetectInput): DesignMeasurement {
         }
         if (parsed instanceof CSSUnitValue && parsed.unit === 'px')
           return parsed.value;
+        // A percentage or a calc() is relative, as when it comes typed:
+        // counted, not compared.
+        if (
+          (parsed instanceof CSSUnitValue && parsed.unit === 'percent') ||
+          (typeof CSSMathValue !== 'undefined' &&
+            parsed instanceof CSSMathValue)
+        ) {
+          skipped.relative++;
+          return null;
+        }
       }
       skipped.unreadable++;
       return null;

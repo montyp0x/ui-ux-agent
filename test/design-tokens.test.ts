@@ -627,9 +627,24 @@ test('untyped Typed OM lengths are parsed as px, anything else leaves the run in
     /10px .*nearest token s2 \(8px\), 2px away/,
   );
   assert.equal(off.output.complete, true);
-  // A value that does not parse to a px length is not guessed: the run is
-  // incomplete and says why, whether it is unparseable or not a length.
-  for (const text of ['not-a-length', '5%', '2em']) {
+  // An untyped percentage or calc() is a relative value, exactly like a
+  // typed one: counted, not compared, and the run stays complete (WebKit
+  // returns % padding untyped, so pages with it would otherwise never be
+  // measured completely).
+  const relative = (output: ParsedAuditOutput) =>
+    Number(
+      /(\d+) relative value/.exec(output.limitations.join('\n'))?.[1] ?? 0,
+    );
+  for (const text of ['5%', 'calc(10px + 5%)']) {
+    const counted = await audit(onToken, config(), untypedLengths(text));
+    assert.equal(counted.output.complete, true, `${text}: ${counted.output.detail}`);
+    assert.doesNotMatch(counted.output.detail ?? '', /untyped value/, text);
+    assert.equal(relative(counted.output), relative(clean.output) + 1, text);
+    assert.deepEqual(counted.output.findings, [], text);
+  }
+  // A value that does not parse, or parses to a length that is not px, is
+  // not guessed: the run is incomplete and says why.
+  for (const text of ['not-a-length', '2em']) {
     const unreadable = await audit(onToken, config(), untypedLengths(text));
     assert.equal(unreadable.output.complete, false, text);
     assert.match(unreadable.output.detail ?? '', /1 untyped value/, text);
