@@ -103,6 +103,8 @@ export type ApproveOptions = {
   baselines: string;
   journey?: string;
   viewport?: string;
+  // A suite environment (src/environments.ts).
+  environment?: string;
   checkpoint?: string;
   // Approve every capture in the run that the filters select; required when
   // no filter is given, so nothing is approved by accident.
@@ -123,7 +125,7 @@ export type ApprovalDecision = {
 };
 
 export const visualKeyText = (key: VisualKey) =>
-  `${key.journey}/${key.viewport}/${key.checkpoint}`;
+  `${key.journey}/${key.viewport}${key.environment ? `@${key.environment}` : ''}/${key.checkpoint}`;
 
 function inside(directory: string, file: string): boolean {
   const path = relative(directory, file);
@@ -214,11 +216,12 @@ export async function approveBaselines(
   const filtered = !!(
     options.journey ||
     options.viewport ||
+    options.environment ||
     options.checkpoint
   );
   if (!filtered && !options.all)
     throw new Error(
-      'Select captures to approve with --journey, --viewport and/or --checkpoint, or pass --all after reviewing every one',
+      'Select captures to approve with --journey, --viewport, --environment and/or --checkpoint, or pass --all after reviewing every one',
     );
   const input = resolve(options.run);
   const resultsPath = (await stat(input)).isDirectory()
@@ -244,6 +247,7 @@ export async function approveBaselines(
       if (
         (options.journey && key.journey !== options.journey) ||
         (options.viewport && key.viewport !== options.viewport) ||
+        (options.environment && key.environment !== options.environment) ||
         (options.checkpoint && key.checkpoint !== options.checkpoint)
       )
         continue;

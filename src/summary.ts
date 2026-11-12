@@ -44,6 +44,8 @@ export function addModelCall(usage: Usage, data: unknown): void {
 export type JourneySummary = {
   journey: string;
   viewport: string;
+  // The suite environment (src/environments.ts); null without environments.
+  environment: string | null;
   runs: number;
   passed: number;
   statuses: Record<Result['status'], number>;
@@ -128,11 +130,12 @@ function median(values: number[]): number {
     : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
 }
 
-// Pass rate and distributions per journey/viewport across repeated runs.
+// Pass rate and distributions per journey/viewport (and environment) across
+// repeated runs.
 export function summarize(results: Result[]): JourneySummary[] {
   const groups = new Map<string, Result[]>();
   for (const result of results) {
-    const key = `${result.journey}\u0000${result.viewport}`;
+    const key = `${result.journey}\u0000${result.viewport}\u0000${result.environment?.name ?? ''}`;
     groups.set(key, [...(groups.get(key) ?? []), result]);
   }
   return [...groups.values()].map((runs) => {
@@ -154,6 +157,7 @@ export function summarize(results: Result[]): JourneySummary[] {
     return {
       journey: runs[0]!.journey,
       viewport: runs[0]!.viewport,
+      environment: runs[0]!.environment?.name ?? null,
       runs: runs.length,
       passed: statuses.passed,
       statuses,

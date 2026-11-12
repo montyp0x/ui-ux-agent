@@ -91,6 +91,13 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 9007199254740991
+                        },
+                        "combinations": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
                         }
                       },
                       "required": [
@@ -399,6 +406,13 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 9007199254740991
+                        },
+                        "combinations": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
                         }
                       },
                       "required": [
@@ -698,6 +712,9 @@
           "viewport": {
             "type": "string"
           },
+          "environment": {
+            "type": "string"
+          },
           "base": {
             "anyOf": [
               {
@@ -797,6 +814,9 @@
                     "type": "string"
                   },
                   "viewport": {
+                    "type": "string"
+                  },
+                  "environment": {
                     "type": "string"
                   },
                   "auditId": {
@@ -991,6 +1011,9 @@
                   "viewport": {
                     "type": "string"
                   },
+                  "environment": {
+                    "type": "string"
+                  },
                   "auditId": {
                     "type": [
                       "string",
@@ -1165,6 +1188,9 @@
                     "type": "string"
                   },
                   "viewport": {
+                    "type": "string"
+                  },
+                  "environment": {
                     "type": "string"
                   },
                   "auditId": {
@@ -1364,6 +1390,9 @@
                   "viewport": {
                     "type": "string"
                   },
+                  "environment": {
+                    "type": "string"
+                  },
                   "auditId": {
                     "type": [
                       "string",
@@ -1550,6 +1579,9 @@
                     "type": "string"
                   },
                   "viewport": {
+                    "type": "string"
+                  },
+                  "environment": {
                     "type": "string"
                   },
                   "auditId": {
@@ -1750,6 +1782,9 @@
             "type": "string"
           },
           "viewport": {
+            "type": "string"
+          },
+          "environment": {
             "type": "string"
           },
           "auditId": {

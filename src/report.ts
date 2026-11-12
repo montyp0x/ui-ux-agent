@@ -215,15 +215,35 @@ export function reportHTML(
       .join('');
     return `<details${evidence.limitations.length ? ' open' : ''}><summary>Evidence: ${disabled.length ? `${disabled.length} format(s) disabled (${escapeHTML(disabled.map((format) => format.format).join(', '))})` : 'all formats enabled'} · ${evidence.declaredPatterns} suite pattern(s), ${evidence.redactedEnv.length} redacted environment value(s), ${evidence.redactedData.length} redacted setup value(s), ${evidence.masks} mask(s)${evidence.limitations.length ? ` · <strong>${evidence.limitations.length} protection limitation(s)</strong>` : ''}</summary><ul>${limitations}${items}</ul></details>`;
   };
+  // Suites with environments (src/environments.ts): which one each run
+  // emulated, and whether its page text was synthetic.
+  const withEnvironments = results.some((result) => result.environment);
+  const environment = (result: Result) => {
+    const env = result.environment;
+    if (!env) return '';
+    const settings = (
+      [
+        'locale',
+        'timezone',
+        'colorScheme',
+        'reducedMotion',
+        'forcedColors',
+        'contrast',
+      ] as const
+    )
+      .flatMap((key) => (env[key] ? [`${key} ${env[key]}`] : []))
+      .join(' · ');
+    return `<p>Environment <code>${escapeHTML(env.name)}</code>: ${escapeHTML(settings || 'browser defaults')}${env.pseudoLocalization ? ` · pseudo-localization (expansion ${env.pseudoLocalization.expansion ?? 'tiered by length'})` : ''}</p>${env.syntheticText ? '<p class="synthetic"><strong>Synthetic text:</strong> the harness expanded the application\'s visible text with pseudo-localized padding between ⟦ and ⟧ to test long translations. The padding is not application content and was never typed as input; findings in this run were measured on it.</p>' : ''}`;
+  };
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(name)}</title>
-<style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}.visual-match{color:#176339}.visual-mismatch{color:#a12727}.visual-missing,.visual-incompatible,.visual-unstable{color:#895700}.cleanup-failed,.hook-failed{color:#a12727}.cleanup-failed[role=alert]{border:2px solid #a12727;border-radius:8px;padding:12px;background:#fff5f5}.hook-ok{color:#176339}</style>
+<style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}.visual-match{color:#176339}.visual-mismatch{color:#a12727}.visual-missing,.visual-incompatible,.visual-unstable{color:#895700}.cleanup-failed,.hook-failed{color:#a12727}.cleanup-failed[role=alert]{border:2px solid #a12727;border-radius:8px;padding:12px;background:#fff5f5}.hook-ok{color:#176339}.synthetic{color:#895700}</style>
 <h1>${escapeHTML(name)}</h1>${cleanupBanner}<p>${results.filter((result) => result.status === 'passed').length}/${results.length} runs reached their asserted outcome. Quality verdicts, kept separate from that outcome: ${verdicts.pass} pass, ${verdicts.fail} fail, ${verdicts.not_evaluated} not evaluated (not evaluated is not a pass). Model concerns require human review. These runs are synthetic task probes, not measured human usability: pass rates, action counts, durations and task-friction counts describe the automated agent, not human task success, time or satisfaction.${scanned.length ? ` Automated audits ran at configured checkpoints (${escapeHTML(scanned.join(', '))}); an automated scan does not establish accessibility or standards conformance.` : ' No automated audit ran; this is not an accessibility audit.'}</p>
-<table><thead><tr><th>Journey</th><th>Viewport</th><th>Passed</th><th>Other outcomes</th><th>Quality (pass / fail / not evaluated)</th><th>Median agent actions</th><th>Median agent duration</th><th>Model calls (planner / selector)</th><th>Tokens (in / out)</th></tr></thead><tbody>${summarize(
+<table><thead><tr><th>Journey</th>${withEnvironments ? '<th>Environment</th>' : ''}<th>Viewport</th><th>Passed</th><th>Other outcomes</th><th>Quality (pass / fail / not evaluated)</th><th>Median agent actions</th><th>Median agent duration</th><th>Model calls (planner / selector)</th><th>Tokens (in / out)</th></tr></thead><tbody>${summarize(
     results,
   )
     .map(
       (row) =>
-        `<tr><td>${escapeHTML(row.journey)}</td><td>${escapeHTML(row.viewport)}</td><td>${row.passed}/${row.runs}</td><td>${escapeHTML(
+        `<tr><td>${escapeHTML(row.journey)}</td>${withEnvironments ? `<td>${escapeHTML(row.environment ?? '—')}</td>` : ''}<td>${escapeHTML(row.viewport)}</td><td>${row.passed}/${row.runs}</td><td>${escapeHTML(
           [
             ...Object.entries(row.categories).map(
               ([category, count]) => `${count}× ${category}`,
@@ -239,7 +259,7 @@ ${results
   .map(
     (
       result,
-    ) => `<article><h2>${escapeHTML(result.journey)} · ${escapeHTML(result.viewport)}${result.attempt > 1 || results.some((other) => other !== result && other.journey === result.journey && other.viewport === result.viewport) ? ` · run ${result.attempt}` : ''}</h2>${outcome(result)}${dataLifecycle(result)}${quality(result)}${audits(result)}${frictionHTML(result.friction, { escape: escapeHTML, link })}<p>${result.steps} agent actions · ${(result.durationMs / 1000).toFixed(1)} seconds of agent run time · ${result.usage.planner.calls + result.usage.selector.calls} model calls, ${result.usage.planner.inputTokens + result.usage.selector.inputTokens} input / ${result.usage.planner.outputTokens + result.usage.selector.outputTokens} output tokens · outcome checks: ${result.checks.map((ok) => (ok ? 'pass' : 'fail')).join(', ') || 'not evaluated'}</p><p>${result.trace ? `<a href="${link(result.trace)}">${result.trace.endsWith('.json') ? 'Final accessibility tree' : 'Local Playwright trace'}</a>` : 'No trace captured'}${result.video ? ` · <a href="${link(result.video)}">Video</a>` : ''}</p>${evidence(result)}
+    ) => `<article><h2>${escapeHTML(result.journey)}${result.environment ? ` · ${escapeHTML(result.environment.name)}` : ''} · ${escapeHTML(result.viewport)}${result.attempt > 1 || results.some((other) => other !== result && other.journey === result.journey && other.viewport === result.viewport && other.environment?.name === result.environment?.name) ? ` · run ${result.attempt}` : ''}</h2>${environment(result)}${outcome(result)}${dataLifecycle(result)}${quality(result)}${audits(result)}${frictionHTML(result.friction, { escape: escapeHTML, link })}<p>${result.steps} agent actions · ${(result.durationMs / 1000).toFixed(1)} seconds of agent run time · ${result.usage.planner.calls + result.usage.selector.calls} model calls, ${result.usage.planner.inputTokens + result.usage.selector.inputTokens} input / ${result.usage.planner.outputTokens + result.usage.selector.outputTokens} output tokens · outcome checks: ${result.checks.map((ok) => (ok ? 'pass' : 'fail')).join(', ') || 'not evaluated'}</p><p>${result.trace ? `<a href="${link(result.trace)}">${result.trace.endsWith('.json') ? 'Final accessibility tree' : 'Local Playwright trace'}</a>` : 'No trace captured'}${result.video ? ` · <a href="${link(result.video)}">Video</a>` : ''}</p>${evidence(result)}
 ${result.findings.map((finding, index) => `<details><summary>${index + 1}. ${escapeHTML(finding.kind)} / ${escapeHTML(finding.category)} / step ${finding.step}</summary><p>${escapeHTML(finding.description)}</p><a href="${link(finding.screenshot)}"><img src="${link(finding.screenshot)}" alt="Evidence at step ${finding.step}" loading="lazy"></a></details>`).join('')}
 </article>`,
   )

@@ -9,12 +9,17 @@ import type { AuditConfig } from '../audits/config.js';
 import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
 import type { EvidenceProtection } from '../evidence/protection.js';
 import type { DriverEnvironment } from '../identity.js';
+import type { Environment } from '../environments.js';
 
 export type EventLogger = (event: string, data: unknown) => Promise<void>;
 export type SessionOptions = {
   suite: Suite;
   journey: Journey;
   viewport: { width: number; height: number };
+  // The suite environment to emulate (src/environments.ts); null or omitted
+  // keeps the browser's defaults. Drivers that cannot apply every setting
+  // must fail the run rather than measure another environment.
+  environment?: Environment | null;
   directory: string;
   storageState?: string;
   video?: boolean;
@@ -31,6 +36,10 @@ export type DriverAuditRequest = {
   checkpoint: AuditCheckpoint;
   // The session's configured viewport (suite viewport name and size).
   viewport: { name: string; width: number; height: number };
+  // The suite environment's name, or null/omitted without environments.
+  // Audits that store state per configuration (visual baselines) key it by
+  // the environment too.
+  environment?: string | null;
   // The run directory: evidence files the audit writes go here.
   directory: string;
   // The suite and journey being run, for audits that key stored state
