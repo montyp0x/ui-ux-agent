@@ -5,7 +5,8 @@ import type {
   Observation,
   Suite,
 } from '../contracts.js';
-import type { AuditConfig } from '../audits/config.js';
+import type { AuditConfig, AuditId } from '../audits/config.js';
+import type { EngineGap } from '../browser-support.js';
 import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
 import type { EvidenceProtection } from '../evidence/protection.js';
 import type { DriverEnvironment } from '../identity.js';
@@ -52,6 +53,12 @@ export interface UISession {
   // blocked, as "METHOD origin/path".
   readonly policyBlocks?: string[];
   readonly unauthorized: boolean;
+  // What the session's browser engine is not verified to do
+  // (src/browser-support.ts): run-wide gaps listed in quality.unsupported,
+  // and the reason an audit is reported unsupported instead of run (null when
+  // the engine runs it). Omitted: no engine-specific gaps.
+  readonly engineGaps?: EngineGap[];
+  auditUnsupported?(id: AuditId): string | null;
   start(timeoutMs: number): Promise<void>;
   setTimeout(timeoutMs: number): void;
   location(): string;

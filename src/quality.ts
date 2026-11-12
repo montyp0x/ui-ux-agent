@@ -14,6 +14,9 @@ export type QualityInputs = {
   evidenceComplete: boolean;
   // The run's audit record; omitted when no audit was configured.
   audits?: AuditsResult;
+  // Run-wide gaps of the session's browser engine (src/browser-support.ts),
+  // listed as unsupported; they never change the verdict.
+  engineGaps?: QualityGap[];
 };
 
 // Checks this engine version does not perform, listed on every result so a
@@ -214,6 +217,7 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
         !(keyboard && gap.id === 'keyboard.focus'),
     ),
     ...audits.unsupported,
+    ...(inputs.engineGaps ?? []),
   ];
   for (const check of BUILT_IN) {
     const reason = check.unsupported[inputs.platform];
