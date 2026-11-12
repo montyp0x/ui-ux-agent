@@ -134,6 +134,14 @@ export class JourneyAudits {
     }
   }
 
+  // Whether a declared state an audit runs at has not been reached yet.
+  statesPending(): boolean {
+    if (!this.at('states').length) return false;
+    return (this.options.journey.states ?? []).some(
+      (state) => !this.statesDone.has(state.name),
+    );
+  }
+
   // The final state, once, after the journey ended. Skipped when no state was
   // ever observed (the journey stopped before ready and setup completed).
   async completion(step: number, screenshot: string | null): Promise<void> {

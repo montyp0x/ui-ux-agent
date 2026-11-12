@@ -535,6 +535,22 @@ async function runJourney(
         result.checks = await Promise.all(
           journey.success.map((condition) => session.check(condition)),
         );
+        // Declared states are checked right after an observation, and the
+        // page can reach one (loaded items) between that and the success
+        // checks. Before deciding on success, observe once more so a state
+        // still pending is checked against the page that passed.
+        if (result.checks.every(Boolean) && audits.statesPending()) {
+          observation = await session.observe(step, observation.screenshot);
+          await log('state_observation', {
+            journey: journey.id,
+            viewport,
+            ...observation,
+          });
+          await measure(observation);
+          result.checks = await Promise.all(
+            journey.success.map((condition) => session.check(condition)),
+          );
+        }
         if (result.checks.every(Boolean)) {
           stage = 'content';
           const completion = journey.contentReady

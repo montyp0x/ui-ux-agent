@@ -21,6 +21,8 @@ const actionEvent = z.object({
 const schemas = {
   observation: observationEvent,
   content_observation: observationEvent,
+  // A fresh observation for a declared state still pending when success held.
+  state_observation: observationEvent,
   plan: z.object({
     step,
     refreshReasons: z.array(z.string()),
