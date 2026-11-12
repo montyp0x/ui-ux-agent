@@ -13,7 +13,8 @@
 // cleanup failure: recorded on the result, as an observed finding, and at the
 // top of the report. Hooks only reach the configured loopback service, never
 // follow redirects, and values are never written to results or logs (only
-// their keys).
+// their keys); unless listed in publicValues, they are also redacted wherever
+// the run's evidence shows them.
 import { z } from 'zod';
 import type { EventLogger } from './drivers/types.js';
 
@@ -41,6 +42,9 @@ const hook = <M extends [string, ...string[]]>(methods: M) =>
     .object({ method: z.enum(methods), path: relativePath })
     .strict();
 
+// Keys of setup values ({{data.<key>}}).
+const DATA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+
 export const dataLifecycleSchema = z
   .object({
     service: loopbackOriginSchema,
@@ -51,12 +55,23 @@ export const dataLifecycleSchema = z
     verify: z.object({ path: relativePath }).strict().optional(),
     // Bound on each hook call.
     timeoutMs: z.number().int().min(1000).max(60000).default(10000),
+    // Setup values are secrets by default (a test identity, a password):
+    // redacted from all text evidence, masked in screenshots, and a journey
+    // that uses one keeps traces and video off (see suiteEvidencePolicy).
+    // Keys listed here are not secret and appear in evidence as they are.
+    publicValues: z
+      .array(z.string().regex(DATA_KEY, 'publicValues must be data keys'))
+      .max(20)
+      .refine(
+        (keys) => new Set(keys).size === keys.length,
+        'publicValues must be unique',
+      )
+      .default([]),
   })
   .strict();
 export type DataLifecycle = z.infer<typeof dataLifecycleSchema>;
 
 // What setup may answer. Values replace {{data.<key>}} in the journey.
-const DATA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 export const setupResponseSchema = z
   .object({
     values: z

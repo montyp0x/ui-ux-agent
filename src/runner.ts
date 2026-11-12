@@ -15,6 +15,7 @@ import type {
 } from './contracts.js';
 import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
+import { UNRESOLVED_LINK, evidenceLinks } from './evidence/links.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
 import { baselineDirectoryForRun } from './baselines.js';
@@ -1091,7 +1092,8 @@ export async function runSuite(
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
-  // The suite's evidence policy with every fill valueEnv as a secret.
+  // The suite's evidence policy with every fill valueEnv and secret setup
+  // value as a secret.
   const policy = suiteEvidencePolicy(suite);
   await writeRunManifest(options.directory, policy.retentionDays);
   const protection = evidenceProtection(
@@ -1154,6 +1156,27 @@ export async function runSuite(
           options.profile,
         ));
   const results: Result[] = [];
+  // The report links every file it shows; paths the redaction rewrote in the
+  // results are resolved to the files they name (src/evidence/links.ts).
+  const report = async (name: string, shown: Result[]) => {
+    const files = new Set<string>();
+    reportHTML(name, shown, options.directory, (file) => {
+      files.add(file);
+      return '';
+    });
+    const links = await evidenceLinks(
+      options.directory,
+      redactor,
+      files,
+      baselines ? [baselines] : [],
+    );
+    return reportHTML(
+      name,
+      shown,
+      options.directory,
+      (file) => links.get(file) ?? UNRESOLVED_LINK,
+    );
+  };
   const lifecycle = suite.dataLifecycle
     ? new DataLifecycleHooks(suite.dataLifecycle, log)
     : null;
@@ -1182,6 +1205,12 @@ export async function runSuite(
                 viewport: viewport.name,
               })
             : null;
+          // Setup values (except publicValues) are secrets from here on:
+          // redacted from every event, result and file, masked in screenshots.
+          protection.beginRun(
+            data?.values ?? {},
+            suite.dataLifecycle?.publicValues ?? [],
+          );
           if (data) {
             const filled = withData(runJourneyConfig, data.values);
             if (filled.missing && !data.setupFailure)
@@ -1245,7 +1274,7 @@ export async function runSuite(
           );
           await writeFile(
             join(options.directory, 'report.html'),
-            reportHTML(redactor.text(suite.name), results, options.directory),
+            await report(redactor.text(suite.name), results),
             { mode: 0o600 },
           );
         }

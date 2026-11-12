@@ -1756,6 +1756,20 @@
             "type": "string"
           }
         },
+        "redactedData": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limitations": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "masks": {
           "type": "integer",
           "minimum": 0,
@@ -1823,6 +1837,8 @@
         "declaredPatterns",
         "builtInPatterns",
         "redactedEnv",
+        "redactedData",
+        "limitations",
         "masks",
         "formats",
         "sanitizedFiles"
