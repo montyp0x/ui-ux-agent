@@ -3,9 +3,11 @@
 // run at configured checkpoints; model concerns stay in `findings` as
 // hypotheses and never become audit findings.
 import { z } from 'zod';
+import { visualComparisonSchema } from './visual-contract.js';
 
 // Bumped when an audit record changes shape; stored on every result.
-export const AUDIT_CONTRACT_VERSION = 1;
+// Version 2 adds `visual` to audit output and runs (visual.baseline).
+export const AUDIT_CONTRACT_VERSION = 2;
 
 const count = z.number().int().nonnegative();
 // Guidance links end up in the HTML report: HTTP(S) only.
@@ -159,6 +161,9 @@ export const auditOutputSchema = z
     limitations: z.array(z.string().min(1)).max(20).default([]),
     exemptions: z.array(auditExemptionSchema).max(200).default([]),
     findings: z.array(auditOutputFindingSchema).max(500),
+    // The baseline comparison of a visual.baseline run; null for every
+    // other audit (src/audits/visual-contract.ts).
+    visual: visualComparisonSchema.nullable().default(null),
   })
   .strict();
 export type AuditOutput = z.input<typeof auditOutputSchema>;
@@ -226,6 +231,10 @@ export const auditRunSchema = z
     exemptions: z.array(auditExemptionSchema),
     // Indices into audits.findings.
     findings: z.array(count),
+    // visual.baseline only: the comparison with the approved baseline,
+    // including missing, incompatible and unstable outcomes. Null for other
+    // audits and for unsupported or errored runs.
+    visual: visualComparisonSchema.nullable(),
   })
   .strict();
 export type AuditRun = z.infer<typeof auditRunSchema>;

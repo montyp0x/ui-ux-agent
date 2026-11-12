@@ -12,11 +12,13 @@ import {
 import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
 import { browserLaunchOptions } from './drivers/playwright.js';
-import { suiteSchema } from './contracts.js';
+import { suiteEvidencePolicy, suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
-import { summarize } from './summary.js';
+import { exitCode, summarize } from './summary.js';
+import { pruneRuns } from './evidence/retention.js';
+import { Redactor } from './evidence/redact.js';
 
 const options = {
   suite: { type: 'string' },
@@ -39,6 +41,9 @@ const options = {
   from: { type: 'string' },
   profile: { type: 'string' },
   'sign-in': { type: 'boolean' },
+  'prune-runs': { type: 'string' },
+  'dry-run': { type: 'boolean' },
+  baselines: { type: 'string' },
 } as const;
 // Unknown flags (including the removed --from-browser, which read sessions out
 // of an installed browser's personal profile) are rejected with exit code 2.
@@ -70,11 +75,31 @@ if (values.help) {
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --checkpoint ID | --all) [--replace]\n' +
       '\n' +
-      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.',
+      'npm run run -- --prune-runs runs [--dry-run]   (deletes run directories whose evidence.retentionDays have passed)\n' +
+      '\n' +
+      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.\n' +
+      '--baselines DIR is your local directory of approved visual baselines, outside Git; runs only read it, and --prune-runs never touches it.\n' +
+      'Runs are never overwritten, uploaded or deleted automatically.',
   );
+} else if (values['prune-runs']) {
+  // Explicit retention: only directories with this tool's run manifest whose
+  // retention has passed; anything else under the root is left alone.
+  try {
+    for (const entry of await pruneRuns(resolve(values['prune-runs']), {
+      dryRun: values['dry-run'],
+    }))
+      console.log(`${entry.action}: ${entry.directory} (${entry.reason})`);
+  } catch (caught) {
+    console.error(caught instanceof Error ? caught.message : String(caught));
+    process.exitCode = 2;
+  }
 } else {
+  // Error messages can quote page text; redact them like other evidence once
+  // the suite's patterns are known.
+  let redactor = new Redactor({ env: process.env });
   try {
     if (values.profile && (values['storage-state'] || values.login))
       throw new Error('Use --profile or --storage-state/--login, not both');
@@ -100,6 +125,11 @@ if (values.help) {
         await readFile(resolve(values.suite), 'utf8'),
       );
       const suite = suiteSchema.parse(raw);
+      redactor = new Redactor({
+        patterns: suite.evidence.redact,
+        envNames: suiteEvidencePolicy(suite).redactEnv,
+        env: process.env,
+      });
       if (values.url)
         suite.baseURL = suiteSchema.parse({
           ...suite,
@@ -187,12 +217,28 @@ if (values.help) {
         );
       } else {
         loadCredentials();
+        // Credentials loaded from .env are redacted too.
+        redactor = new Redactor({
+          patterns: suite.evidence.redact,
+          envNames: suiteEvidencePolicy(suite).redactEnv,
+          env: process.env,
+        });
         const options = modelOptionsFromEnv(process.env);
         const directory = resolve(
           values.out ??
             `runs/${new Date().toISOString().replace(/[:.]/g, '-')}`,
         );
         console.log(`Live action log: ${directory}/events.jsonl`);
+        // Ctrl-C cancels: the current run stops, its data cleanup still
+        // runs and no further run starts. A second Ctrl-C exits at once.
+        const cancel = new AbortController();
+        process.once('SIGINT', () => {
+          console.error(
+            'Cancelling: finishing data cleanup for the current run (Ctrl-C again to exit now)',
+          );
+          cancel.abort();
+          process.once('SIGINT', () => process.exit(130));
+        });
         const results = await runSuite(
           suite,
           (log) =>
@@ -214,6 +260,8 @@ if (values.help) {
             journey: values.journey,
             viewport: values.viewport,
             repeat: values.repeat ? Number(values.repeat) : 1,
+            baselines: values.baselines,
+            signal: cancel.signal,
           },
         );
         // The exit code follows the functional outcome only; the quality
@@ -227,14 +275,22 @@ if (values.help) {
             console.log(
               `${row.journey}/${row.viewport}: ${row.passed}/${row.runs} passed, median ${row.medianSteps} actions, ${(row.medianDurationMs / 1000).toFixed(1)}s`,
             );
+        const unclean = results.filter(
+          (result) => result.dataLifecycle && !result.dataLifecycle.clean,
+        );
+        for (const result of unclean)
+          console.error(
+            `CLEANUP FAILED: ${result.journey}/${result.viewport} run ${result.dataLifecycle!.run} on ${result.dataLifecycle!.service}: ${result.dataLifecycle!.cleanup?.detail ?? 'cleanup did not run'}`,
+          );
         console.log(`Report: ${directory}/report.html`);
-        process.exitCode = results.some((result) => result.status !== 'passed')
-          ? 1
-          : 0;
+        // A failed data cleanup fails the command even when every run passed.
+        process.exitCode = exitCode(results);
       }
     }
   } catch (caught) {
-    console.error(caught instanceof Error ? caught.message : String(caught));
+    console.error(
+      redactor.text(caught instanceof Error ? caught.message : String(caught)),
+    );
     process.exitCode = 2;
   }
 }

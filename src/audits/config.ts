@@ -2,8 +2,9 @@
 // which finding severity fails the quality verdict. Audits run only at the
 // checkpoints listed here, never after every action.
 import { z } from 'zod';
-import { failOnSchema } from './contract.js';
+import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
+import { visualAuditConfigShape } from './visual.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
 // (each of the journey's declared `states`, once, when it first holds) and
@@ -80,10 +81,58 @@ const layoutResponsiveConfig = z
   })
   .strict();
 
+// A screenshot of each checkpoint compared with a reviewed baseline from a
+// user-supplied directory (src/audits/visual.ts). Runs never approve a
+// baseline; a missing or incompatible baseline is never a pass. The default
+// checkpoint is ready: the state before any agent action, the one most
+// likely to repeat run after run.
+const visualBaselineConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('visual.baseline'),
+    at: auditAtSchema.default(['ready']),
+    ...visualAuditConfigShape,
+  })
+  .strict();
+
+// Each declared journey state's own `expect` checks, evaluated once at the
+// state's checkpoint (src/audits/state-checks.ts). Runs at `states` only.
+const stateChecksConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('journey.state-checks'),
+    at: z.array(z.literal('states')).length(1).default(['states']),
+    // The severity of a failed expectation, against audits.failOn.
+    severity: severitySchema.default('serious'),
+  })
+  .strict();
+
+// Focus behaviour measured from a keyboard-only journey's own key presses
+// (src/audits/keyboard.ts). Each run reads the key presses since the previous
+// one, so the default single completion run covers the whole journey.
+const keyboardFocusConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('keyboard.focus'),
+    at: z
+      .array(z.enum(['states', 'completion']))
+      .min(1)
+      .max(2)
+      .refine(
+        (at) => new Set(at).size === at.length,
+        'Audit checkpoints must be unique',
+      )
+      .default(['completion']),
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
   layoutResponsiveConfig,
+  visualBaselineConfig,
+  stateChecksConfig,
+  keyboardFocusConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];
@@ -114,10 +163,14 @@ export const auditsConfigSchema = z
 export type AuditsConfig = z.infer<typeof auditsConfigSchema>;
 
 // A journey state to audit: the first observed state where `when` holds.
+// `expect` lists checks that must also hold in that state, independently of
+// the journey's success checks (for example an error state that offers a
+// retry). They are evaluated by the journey.state-checks audit.
 export const journeyStateSchema = <T extends z.ZodType>(check: T) =>
   z
     .object({
       name: z.string().regex(/^[a-z0-9-]+$/),
       when: check,
+      expect: z.array(check).min(1).max(10).optional(),
     })
     .strict();

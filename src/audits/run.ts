@@ -21,6 +21,8 @@ export type JourneyAuditOptions = {
   journey: Journey;
   viewport: { name: string; width: number; height: number };
   directory: string;
+  // The user-supplied visual baseline directory, or null.
+  baselines?: string | null;
   session: UISession;
   log: EventLogger;
   // The audit registry; tests substitute their own definitions.
@@ -229,6 +231,17 @@ export class JourneyAudits {
       let raw: unknown;
       if (definition.evaluate)
         raw = definition.evaluate({ checkpoint, config, observations });
+      else if (definition.inspect)
+        raw = await within(
+          definition.inspect({
+            checkpoint,
+            config,
+            observations,
+            journey: this.options.journey,
+            check: (condition) => session.check(condition),
+          }),
+          timeoutMs,
+        );
       else if (!session.runAudit)
         throw new Error(
           `The ${this.driver} session does not implement runAudit for ${config.id}`,
@@ -240,6 +253,8 @@ export class JourneyAudits {
             checkpoint,
             viewport: { ...this.options.viewport },
             directory,
+            scope: { suite: suite.name, journey: this.options.journey.id },
+            baselines: this.options.baselines ?? null,
             timeoutMs,
           }),
           timeoutMs,
@@ -378,6 +393,7 @@ export class JourneyAudits {
       limitations: output?.limitations ?? [],
       exemptions: output?.exemptions ?? [],
       findings,
+      visual: output?.visual ?? null,
     });
     await log('audit_run', {
       journey: journey.id,

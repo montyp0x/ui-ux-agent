@@ -114,3 +114,16 @@ export function summarize(results: Result[]): JourneySummary[] {
     };
   });
 }
+
+// The CLI's exit code for finished runs: 1 when any run did not pass or any
+// run's data cleanup failed (even if every run passed), else 0. The quality
+// verdict is reported beside it and never changes it.
+export function exitCode(results: Result[]): 0 | 1 {
+  return results.some(
+    (result) =>
+      result.status !== 'passed' ||
+      (result.dataLifecycle !== undefined && !result.dataLifecycle.clean),
+  )
+    ? 1
+    : 0;
+}

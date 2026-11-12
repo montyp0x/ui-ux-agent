@@ -5,7 +5,7 @@ import {
 } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ import {
   DEFAULT_BLOCKED_CONTROLS,
   EXCLUDED_MENUS,
   MENU_BLOCKED_CONTROLS,
+  fillValue,
   type Action,
   type Check,
   type Observation,
@@ -21,6 +22,7 @@ import {
   type Target,
 } from '../contracts.js';
 import type { UIDriver, UISession } from './types.js';
+import { formatEnabled } from '../evidence/policy.js';
 
 const run = promisify(execFile);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -310,7 +312,7 @@ export async function macosDriver(): Promise<UIDriver> {
       'macOS needs Accessibility and Screen Recording permission for the app running this process (System Settings → Privacy & Security)',
     );
   return {
-    async openSession({ suite, journey, viewport, log }) {
+    async openSession({ suite, journey, viewport, log, evidence }) {
       let pid = 0;
       let bundleId = suite.app?.bundleId ?? '';
       let timeoutMs = 5000;
@@ -518,6 +520,9 @@ export async function macosDriver(): Promise<UIDriver> {
           const snap = await snapshot();
           if (condition.kind === 'path')
             return new RegExp(condition.pattern).test(`/${snap.window.title}`);
+          // Rejected at suite load; keyboard focus is web-only.
+          if (condition.kind === 'focused')
+            throw new Error('focused checks are not supported on macOS');
           const { all, visible } = find(snap, condition.target);
           if (condition.kind === 'notVisible') return visible.length === 0;
           if (condition.kind === 'anyVisible') return visible.length > 0;
@@ -971,7 +976,7 @@ export async function macosDriver(): Promise<UIDriver> {
             await helper.call({
               cmd: 'setValue',
               ref: guard.ref,
-              value: action.value,
+              value: fillValue(action),
             });
           else if (action.kind === 'check') {
             const checked = current.value === '1';
@@ -1029,9 +1034,14 @@ export async function macosDriver(): Promise<UIDriver> {
             ],
             { timeout: timeoutMs + 5000 },
           );
+          // screencapture writes with the default umask; evidence is private.
+          await chmod(path, 0o600);
         },
         async finish(trace) {
-          // No Playwright trace for native apps: record the final accessibility tree.
+          if (evidence && !formatEnabled(evidence.formats, 'trace'))
+            return { video: null, trace: null };
+          // No Playwright trace for native apps: record the final accessibility
+          // tree. The runner redacts it with the run's other text files.
           const path = trace.replace(/\.zip$/, '.json');
           await writeFile(path, JSON.stringify(last ?? {}, null, 2), {
             mode: 0o600,

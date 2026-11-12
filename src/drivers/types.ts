@@ -7,6 +7,7 @@ import type {
 } from '../contracts.js';
 import type { AuditConfig } from '../audits/config.js';
 import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
+import type { EvidenceProtection } from '../evidence/protection.js';
 
 export type EventLogger = (event: string, data: unknown) => Promise<void>;
 export type SessionOptions = {
@@ -17,6 +18,10 @@ export type SessionOptions = {
   storageState?: string;
   video?: boolean;
   log: EventLogger;
+  // The run's evidence protection: screenshot masks applied before capture
+  // and which formats (trace, video) may be captured. When omitted, drivers
+  // capture unprotected screenshots and a trace, as before.
+  evidence?: EvidenceProtection;
 };
 
 // A driver audit to run against the session's current state.
@@ -27,6 +32,12 @@ export type DriverAuditRequest = {
   viewport: { name: string; width: number; height: number };
   // The run directory: evidence files the audit writes go here.
   directory: string;
+  // The suite and journey being run, for audits that key stored state
+  // (visual baselines) by them.
+  scope: { suite: string; journey: string };
+  // The user-supplied baseline directory (--baselines), or null. Read-only
+  // for audits: only an explicit approval writes into it.
+  baselines: string | null;
   // The audit must finish within this; the runner also enforces it.
   timeoutMs: number;
 };
@@ -60,8 +71,11 @@ export interface UISession {
   // src/audits/registry.ts) and returns its raw output, which the runner
   // parses with auditOutputSchema. Throw for an audit the driver lacks.
   runAudit?(request: DriverAuditRequest): Promise<unknown>;
-  // trace: the evidence file actually written, when not the suggested path.
-  finish(trace: string): Promise<{ video: string | null; trace?: string }>;
+  // trace: the evidence file actually written, when not the suggested path;
+  // null when no trace was captured (disabled by the evidence policy).
+  finish(
+    trace: string,
+  ): Promise<{ video: string | null; trace?: string | null }>;
 }
 
 export interface UIDriver {

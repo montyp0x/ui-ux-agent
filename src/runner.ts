@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
+import { missingFillEnv, suiteEvidencePolicy } from './contracts.js';
 import type {
   Action,
   Journey,
@@ -16,6 +17,7 @@ import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
+import { baselineDirectoryForRun } from './baselines.js';
 import { evaluateQuality } from './quality.js';
 import {
   OUTCOME_CODES,
@@ -25,6 +27,19 @@ import {
 } from './results.js';
 import { addModelCall, emptyUsage, summarize, type Usage } from './summary.js';
 import { actionSignature, refreshReasons, type PlanState } from './planning.js';
+import {
+  evidenceProtection,
+  type EvidenceProtection,
+} from './evidence/protection.js';
+import { providerModels } from './evidence/provider.js';
+import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
+import { writeRunManifest } from './evidence/retention.js';
+import {
+  DataLifecycleHooks,
+  withData,
+  type CleanupTrigger,
+  type LifecycleRun,
+} from './lifecycle.js';
 
 export type RunOptions = {
   directory: string;
@@ -39,6 +54,16 @@ export type RunOptions = {
   driver?: UIDriver;
   // Runs per journey/viewport, for pass rates (1-50, default 1).
   repeat?: number;
+  // Environment for credential redaction (default process.env): values of
+  // the suite's redactEnv variables and of credential-named variables never
+  // appear in evidence or model payloads.
+  env?: Record<string, string | undefined>;
+  // A user-supplied directory of approved visual baselines (outside Git),
+  // read by the visual.baseline audit; runs never write into it.
+  baselines?: string;
+  // Cancels the suite: the current run stops at its next stage, its data
+  // cleanup still runs, and no further run starts.
+  signal?: AbortSignal;
 };
 export type Logger = EventLogger;
 
@@ -54,6 +79,10 @@ export function withMarker(journey: Journey, marker: string): Journey {
 
 // A stage that would start after the journey deadline; reported as budget exhaustion.
 class BudgetExpired extends Error {}
+// The run was cancelled through RunOptions.signal.
+class RunCancelled extends Error {}
+// The data lifecycle's reset or setup failed; the journey does not start.
+class DataSetupFailed extends Error {}
 // A planner/selector call that failed, or returned output the runner cannot use.
 class ModelFailure extends Error {
   constructor(
@@ -199,13 +228,22 @@ async function runJourney(
   log: Logger,
   attempt: number,
   usage: Usage,
+  protection: EvidenceProtection,
+  baselines: string | null,
+  lifecycle: LifecycleRun | null = null,
+  cancel?: AbortSignal,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
   // Aborted at the deadline and passed to every model call, so queued or
   // in-flight planner and selector requests stop there. The reason is a
-  // TimeoutError, like AbortSignal.timeout's.
+  // TimeoutError, like AbortSignal.timeout's; a cancelled run aborts it with
+  // an AbortError.
   const deadlineAbort = new AbortController();
+  const onCancel = () =>
+    deadlineAbort.abort(new DOMException('Run cancelled', 'AbortError'));
+  if (cancel?.aborted) onCancel();
+  else cancel?.addEventListener('abort', onCancel, { once: true });
   // Audits run at their configured checkpoints only, never after every action.
   const audits = new JourneyAudits({
     suite,
@@ -216,6 +254,7 @@ async function runJourney(
       height: 0,
     },
     directory,
+    baselines,
     session,
     log,
   });
@@ -258,6 +297,7 @@ async function runJourney(
     audits: emptyAudits(suite.audits.failOn),
     trace: join(directory, 'trace.zip'),
     video: null,
+    evidence: protection.report(0),
   };
   let observation: Observation | null = null;
   let plan: Plan | null = null;
@@ -328,10 +368,16 @@ async function runJourney(
         );
   const remaining = (next: string): number => {
     stage = next;
+    if (cancel?.aborted) throw new RunCancelled();
     if (Date.now() >= deadline) throw new BudgetExpired();
     return deadline - Date.now();
   };
   try {
+    if (lifecycle?.setupFailure) {
+      stage = 'setup';
+      throw new DataSetupFailed(lifecycle.setupFailure);
+    }
+    if (cancel?.aborted) throw new RunCancelled();
     if (journey.loopProgressTargets?.length && !session.repeatState)
       throw new DriverCapabilityMissing(
         'Driver must implement repeatState to support loopProgressTargets',
@@ -790,6 +836,7 @@ async function runJourney(
     }
   } catch (caught) {
     const notStarted = caught instanceof BudgetExpired;
+    const cancelled = !!cancel?.aborted || caught instanceof RunCancelled;
     // A model call that ended at the deadline is one outcome whichever fired
     // first: the journey signal, the call's own timeout, or the limiter's
     // slot wait expiring (RateLimitBudgetError).
@@ -798,7 +845,25 @@ async function runJourney(
       (deadlineAbort.signal.aborted || Date.now() >= deadline) &&
       (isTimeout(caught) || isAbort(caught) || isRateLimitBudget(caught));
     const rateLimited = !deadlineCut && isRateLimitBudget(caught);
-    if (
+    if (caught instanceof DataSetupFailed) {
+      decide('data_setup_failed', caught.message, {
+        step: -1,
+        events: ['data_setup'],
+        detail: firstLine(caught),
+      });
+    } else if (cancelled) {
+      decide(
+        'run_cancelled',
+        `The run was cancelled during ${stage} before its outcome was observed`,
+        { events: ['run_cancelled'] },
+      );
+      await log('run_cancelled', {
+        journey: journey.id,
+        viewport,
+        step: result.steps,
+        stage,
+      });
+    } else if (
       !session.unauthorized &&
       (notStarted ||
         deadlineCut ||
@@ -870,6 +935,7 @@ async function runJourney(
     }
   } finally {
     clearTimeout(deadlineTimer);
+    cancel?.removeEventListener('abort', onCancel);
     let evidenceComplete = false;
     try {
       // Evidence capture has its own bounded timeout, not the expired task timeout.
@@ -924,9 +990,9 @@ async function runJourney(
     await audits.completion(result.steps, finalScreenshot);
     result.audits = audits.finish();
     try {
-      const finished = await session.finish(result.trace);
+      const finished = await session.finish(join(directory, 'trace.zip'));
       result.video = finished.video;
-      if (finished.trace) result.trace = finished.trace;
+      if (finished.trace !== undefined) result.trace = finished.trace;
     } catch (caught) {
       stage = 'finish';
       decide(
@@ -934,6 +1000,20 @@ async function runJourney(
         `${result.reason}; session cleanup failed: ${caught instanceof Error ? caught.message : String(caught)}`,
         { detail: `${firstLine(caught)} (after ${result.outcome.code})` },
       );
+    }
+    // Data cleanup runs after the browser session closed, whatever ended
+    // the run; its failure is reported, never hidden behind the outcome.
+    if (lifecycle) {
+      await lifecycle.cleanup(cleanupTrigger(result));
+      result.dataLifecycle = lifecycle.record;
+      if (!lifecycle.record.clean)
+        result.findings.push({
+          kind: 'observed',
+          category: 'data-cleanup',
+          description: `Data cleanup failed for run ${lifecycle.record.run} on ${lifecycle.record.service}: ${lifecycle.record.cleanup?.detail ?? 'cleanup did not run'}. Test data may remain; clean it up before the next run.`,
+          step: result.steps,
+          screenshot: finalScreenshot ?? join(directory, 'final.png'),
+        });
     }
     const policyBlocks = new Set(session.policyBlocks ?? []).size;
     result.outcome.signals = {
@@ -951,14 +1031,31 @@ async function runJourney(
       audits: result.audits,
     });
     result.durationMs = Date.now() - started;
-    await writeFile(
-      join(directory, 'result.json'),
-      JSON.stringify(result, null, 2),
-      { mode: 0o600 },
+    // Files drivers and audits wrote (measurements, the native tree) get the
+    // run's redaction, then the result itself is redacted before it is written
+    // or returned.
+    const resultFile = join(directory, 'result.json');
+    const rewritten = await sanitizeTextFiles(
+      directory,
+      protection.redactor,
+      new Set([resultFile]),
     );
+    result.evidence = protection.report(rewritten.length);
+    Object.assign(result, protection.redactor.deep(result));
+    await writeFile(resultFile, JSON.stringify(result, null, 2), {
+      mode: 0o600,
+    });
+    await restrictPermissions(directory);
     await log('journey_finished', result);
   }
   return result;
+}
+
+// What ended a run, as the data cleanup hook is told.
+export function cleanupTrigger(result: Result): CleanupTrigger {
+  if (result.outcome.code === 'run_cancelled') return 'cancelled';
+  if (result.outcome.category === 'budget_exhausted') return 'timeout';
+  return result.status;
 }
 
 export async function runSuite(
@@ -973,6 +1070,12 @@ export async function runSuite(
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,
   );
+  // Fail before any run, naming every unset variable a fill reads.
+  const unset = missingFillEnv({ journeys });
+  if (unset.length)
+    throw new Error(
+      `Set the environment variable${unset.length > 1 ? 's' : ''} ${unset.join(', ')} read by fill valueEnv`,
+    );
   const viewports = suite.viewports.filter(
     (viewport) => !options.viewport || viewport.name === options.viewport,
   );
@@ -981,23 +1084,63 @@ export async function runSuite(
   const repeat = options.repeat ?? 1;
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
+  // Checked before the run starts: an existing directory outside Git.
+  const baselines = options.baselines
+    ? await baselineDirectoryForRun(options.baselines)
+    : null;
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
+  // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
+  // The suite's evidence policy with every fill valueEnv as a secret.
+  const policy = suiteEvidencePolicy(suite);
+  await writeRunManifest(options.directory, policy.retentionDays);
+  const protection = evidenceProtection(
+    policy,
+    {
+      ...(options.env ?? process.env),
+      // Fills read process.env (fillValue): their values are redacted from
+      // the same source, whatever environment the caller passed.
+      ...Object.fromEntries(
+        policy.redactEnv
+          .filter((name) => !suite.evidence.redactEnv.includes(name))
+          .flatMap((name) =>
+            process.env[name] === undefined ? [] : [[name, process.env[name]]],
+          ),
+      ),
+    },
+    {
+      platform: suite.platform,
+      authenticated: !!(options.storageState || options.profile),
+      videoRequested: !!options.video,
+    },
+  );
+  const { redactor } = protection;
   // Journeys run one at a time, so model calls belong to the current run.
   let currentUsage: Usage | null = null;
   const log: Logger = async (event, data) => {
     if (event === 'model_call' && currentUsage)
       addModelCall(currentUsage, data);
+    // Every event is redacted before it is written: page text, errors,
+    // model responses and audit output alike.
     await appendFile(
       join(options.directory, 'events.jsonl'),
-      JSON.stringify({ time: new Date().toISOString(), event, data }) + '\n',
+      JSON.stringify({
+        time: new Date().toISOString(),
+        event,
+        data: redactor.deep(data),
+      }) + '\n',
       { mode: 0o600 },
     );
   };
-  const engine = typeof models === 'function' ? models(log) : models;
+  // Model adapters receive only the redacted, provider-visible view.
+  const engine = providerModels(
+    typeof models === 'function' ? models(log) : models,
+    protection,
+  );
+  await log('evidence_policy', protection.report(0));
   await writeFile(
     join(options.directory, 'suite.json'),
-    JSON.stringify(suite, null, 2),
+    JSON.stringify(redactor.deep(suite), null, 2),
     { mode: 0o600 },
   );
   const driver =
@@ -1011,10 +1154,14 @@ export async function runSuite(
           options.profile,
         ));
   const results: Result[] = [];
+  const lifecycle = suite.dataLifecycle
+    ? new DataLifecycleHooks(suite.dataLifecycle, log)
+    : null;
   try {
-    for (const journey of journeys) {
+    runs: for (const journey of journeys) {
       for (const viewport of viewports) {
         for (let attempt = 1; attempt <= repeat; attempt++) {
+          if (options.signal?.aborted) break runs;
           const directory = join(
             options.directory,
             repeat > 1
@@ -1026,40 +1173,65 @@ export async function runSuite(
           // (typed values, checks), so a run's own effects can be traced.
           const marker =
             `UIUX-${journey.id}-${attempt}-${Date.now().toString(36)}`.toUpperCase();
-          const runJourneyConfig = withMarker(journey, marker);
+          let runJourneyConfig = withMarker(journey, marker);
+          // Reset (once) and setup run before the session; setup's values
+          // replace {{data.<key>}}.
+          const data = lifecycle
+            ? await lifecycle.begin(marker, {
+                journey: journey.id,
+                viewport: viewport.name,
+              })
+            : null;
+          if (data) {
+            const filled = withData(runJourneyConfig, data.values);
+            if (filled.missing && !data.setupFailure)
+              data.missingValue(filled.missing);
+            runJourneyConfig = filled.journey;
+          }
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,
             attempt,
-            ...(runJourneyConfig !== journey ? { marker } : {}),
+            ...(runJourneyConfig !== journey || data ? { marker } : {}),
           });
-          const session = await driver.openSession({
-            suite,
-            journey: runJourneyConfig,
-            viewport,
-            directory,
-            storageState: options.storageState,
-            video: options.video,
-            log,
-          });
-          const usage = emptyUsage();
-          currentUsage = usage;
           try {
-            const result = await runJourney(
-              session,
+            const session = await driver.openSession({
               suite,
-              runJourneyConfig,
-              viewport.name,
+              journey: runJourneyConfig,
+              viewport,
               directory,
-              engine,
+              storageState: options.storageState,
+              video: options.video,
               log,
-              attempt,
-              usage,
-            );
-            if (runJourneyConfig !== journey) result.marker = marker;
-            results.push(result);
+              evidence: protection,
+            });
+            const usage = emptyUsage();
+            currentUsage = usage;
+            try {
+              const result = await runJourney(
+                session,
+                suite,
+                runJourneyConfig,
+                viewport.name,
+                directory,
+                engine,
+                log,
+                attempt,
+                usage,
+                protection,
+                baselines,
+                data,
+                options.signal,
+              );
+              if (runJourneyConfig !== journey || data) result.marker = marker;
+              results.push(result);
+            } finally {
+              currentUsage = null;
+            }
           } finally {
-            currentUsage = null;
+            // A run that never produced a result (the session failed to
+            // open) still cleans up; a no-op once runJourney cleaned up.
+            await data?.cleanup('error');
           }
           await writeFile(
             join(options.directory, 'results.json'),
@@ -1073,14 +1245,21 @@ export async function runSuite(
           );
           await writeFile(
             join(options.directory, 'report.html'),
-            reportHTML(suite.name, results, options.directory),
+            reportHTML(redactor.text(suite.name), results, options.directory),
             { mode: 0o600 },
           );
         }
       }
     }
   } finally {
-    await driver.close();
+    try {
+      await driver.close();
+    } finally {
+      // Last pass over the whole run directory, failed and cancelled runs
+      // included, even when the browser did not close cleanly.
+      await sanitizeTextFiles(options.directory, redactor);
+      await restrictPermissions(options.directory);
+    }
   }
   return results;
 }

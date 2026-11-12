@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
 import {
   chromium,
   firefox,
@@ -24,6 +25,9 @@ import {
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
 import { runPlaywrightAudit } from './playwright-audits.js';
+import { protectedScreenshot } from './playwright-evidence.js';
+import { formatEnabled } from '../evidence/policy.js';
+import { focusKey } from './playwright-keyboard.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -69,7 +73,20 @@ export async function playwrightDriver(
       storageState,
       video,
       log,
+      evidence,
     }) {
+      const traced = evidence ? formatEnabled(evidence.formats, 'trace') : true;
+      const recorded =
+        !!video && (evidence ? formatEnabled(evidence.formats, 'video') : true);
+      // Written by the runner, not by Playwright, so the file is private
+      // (0600) from the moment it exists.
+      const capture = async (path: string) => {
+        const image = await protectedScreenshot(page, evidence?.screenshots, {
+          fullPage: false,
+        });
+        await writeFile(path, image, { mode: 0o600 });
+        return image;
+      };
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)
@@ -88,7 +105,7 @@ export async function playwrightDriver(
         viewport,
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
-        ...(video ? { recordVideo: { dir: directory } } : {}),
+        ...(recorded ? { recordVideo: { dir: directory } } : {}),
       };
       // Sessions run one at a time, so each can open the profile in turn.
       const context = browser
@@ -101,6 +118,8 @@ export async function playwrightDriver(
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
       const browserErrors: string[] = [];
+      // Screenshot path of each observation step, for audit evidence.
+      const screenshots = new Map<number, string>();
       const policyBlocks: string[] = [];
       const suiteHosts = new Set(suiteOrigins(suite));
       let unauthorized = false;
@@ -171,11 +190,14 @@ export async function playwrightDriver(
           reason: request.failure()?.errorText,
         });
       });
-      await context.tracing.start({
-        screenshots: true,
-        snapshots: true,
-        sources: false,
-      });
+      // Traces hold DOM snapshots, network traffic and unmasked screenshots;
+      // the evidence policy decides whether one is captured at all.
+      if (traced)
+        await context.tracing.start({
+          screenshots: true,
+          snapshots: true,
+          sources: false,
+        });
       return {
         driver: 'playwright' as const,
         browserErrors,
@@ -207,8 +229,15 @@ export async function playwrightDriver(
         check(condition) {
           return check(page, condition);
         },
-        observe(step, screenshot) {
-          return observe(page, step, screenshot);
+        async observe(step, screenshot) {
+          screenshots.set(step, screenshot);
+          const observation = await observe(page, step, screenshot, capture);
+          // Keyboard focus is part of a keyboard-only journey's state.
+          if (journey.input === 'keyboard')
+            observation.fingerprint = createHash('sha256')
+              .update(observation.fingerprint + (await focusKey(page)))
+              .digest('hex');
+          return observation;
         },
         candidates() {
           return candidates(
@@ -236,19 +265,38 @@ export async function playwrightDriver(
           );
         },
         async screenshot(path) {
-          await page.screenshot({ path });
+          await capture(path);
         },
         runAudit(request) {
-          return runPlaywrightAudit(page, request);
+          return runPlaywrightAudit(page, request, {
+            journey,
+            screenshotAt: (step) => screenshots.get(step) ?? null,
+            build: {
+              browser: browserName,
+              build: suite.browserChannel
+                ? `channel:${suite.browserChannel}`
+                : suite.browserExecutable
+                  ? 'executable'
+                  : 'bundled',
+              headless,
+            },
+            // The run's screenshot protection: visual captures get the same
+            // pre-capture masks as every other screenshot, on top of the
+            // audit's own dynamic-region masks.
+            protection: evidence?.screenshots,
+          });
         },
         async finish(trace) {
           const recording = page.video();
           try {
-            await context.tracing.stop({ path: trace });
+            if (traced) await context.tracing.stop({ path: trace });
           } finally {
             await context.close();
           }
-          return { video: recording ? await recording.path() : null };
+          return {
+            video: recording ? await recording.path() : null,
+            ...(traced ? {} : { trace: null }),
+          };
         },
       };
     },

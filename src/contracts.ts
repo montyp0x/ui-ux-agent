@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
+import {
+  evidencePolicySchema,
+  type EvidencePolicy,
+} from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
+import { dataLifecycleSchema } from './lifecycle.js';
 
 export { targetSchema, type Target };
 
@@ -32,8 +37,67 @@ export const checkSchema = z.discriminatedUnion('kind', [
       pattern: z.string().min(1),
     })
     .strict(),
+  // Web only: the target has keyboard focus (with within, focus is on the
+  // target or inside it, for example inside a dialog). Open shadow roots are
+  // followed; frames are not.
+  z
+    .object({
+      kind: z.literal('focused'),
+      target: targetSchema,
+      within: z.boolean().default(false),
+    })
+    .strict(),
 ]);
 export type Check = z.infer<typeof checkSchema>;
+
+// The text a fill types: its value, or its valueEnv variable from the
+// environment. Throws, naming the variable, when it is not set.
+export function fillValue(
+  fill: { description: string; value?: string; valueEnv?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (fill.valueEnv === undefined) return fill.value ?? '';
+  const value = env[fill.valueEnv];
+  if (value === undefined)
+    throw new Error(
+      `The fill "${fill.description}" reads its value from the environment variable ${fill.valueEnv}, which is not set`,
+    );
+  return value;
+}
+
+// Environment variables the suite's fill interactions read that are unset.
+export function missingFillEnv(
+  suite: { journeys: Journey[] },
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const names = suite.journeys.flatMap((journey) =>
+    [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+      (interaction) =>
+        interaction.kind === 'fill' && interaction.valueEnv
+          ? [interaction.valueEnv]
+          : [],
+    ),
+  );
+  return [...new Set(names)].filter((name) => env[name] === undefined);
+}
+// Keys a keyboard-only journey (input: keyboard) is offered at every state,
+// pressed on whatever has focus with the browser's own keyboard.
+export const KEYBOARD_KEYS = [
+  'Tab',
+  'Shift+Tab',
+  'Enter',
+  'Space',
+  'Escape',
+  'ArrowDown',
+  'ArrowUp',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'PageDown',
+  'PageUp',
+] as const;
+export type KeyboardKey = (typeof KEYBOARD_KEYS)[number];
 const interactionSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -58,14 +122,29 @@ const interactionSchema = z.discriminatedUnion('kind', [
       description: z.string().min(1),
     })
     .strict(),
+  // A fill types `value`, or the value of the environment variable
+  // `valueEnv` (for secrets such as a test password, so they never sit in a
+  // suite file). valueEnv is read when the field is filled, never stored in
+  // actions, results or logs.
   z
     .object({
       kind: z.literal('fill'),
       target: targetSchema,
       description: z.string().min(1),
-      value: z.string(),
+      value: z.string().optional(),
+      valueEnv: z
+        .string()
+        .regex(
+          /^[A-Za-z_][A-Za-z0-9_]{0,127}$/,
+          'valueEnv must be an environment variable name',
+        )
+        .optional(),
     })
-    .strict(),
+    .strict()
+    .refine(
+      (fill) => (fill.value === undefined) !== (fill.valueEnv === undefined),
+      'A fill interaction needs exactly one of value or valueEnv',
+    ),
   z
     .object({
       kind: z.literal('press'),
@@ -114,6 +193,32 @@ export const journeySchema = z
     // at the first observed state where `when` holds.
     states: z.array(journeyStateSchema(checkSchema)).max(10).optional(),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
+    // keyboard: a keyboard-only journey on the web. Every action is a key
+    // press on the focused element (KEYBOARD_KEYS), or a configured fill or
+    // press on its target once keys have focused it; links, clicks, scrolling
+    // and history are never offered, and the driver refuses any pointer
+    // action. any (or omitted): mixed pointer and keyboard actions.
+    input: z.enum(['any', 'keyboard']).optional(),
+    // Expectations a keyboard-only journey states explicitly, checked by the
+    // keyboard.focus audit from the journey's own key presses.
+    keyboard: z
+      .object({
+        // Tab reaches these targets in this order (unlisted controls may sit
+        // between them).
+        focusOrder: z.array(targetSchema).min(2).max(20).optional(),
+        dialogs: z
+          .object({
+            // Escape closes an open modal dialog.
+            closeOnEscape: z.boolean().default(false),
+            // Closing a modal dialog returns focus to the control that had
+            // focus when it opened.
+            restoreFocus: z.boolean().default(false),
+          })
+          .strict()
+          .prefault({}),
+      })
+      .strict()
+      .optional(),
     maxSteps: z.number().int().min(1).max(100).default(20),
     maxDurationMs: z.number().int().min(1000).max(900000).default(180000),
   })
@@ -241,9 +346,25 @@ const suiteObject = z
     // Objective audits run at configured checkpoints (see src/audits/).
     // Default: the horizontal overflow audit at completion, fail on serious.
     audits: auditsConfigSchema.prefault({}),
+    // Provider-visible versus local-only data, redaction, screenshot masks,
+    // trace/video capture and retention (see src/evidence/policy.ts).
+    evidence: evidencePolicySchema.prefault({}),
+    // Reset, setup and cleanup hooks on a local fixture service for
+    // authorized write flows (see src/lifecycle.ts). Web only.
+    dataLifecycle: dataLifecycleSchema.optional(),
   })
   .strict()
   .superRefine((suite, ctx) => {
+    // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
+    // trace or video would record it.
+    if (fillSecrets(suite).length)
+      for (const format of ['trace', 'video'] as const)
+        if (suite.evidence[format] === 'local')
+          ctx.addIssue({
+            code: 'custom',
+            path: ['evidence', format],
+            message: `evidence.${format}: 'local' cannot be sanitized and this suite types a secret from fill valueEnv; use 'auto' or 'off'`,
+          });
     for (const values of [
       suite.journeys.map((j) => j.id),
       suite.viewports.map((v) => v.name),
@@ -262,7 +383,8 @@ const suiteObject = z
         suite.applicationOrigins.length ||
         suite.allowedRequests.length ||
         suite.readOnlyPosts.length ||
-        suite.requiresAuth
+        suite.requiresAuth ||
+        suite.dataLifecycle
       )
         ctx.addIssue({
           code: 'custom',
@@ -284,9 +406,18 @@ const suiteObject = z
           journey.ready,
           ...journey.success,
           ...(journey.contentReady?.checks ?? []),
-          ...(journey.states ?? []).map((state) => state.when),
+          ...(journey.states ?? []).flatMap((state) => [
+            state.when,
+            ...(state.expect ?? []),
+          ]),
         ].flatMap((check) => ('target' in check ? [check.target] : [])),
       ]);
+      if (suite.evidence.masks.length)
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'evidence.masks do not apply to macOS: native window captures cannot be masked; use evidence.providerScreenshots: false and keep screenshots local',
+        });
       if (targets.some((target) => target.by === 'css'))
         ctx.addIssue({
           code: 'custom',
@@ -306,6 +437,33 @@ const suiteObject = z
           code: 'custom',
           message:
             'press interactions are not supported on macOS: the driver never synthesizes keyboard input',
+        });
+      if (
+        suite.journeys.some(
+          (journey) => journey.input === 'keyboard' || journey.keyboard,
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'Keyboard-only journeys are web-only: the macOS driver never synthesizes keyboard input',
+        });
+      if (
+        suite.journeys.some((journey) =>
+          [
+            journey.ready,
+            ...journey.success,
+            ...(journey.contentReady?.checks ?? []),
+            ...(journey.states ?? []).flatMap((state) => [
+              state.when,
+              ...(state.expect ?? []),
+            ]),
+          ].some((check) => check.kind === 'focused'),
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'focused checks apply to web suites only',
         });
     } else if (suite.menus)
       ctx.addIssue({
@@ -341,6 +499,35 @@ const suiteObject = z
       (check.at as string[]).includes('states'),
     );
     for (const journey of suite.journeys) {
+      if (!suite.dataLifecycle && JSON.stringify(journey).includes('{{data.'))
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id} uses {{data.*}} values, which only dataLifecycle setup provides`,
+        });
+      if (journey.keyboard && journey.input !== 'keyboard')
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id}: keyboard expectations need input: keyboard`,
+        });
+      if (journey.input === 'keyboard') {
+        // Keys reach and operate controls; a click, select or check would
+        // need the pointer or programmatic focus.
+        if (
+          [...journey.interactions, ...(journey.setup ?? [])].some(
+            (interaction) =>
+              interaction.kind !== 'fill' && interaction.kind !== 'press',
+          )
+        )
+          ctx.addIssue({
+            code: 'custom',
+            message: `${journey.id}: keyboard-only journeys support fill and press interactions only; operate controls with Enter, Space or arrow keys`,
+          });
+        if (journey.discoverRoles.length)
+          ctx.addIssue({
+            code: 'custom',
+            message: `${journey.id}: discoverRoles offers clicks; keyboard-only journeys reach controls with Tab`,
+          });
+      }
       const states = (journey.states ?? []).map((state) => state.name);
       if (new Set(states).size !== states.length)
         ctx.addIssue({
@@ -352,11 +539,24 @@ const suiteObject = z
           code: 'custom',
           message: `${journey.id} declares states but no audit runs at 'states'`,
         });
+      if (
+        (journey.states ?? []).some((state) => state.expect?.length) &&
+        !suite.audits.checks.some(
+          (check) => check.id === 'journey.state-checks',
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id} declares state expect checks; add the journey.state-checks audit so they are evaluated`,
+        });
       for (const check of [
         journey.ready,
         ...journey.success,
         ...(journey.contentReady?.checks ?? []),
-        ...(journey.states ?? []).map((state) => state.when),
+        ...(journey.states ?? []).flatMap((state) => [
+          state.when,
+          ...(state.expect ?? []),
+        ]),
         ...(journey.detours ?? []).map((detour) => ({
           kind: 'path' as const,
           pattern: detour.pattern,
@@ -377,6 +577,54 @@ const suiteObject = z
   });
 export const suiteSchema = z.preprocess(nativeDefaults, suiteObject);
 export type Suite = z.infer<typeof suiteObject>;
+
+// The fill interactions (journey interactions and setup) that type a value
+// from an environment variable.
+function fillSecrets(suite: {
+  journeys: Pick<Journey, 'interactions' | 'setup'>[];
+}): { valueEnv: string; target: Target }[] {
+  return suite.journeys.flatMap((journey) =>
+    [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+      (interaction) =>
+        interaction.kind === 'fill' && interaction.valueEnv
+          ? [{ valueEnv: interaction.valueEnv, target: interaction.target }]
+          : [],
+    ),
+  );
+}
+
+// The evidence policy a run applies: the suite's own, plus every fill
+// valueEnv treated as a declared secret. Its variable joins redactEnv, so the
+// value is redacted from all text evidence (accessibility snapshots in
+// observation events included) and the suite counts as sensitive (traces and
+// video are off under 'auto'); on the web the filled field is also masked in
+// every screenshot. macOS window captures cannot be masked; there the
+// declared secret keeps screenshots from the planner instead.
+export function suiteEvidencePolicy(
+  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys'>,
+): EvidencePolicy {
+  const fills = fillSecrets(suite);
+  if (!fills.length) return suite.evidence;
+  const key = (target: Target) => JSON.stringify(target);
+  const masked = new Set(suite.evidence.masks.map(key));
+  const masks = [...suite.evidence.masks];
+  if (suite.platform !== 'macos')
+    for (const { target } of fills)
+      if (!masked.has(key(target))) {
+        masked.add(key(target));
+        masks.push(target);
+      }
+  return {
+    ...suite.evidence,
+    redactEnv: [
+      ...new Set([
+        ...suite.evidence.redactEnv,
+        ...fills.map((fill) => fill.valueEnv),
+      ]),
+    ],
+    masks,
+  };
+}
 export type Action =
   | {
       kind: 'link';
@@ -395,6 +643,8 @@ export type Action =
       point: ScrollPoint;
     }
   | { kind: 'wait'; id: string; description: string }
+  // Keyboard-only journeys: a key pressed on whatever has focus.
+  | { kind: 'key'; id: string; description: string; key: KeyboardKey }
   // Browser history back to an in-scope previous entry (url).
   | { kind: 'back'; id: string; description: string; url: string };
 export type ScrollPoint = { x: number; y: number };

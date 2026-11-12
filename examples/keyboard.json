@@ -1,0 +1,119 @@
+{
+  "name": "Keyboard-only example (local fixture: examples/state-fixture.ts)",
+  "baseURL": "http://127.0.0.1:4173",
+  "requiresAuth": false,
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1280,
+      "height": 800
+    }
+  ],
+  "audits": {
+    "checks": [
+      {
+        "id": "keyboard.focus"
+      },
+      {
+        "id": "journey.state-checks"
+      }
+    ],
+    "failOn": "serious"
+  },
+  "journeys": [
+    {
+      "id": "dialog-keyboard",
+      "goal": "Change the profile's display name using only the keyboard",
+      "persona": "A keyboard user",
+      "startPath": "/dialog",
+      "allowedPaths": [
+        "/dialog"
+      ],
+      "input": "keyboard",
+      "ready": {
+        "kind": "visible",
+        "target": {
+          "by": "role",
+          "role": "heading",
+          "name": "Profile"
+        }
+      },
+      "interactions": [
+        {
+          "kind": "fill",
+          "target": {
+            "by": "label",
+            "value": "Display name"
+          },
+          "value": "Grace",
+          "description": "Change the display name"
+        }
+      ],
+      "keyboard": {
+        "focusOrder": [
+          {
+            "by": "label",
+            "value": "Display name"
+          },
+          {
+            "by": "role",
+            "role": "button",
+            "name": "Save profile"
+          },
+          {
+            "by": "role",
+            "role": "button",
+            "name": "Cancel"
+          }
+        ],
+        "dialogs": {
+          "closeOnEscape": true,
+          "restoreFocus": true
+        }
+      },
+      "success": [
+        {
+          "kind": "text",
+          "target": {
+            "by": "testId",
+            "value": "profile-name"
+          },
+          "pattern": "Grace"
+        },
+        {
+          "kind": "focused",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Edit profile"
+          },
+          "within": false
+        }
+      ],
+      "states": [
+        {
+          "name": "dialog-open",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "by": "role",
+              "role": "dialog",
+              "name": "Edit profile"
+            }
+          },
+          "expect": [
+            {
+              "kind": "focused",
+              "target": {
+                "by": "label",
+                "value": "Display name"
+              },
+              "within": false
+            }
+          ]
+        }
+      ],
+      "maxSteps": 12
+    }
+  ]
+}
