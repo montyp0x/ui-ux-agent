@@ -132,5 +132,6 @@ The benchmark directory is a new directory under `runs/` (gitignored, never reus
 ## Limits
 
 - Per-run token and latency totals come from the benchmark's own call log, where missing usage is unknown; the usage in each `results.json` counts missing usage as 0, as documented there.
+- *Per-run usage reconciles with the call log* compares each target's totals with its results' `usage`; the per-run totals are not reconciled run by run.
 - A provider that never reports usage (check whether yours does) makes every token total unknown; with `unknownUsage: "stop"` the benchmark then stops at its first such response.
 - Targets and runs execute one at a time.

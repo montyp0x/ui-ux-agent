@@ -4,7 +4,10 @@
 // the underlying file.
 import type { Locator, Page, PageScreenshotOptions } from 'playwright';
 import { locate } from '../browser.js';
-import type { ScreenshotProtection } from '../evidence/protection.js';
+import type {
+  EvidenceProtection,
+  ScreenshotProtection,
+} from '../evidence/protection.js';
 import type { TextPattern } from '../evidence/redact.js';
 
 // Drop the global flag and name named groups away: getByText tests each
@@ -118,4 +121,25 @@ export async function protectedScreenshot(
     ],
     maskColor: protection.maskColor,
   });
+}
+
+// Reads the page's select options so the protection learns the labels of
+// options whose value is a secret (EvidenceProtection.learnOptionLabels).
+// Called before anything the driver returns or logs can show page text.
+// Top-level document only; never throws (the page may be navigating).
+export async function learnSecretOptions(
+  page: Page,
+  protection: Pick<EvidenceProtection, 'learnOptionLabels'> | undefined,
+): Promise<void> {
+  if (!protection) return;
+  const options = await page
+    .locator('select option')
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const option = element as HTMLOptionElement;
+        return { value: option.value, texts: [option.label, option.text] };
+      }),
+    )
+    .catch(() => [] as { value: string; texts: string[] }[]);
+  protection.learnOptionLabels(options);
 }

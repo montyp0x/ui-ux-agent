@@ -29,6 +29,9 @@ export type ScreenshotProtection = {
 
 export const MASK_COLOR = '#FF00FF';
 
+// The label of the first redaction in a text ([REDACTED:<label>]).
+const SECRET_LABEL = /\[REDACTED:([^\]\s]+)\]/;
+
 export type EvidenceProtection = {
   redactor: Redactor;
   // Its patterns are read at every capture, so values a run learns
@@ -43,6 +46,12 @@ export type EvidenceProtection = {
   // except the keys in publicValues, become secrets of the suite from now on,
   // and make it sensitive whether or not a journey references them.
   beginRun(data: Record<string, string>, publicValues: readonly string[]): void;
+  // Options of selects on the page, as a driver read them: an option whose
+  // value is a secret names the secret choice by its label and text too, so
+  // those become secrets from now on (labelled <secret label>:option).
+  learnOptionLabels(
+    options: readonly { value: string; texts: readonly string[] }[],
+  ): void;
   report(sanitizedFiles: number): EvidenceReport;
   // Warnings for the suite as loaded (declared secrets too short to redact),
   // also listed in every result's evidence.limitations.
@@ -104,6 +113,24 @@ export function evidenceProtection(
       ].sort();
       current = secretData.length ? { ...policy, secretData } : policy;
       formats = evidenceFormats(current, context);
+    },
+    learnOptionLabels(options) {
+      for (const option of options) {
+        if (!option.value) continue;
+        const secret = SECRET_LABEL.exec(redactor.text(option.value))?.[1];
+        if (!secret) continue;
+        for (const raw of option.texts) {
+          const text = raw.trim();
+          if (!text || redactor.matches(text)) continue;
+          if (!redactor.addSecret(`${secret}:option`, text)) {
+            const limitation = shortSecretLimitation(
+              `option label of a select whose value is ${secret}`,
+            );
+            if (!runLimitations.includes(limitation))
+              runLimitations.push(limitation);
+          }
+        }
+      }
     },
     report: (sanitizedFiles) => ({
       declaredPatterns: redactor.declared.length,

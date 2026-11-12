@@ -25,7 +25,10 @@ import {
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
 import { runPlaywrightAudit } from './playwright-audits.js';
-import { protectedScreenshot } from './playwright-evidence.js';
+import {
+  learnSecretOptions,
+  protectedScreenshot,
+} from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
 import { focusKey } from './playwright-keyboard.js';
 
@@ -141,6 +144,9 @@ export async function playwrightDriver(
           /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
             await page.evaluate(() => navigator.userAgent),
           )?.[1] ?? null;
+      // Option labels that name a secret choice become secrets before any
+      // page text leaves the driver.
+      const learn = () => learnSecretOptions(page, evidence);
       const browserErrors: string[] = [];
       // Screenshot path of each observation step, for audit evidence.
       const screenshots = new Map<number, string>();
@@ -250,10 +256,12 @@ export async function playwrightDriver(
         location() {
           return page.url();
         },
-        check(condition) {
+        async check(condition) {
+          await learn();
           return check(page, condition);
         },
         async observe(step, screenshot) {
+          await learn();
           screenshots.set(step, screenshot);
           const observation = await observe(page, step, screenshot, capture);
           // Keyboard focus is part of a keyboard-only journey's state.
@@ -263,7 +271,8 @@ export async function playwrightDriver(
               .digest('hex');
           return observation;
         },
-        candidates() {
+        async candidates() {
+          await learn();
           return candidates(
             page,
             journey,
@@ -272,26 +281,34 @@ export async function playwrightDriver(
             log,
           );
         },
-        repeatState(action) {
+        async repeatState(action) {
+          await learn();
           return repeatState(page, action, journey);
         },
         offeredControls() {
           return offeredControls(page);
         },
-        execute(action, before) {
-          return execute(
-            page,
-            action,
-            before,
-            journey,
-            suite.baseURL,
-            suite.allowedOrigins,
-          );
+        async execute(action, before) {
+          try {
+            return await execute(
+              page,
+              action,
+              before,
+              journey,
+              suite.baseURL,
+              suite.allowedOrigins,
+            );
+          } finally {
+            // An error message can quote the page.
+            await learn();
+          }
         },
         async screenshot(path) {
+          await learn();
           await capture(path);
         },
-        runAudit(request) {
+        async runAudit(request) {
+          await learn();
           return runPlaywrightAudit(page, request, {
             journey,
             screenshotAt: (step) => screenshots.get(step) ?? null,
