@@ -329,8 +329,10 @@ export async function playwrightDriver(
         location() {
           return page.url();
         },
-        async check(condition) {
-          await learn();
+        // A check returns only a boolean, so no page text leaves through it,
+        // and it runs for every condition between an observation and its
+        // candidates: reading the options here would only widen that gap.
+        check(condition) {
           return check(page, condition);
         },
         async observe(step, screenshot) {

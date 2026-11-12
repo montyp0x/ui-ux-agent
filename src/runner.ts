@@ -306,13 +306,20 @@ async function runJourney(
       modelMs: usage.planner.durationMs + usage.selector.durationMs,
     }),
   });
-  const deadlineTimer = setTimeout(
-    () =>
-      deadlineAbort.abort(
-        new DOMException('Journey deadline reached', 'TimeoutError'),
-      ),
-    journey.maxDurationMs,
-  );
+  // Timers run on a monotonic clock and can fire a millisecond before
+  // Date.now() reaches the deadline; the rest is waited out, so the abort
+  // never comes before the deadline the run reports against.
+  const abortAtDeadline = () => {
+    const remaining = deadline - Date.now();
+    if (remaining > 0) {
+      deadlineTimer = setTimeout(abortAtDeadline, remaining);
+      return;
+    }
+    deadlineAbort.abort(
+      new DOMException('Journey deadline reached', 'TimeoutError'),
+    );
+  };
+  let deadlineTimer = setTimeout(abortAtDeadline, journey.maxDurationMs);
   const result: Result = {
     resultVersion: RESULT_VERSION,
     journey: journey.id,
