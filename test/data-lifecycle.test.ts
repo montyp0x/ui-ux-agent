@@ -4,7 +4,7 @@
 // cancellation, failed cleanups reported prominently, and repeated runs
 // leaving no stored data. Scripted decisions only, no model calls.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -261,6 +261,24 @@ test('a cancelled run still cleans up and no further run starts', async () => {
     assert.deepEqual(app.stored(), { owners: [], notes: 0 });
     const events = await readFile(join(options.directory, 'events.jsonl'), 'utf8');
     assert.match(events, /"event":"run_cancelled"/);
+    // The cancelled run's evidence, the Playwright trace included, still got
+    // the final permission pass: files 0600, directories 0700.
+    const walk = async (dir: string): Promise<string[]> =>
+      (
+        await Promise.all(
+          (await readdir(dir, { withFileTypes: true })).map(async (entry) => {
+            const path = join(dir, entry.name);
+            assert.equal(
+              (await stat(path)).mode & 0o777,
+              entry.isDirectory() ? 0o700 : 0o600,
+              path,
+            );
+            return entry.isDirectory() ? walk(path) : [path];
+          }),
+        )
+      ).flat();
+    const evidence = await walk(options.directory);
+    assert.ok(evidence.some((path) => path.endsWith('trace.zip')));
   });
 });
 

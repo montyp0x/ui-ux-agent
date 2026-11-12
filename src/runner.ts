@@ -1252,10 +1252,14 @@ export async function runSuite(
       }
     }
   } finally {
-    await driver.close();
-    // Last pass over the whole run directory, failed runs included.
-    await sanitizeTextFiles(options.directory, redactor);
-    await restrictPermissions(options.directory);
+    try {
+      await driver.close();
+    } finally {
+      // Last pass over the whole run directory, failed and cancelled runs
+      // included, even when the browser did not close cleanly.
+      await sanitizeTextFiles(options.directory, redactor);
+      await restrictPermissions(options.directory);
+    }
   }
   return results;
 }
