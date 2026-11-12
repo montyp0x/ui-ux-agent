@@ -31,7 +31,8 @@ import {
   runBenchmark,
 } from '../src/benchmark/run.js';
 import { distribution, rate, wilson } from '../src/benchmark/stats.js';
-import type { Result } from '../src/results.js';
+import { parseResults, type Result } from '../src/results.js';
+import { findingInstances } from '../src/compare.js';
 
 // --- statistics -----------------------------------------------------------
 
@@ -685,54 +686,104 @@ test('failureClass follows the result contract categories', () => {
   );
 });
 
-test('reviewer labels give finding precision with n; unknown references are refused', async () => {
+test('reviewer labels name stable finding ids and give precision with n; unknown ids and version 1 are refused', async () => {
   const fake = await fakeModel({
     concerns: [{ symptom: 'Button label is vague', userImpact: 'Hesitation' }],
   });
   const { run, root } = await setup(fake, [
     { id: 'passes', scenario: success },
+    { id: 'also-passes', scenario: success },
   ]);
   const { report } = await run();
   assert.equal(report.precision.status, 'unknown');
-  assert.ok(report.precision.findings.hypothesis >= 3);
   const out = join(root, 'out');
-  const key = (attempt: number) => ({
-    target: 'passes',
-    journey: 'finish',
-    viewport: 'desktop',
-    attempt,
-    source: 'finding',
-    index: 0,
-  });
-  const labels = join(root, 'labels.json');
-  await writeFile(
-    labels,
-    JSON.stringify({
-      labelsVersion: 1,
-      reviewer: 'reviewer',
-      labels: [
-        { ...key(1), verdict: 'confirmed' },
-        { ...key(2), verdict: 'confirmed' },
-        { ...key(3), verdict: 'rejected' },
-      ],
-    }),
+  // Each distinct finding is listed once per target with the stable id the
+  // comparison uses (findingInstances), and every attempt that reported it.
+  const ids = async (target: string) =>
+    new Set(
+      parseResults(
+        await readFile(join(out, target, 'results.json'), 'utf8'),
+      ).flatMap((result) =>
+        findingInstances(result)
+          .filter((instance) => instance.kind === 'hypothesis')
+          .map((instance) => instance.id),
+      ),
+    );
+  const hypotheses = report.precision.items.filter(
+    (item) => item.kind === 'hypothesis',
   );
+  assert.equal(hypotheses.length, 2, JSON.stringify(hypotheses));
+  for (const item of hypotheses) {
+    assert.deepEqual([...(await ids(item.target))], [item.id]);
+    assert.deepEqual(item.attempts, [1, 2, 3]);
+    assert.equal(item.verdict, null);
+    assert.equal(item.journey, 'finish');
+  }
+  assert.equal(report.precision.findings.hypothesis, 2);
+  // No page or model text is copied into the list.
+  assert.ok(!JSON.stringify(report.precision.items).includes('vague'));
+  const [first, second] = hypotheses;
+  const labels = join(root, 'labels.json');
+  const write = (body: unknown) => writeFile(labels, JSON.stringify(body));
+  await write({
+    labelsVersion: 2,
+    reviewer: 'reviewer',
+    labels: [
+      { target: first!.target, id: first!.id, verdict: 'confirmed' },
+      { target: second!.target, id: second!.id, verdict: 'rejected' },
+    ],
+  });
   const labelled = await loadBenchmarkReport(out, labels);
   assert.equal(labelled.precision.status, 'measured');
   const hypothesis = labelled.precision.byKind.hypothesis!;
-  assert.equal(hypothesis.precision.successes, 2);
-  assert.equal(hypothesis.precision.n, 3);
+  assert.equal(hypothesis.precision.successes, 1);
+  assert.equal(hypothesis.precision.n, 2);
   assert.ok(hypothesis.precision.interval);
-  assert.equal(hypothesis.unlabelled, hypothesis.total - 3);
-  await writeFile(
-    labels,
-    JSON.stringify({
-      labelsVersion: 1,
-      reviewer: 'reviewer',
-      labels: [{ ...key(1), index: 7, verdict: 'confirmed' }],
-    }),
+  assert.equal(hypothesis.unlabelled, 0);
+  assert.deepEqual(
+    labelled.precision.items
+      .filter((item) => item.kind === 'hypothesis')
+      .map((item) => item.verdict),
+    ['confirmed', 'rejected'],
   );
+  const markdown = benchmarkMarkdown(labelled);
+  assert.ok(markdown.includes(`\`${first!.id}\``));
+  assert.ok(!markdown.includes('vague'), 'no finding text in the report');
+  // An id no finding of the target has is refused, as a typo would be.
+  await write({
+    labelsVersion: 2,
+    reviewer: 'reviewer',
+    labels: [
+      { target: 'passes', id: '0123456789abcdef', verdict: 'confirmed' },
+    ],
+  });
   await assert.rejects(loadBenchmarkReport(out, labels), /no finding/);
+  await write({
+    labelsVersion: 2,
+    reviewer: 'reviewer',
+    labels: [
+      { target: first!.target, id: first!.id, verdict: 'confirmed' },
+      { target: first!.target, id: first!.id, verdict: 'rejected' },
+    ],
+  });
+  await assert.rejects(loadBenchmarkReport(out, labels), /Duplicate label/);
+  // Version 1 labelled per-attempt indexes; it is refused with a pointer.
+  await write({
+    labelsVersion: 1,
+    reviewer: 'reviewer',
+    labels: [
+      {
+        target: 'passes',
+        journey: 'finish',
+        viewport: 'desktop',
+        attempt: 1,
+        source: 'finding',
+        index: 0,
+        verdict: 'confirmed',
+      },
+    ],
+  });
+  await assert.rejects(loadBenchmarkReport(out, labels), /labelsVersion 2/);
   // Re-aggregation from disk matches the run's own report.
   const again = await loadBenchmarkReport(out);
   assert.deepEqual(

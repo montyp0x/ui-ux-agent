@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
+import { findingInstances } from '../compare.js';
 import { parseResults, type OutcomeCode, type Result } from '../results.js';
 import type { CallRecord, Stop } from './budget.js';
 import type { Ceilings, PinnedModel } from './config.js';
@@ -77,20 +78,25 @@ export function failureClass(
 
 // --- reviewer labels ------------------------------------------------------
 
+export const LABELS_VERSION = 2;
+
+// Labels name findings by the stable id the run comparison uses
+// (findingInstances in src/compare.ts), per benchmark target: one label
+// covers every attempt that reported the finding. Version 1 labelled
+// per-attempt indexes into findings arrays and is refused.
 export const labelsSchema = z
   .object({
-    labelsVersion: z.literal(1),
+    labelsVersion: z.literal(LABELS_VERSION, {
+      error: () =>
+        `labelsVersion ${LABELS_VERSION} is required: label each finding by its stable id (benchmark-report.json precision.items), not by attempt and index as version 1 did`,
+    }),
     reviewer: z.string().min(1),
     labels: z.array(
       z
         .object({
           target: z.string().min(1),
-          journey: z.string().min(1),
-          viewport: z.string().min(1),
-          attempt: z.number().int().min(1),
-          // finding: Result.findings[index]; audit: Result.audits.findings[index].
-          source: z.enum(['finding', 'audit']),
-          index: z.number().int().nonnegative(),
+          // findingInstances(result).id: 16 hex characters.
+          id: z.string().regex(/^[0-9a-f]{16}$/),
           // confirmed: the reviewer reproduced it as a real issue.
           verdict: z.enum(['confirmed', 'rejected']),
           note: z.string().optional(),
@@ -119,9 +125,26 @@ export type Precision = {
   reason: string;
   reviewer: string | null;
   file: string | null;
-  // Findings per kind across all runs.
+  // Distinct findings per kind across all targets (a finding reported in
+  // several attempts of a target counts once).
   findings: Record<FindingKind, number>;
   byKind: Partial<Record<FindingKind, KindPrecision>>;
+  // Every distinct finding, to label by its id. Identifiers only: no
+  // finding text (read it in the target's results.json or a comparison).
+  items: PrecisionItem[];
+};
+export type PrecisionItem = {
+  target: string;
+  id: string;
+  kind: FindingKind;
+  journey: string;
+  viewport: string;
+  // The audit rule, or the finding category.
+  ruleId: string;
+  auditId: string | null;
+  // Attempts (repeat numbers) that reported it.
+  attempts: number[];
+  verdict: 'confirmed' | 'rejected' | null;
 };
 
 // --- report shape ---------------------------------------------------------
@@ -369,51 +392,42 @@ function callStats(
   };
 }
 
-type FindingRef = {
-  target: string;
-  journey: string;
-  viewport: string;
-  attempt: number;
-  source: 'finding' | 'audit';
-  index: number;
-  kind: FindingKind;
-};
-const refKey = (ref: Omit<FindingRef, 'kind'>) =>
-  [
-    ref.target,
-    ref.journey,
-    ref.viewport,
-    ref.attempt,
-    ref.source,
-    ref.index,
-  ].join('\u0000');
+const refKey = (target: string, id: string) => `${target}\u0000${id}`;
 
 function precision(
   results: Map<string, Result[]>,
   labels: { file: string; labels: Labels } | null,
 ): Precision {
-  const refs = new Map<string, FindingRef>();
+  const refs = new Map<string, PrecisionItem>();
   for (const [target, list] of results)
-    for (const result of list) {
-      const base = {
-        target,
-        journey: result.journey,
-        viewport: result.viewport,
-        attempt: result.attempt,
-      };
-      result.findings.forEach((finding, index) => {
-        const ref = { ...base, source: 'finding' as const, index };
-        refs.set(refKey(ref), { ...ref, kind: finding.kind });
-      });
-      result.audits.findings.forEach((_, index) => {
-        const ref = { ...base, source: 'audit' as const, index };
-        refs.set(refKey(ref), { ...ref, kind: 'audit' });
-      });
-    }
+    for (const result of list)
+      for (const instance of findingInstances(result)) {
+        const key = refKey(target, instance.id);
+        const known = refs.get(key);
+        if (known) {
+          if (!known.attempts.includes(result.attempt))
+            known.attempts = [...known.attempts, result.attempt].sort(
+              (a, b) => a - b,
+            );
+          continue;
+        }
+        refs.set(key, {
+          target,
+          id: instance.id,
+          kind: instance.kind,
+          journey: instance.journey,
+          viewport: instance.viewport,
+          ruleId: instance.ruleId,
+          auditId: instance.auditId,
+          attempts: [result.attempt],
+          verdict: null,
+        });
+      }
+  const items = [...refs.values()];
   const findings = Object.fromEntries(
     FINDING_KINDS.map((kind) => [
       kind,
-      [...refs.values()].filter((ref) => ref.kind === kind).length,
+      items.filter((ref) => ref.kind === kind).length,
     ]),
   ) as Record<FindingKind, number>;
   if (!labels)
@@ -424,19 +438,20 @@ function precision(
       file: null,
       findings,
       byKind: {},
+      items,
     };
   const verdicts = new Map<string, 'confirmed' | 'rejected'>();
   for (const label of labels.labels.labels) {
-    const key = refKey(label);
-    if (!refs.has(key))
+    const key = refKey(label.target, label.id);
+    const ref = refs.get(key);
+    if (!ref)
       throw new Error(
-        `Label refers to no finding: ${label.target}/${label.journey}/${label.viewport} run ${label.attempt} ${label.source}[${label.index}]`,
+        `Label refers to no finding: ${label.target} finding ${label.id}`,
       );
     if (verdicts.has(key))
-      throw new Error(
-        `Duplicate label: ${label.target}/${label.journey}/${label.viewport} run ${label.attempt} ${label.source}[${label.index}]`,
-      );
+      throw new Error(`Duplicate label: ${label.target} finding ${label.id}`);
     verdicts.set(key, label.verdict);
+    ref.verdict = label.verdict;
   }
   const byKind: Precision['byKind'] = {};
   for (const kind of FINDING_KINDS) {
@@ -465,6 +480,7 @@ function precision(
     file: labels.file,
     findings,
     byKind,
+    items,
   };
 }
 

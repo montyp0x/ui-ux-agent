@@ -131,6 +131,18 @@ export function benchmarkMarkdown(report: BenchmarkReport): string {
         `- ${kind}: precision ${formatRate(entry.precision)}; ${entry.unlabelled} of ${entry.total} unlabelled`,
       );
   }
+  if (report.precision.items.length)
+    add(
+      '',
+      'Label findings by target and id (`labelsVersion: 2`); the finding text is in each target’s `results.json`.',
+      '',
+      '| Target | Id | Kind | Journey / viewport | Rule | Attempts | Verdict |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
+      ...report.precision.items.map(
+        (item) =>
+          `| ${cell(item.target)} | \`${item.id}\` | ${item.kind} | ${cell(item.journey)} / ${cell(item.viewport)} | ${cell(item.auditId ? `${item.auditId}/${item.ruleId}` : item.ruleId)} | ${item.attempts.join(', ')} | ${item.verdict ?? 'unlabelled'} |`,
+      ),
+    );
   add('');
   return lines.join('\n');
 }

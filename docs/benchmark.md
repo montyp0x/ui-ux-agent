@@ -106,20 +106,19 @@ The worst-case spend is therefore `maxModelCalls` requests at your providers' pe
 
   *Model-attributable completion* is `passed / (passed + agent + model + budget)`; *completion (all)* counts every evaluated run. The model-quality section also reports loops (runs ended by a repeated action, plus `loop_check` replans and rejections from `events.jsonl`), planner and selector latency (n, median, p90, max; measured around each adapter call, so it includes client-side rate-limit waits), model calls per run, and tokens. The harness section checks this run's bookkeeping: every `results.json` validates against the result contract, per-run usage reconciles with the benchmark's call log, requests stayed within `maxModelCalls`, requests without an accepted response, and policy/environment/precondition/harness failures. Harness *behaviour* is verified by `npm test`, not by a live run.
 - **Tokens** are `unknown`, never 0, when any request's usage was not reported; the report then gives the reported tokens as a lower bound and the number of requests without usage, per role.
-- **Finding precision** needs human review. Without a labels file it is reported as `unknown`. A labels file marks findings as `confirmed` (reproduced as a real issue) or `rejected`:
+- **Finding precision** needs human review. Without a labels file it is reported as `unknown`. Findings are identified by the stable id the run comparison uses (`findingInstances` in `src/compare.ts`: journey, viewport, kind and rule, checkpoint, path and target, never volatile ids, timestamps or raw secrets), per target, so one label covers every attempt that reported the finding and the same finding keeps its id in a later benchmark of the same suite. `benchmark-report.json` lists every distinct finding under `precision.items` (target, id, kind, journey, viewport, rule, attempts, verdict; identifiers only, no finding text, which stays in each target's `results.json`), and `benchmark-report.md` shows the same table. A labels file marks findings as `confirmed` (reproduced as a real issue) or `rejected`:
 
   ```json
   {
-    "labelsVersion": 1,
+    "labelsVersion": 2,
     "reviewer": "Reviewer Name",
     "labels": [
-      { "target": "docs-install-desktop", "journey": "find-installation", "viewport": "desktop",
-        "attempt": 2, "source": "finding", "index": 0, "verdict": "confirmed" }
+      { "target": "docs-install-desktop", "id": "3f9a0c1e5b7d2a46", "verdict": "confirmed" }
     ]
   }
   ```
 
-  `source: "finding"` indexes that run's `findings` (model `hypothesis` or `observed`), `source: "audit"` its `audits.findings`. Precision is `confirmed / labelled` per kind (hypothesis, observed, audit), with n, a Wilson interval and how many findings are unlabelled. A label that names no finding, or a duplicate, is refused.
+  Precision is `confirmed / labelled` per kind (hypothesis, observed, audit), counted over distinct findings (a finding reported in three attempts counts once), with n, a Wilson interval and how many findings are unlabelled. An audit finding with several sampled targets has one id per target. A label whose id no finding of that target has, or a duplicate, is refused, and so is `labelsVersion: 1` (labels by attempt and array index, used before stable ids).
 
 ## Thresholds
 
