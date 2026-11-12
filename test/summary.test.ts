@@ -17,7 +17,17 @@ import {
 } from '../src/results.js';
 import { emptyAudits } from '../src/audits/contract.js';
 import { runSuite } from '../src/runner.js';
-import { addModelCall, emptyUsage, summarize } from '../src/summary.js';
+import {
+  addModelCall,
+  emptyUsage,
+  exitCode,
+  summarize,
+} from '../src/summary.js';
+import {
+  FRICTION_NOTE,
+  REFERENCE_NOTE,
+  type Friction,
+} from '../src/friction/contract.js';
 
 const CODES: Record<Result['status'], OutcomeCode> = {
   passed: 'assertions_passed',
@@ -273,4 +283,93 @@ test('the CLI rejects an invalid --repeat before running anything', async () => 
   assert.ok('code' in failure);
   assert.equal(failure.code, 2);
   assert.match(failure.stderr, /repeat must be an integer from 1 to 50/);
+});
+
+// A friction summary with the given counts (and an optional reference
+// comparison), as a run records it.
+const withFriction = (
+  result: Result,
+  counts: Partial<Friction['counts']>,
+  followed?: boolean,
+): Result => ({
+  ...result,
+  friction: {
+    version: 1,
+    basis: 'agent_run',
+    note: FRICTION_NOTE,
+    events: { first: 1, last: 2, considered: 2, unparsed: 0 },
+    actions: { executed: 0, product: 0, waits: 0, recovery: 0 },
+    overhead: {
+      plannerRefreshes: 0,
+      refreshReasons: {},
+      noMatchDecisions: 0,
+      revisitReplans: 0,
+      recoveryActions: 0,
+    },
+    counts: {
+      backtracks: 0,
+      repeats: 0,
+      recoveries: 0,
+      detours: 0,
+      failedAttempts: 0,
+      noEffect: 0,
+      ...counts,
+    },
+    items: [],
+    rubric: [],
+    hypotheses: [],
+    reference:
+      followed === undefined
+        ? null
+        : {
+            note: REFERENCE_NOTE,
+            closest: 'main',
+            paths: [
+              {
+                name: 'main',
+                ordered: true,
+                followed,
+                matched: followed ? 1 : 0,
+                total: 1,
+                waypoints: [],
+                expectedActions: 1,
+                comparedActions: 1,
+                allowedActions: 0,
+                extraActions: 0,
+              },
+            ],
+          },
+  },
+});
+
+test('summaries aggregate friction per journey and viewport across repeated runs, without gating', () => {
+  const results = [
+    withFriction(run('passed', 4, 1000), { backtracks: 2, repeats: 1 }, true),
+    withFriction(run('passed', 6, 1000), { backtracks: 1 }, false),
+    // Recorded before friction existed: counted apart, never as zero.
+    run('passed', 5, 1000),
+    withFriction(run('failed', 9, 1000, 'narrow'), { noEffect: 3 }),
+  ];
+  const [desktop, narrow] = summarize(results);
+  assert.deepEqual(desktop!.friction, {
+    basis: 'agent_run',
+    runs: 2,
+    withoutFriction: 1,
+    counts: {
+      backtracks: { total: 3, runs: 2 },
+      repeats: { total: 1, runs: 1 },
+      recoveries: { total: 0, runs: 0 },
+      detours: { total: 0, runs: 0 },
+      failedAttempts: { total: 0, runs: 0 },
+      noEffect: { total: 0, runs: 0 },
+    },
+    reference: { runs: 2, followed: 1 },
+  });
+  assert.equal(narrow!.friction.runs, 1);
+  assert.equal(narrow!.friction.withoutFriction, 0);
+  assert.deepEqual(narrow!.friction.counts.noEffect, { total: 3, runs: 1 });
+  assert.equal(narrow!.friction.reference, null);
+  // Descriptive only: the exit code and pass counts are unchanged.
+  assert.equal(desktop!.passed, 3);
+  assert.equal(exitCode(results.slice(0, 3)), 0);
 });
