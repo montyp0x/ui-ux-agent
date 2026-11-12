@@ -536,9 +536,15 @@ export function findingInstances(result: Result): FindingInstance[] {
   // environment is another finding. Without environments the ids are as
   // before (the cell is the viewport name).
   const environment = result.environment?.name;
-  const cell = environment
-    ? `${result.viewport}@${environment}`
-    : result.viewport;
+  // And per browser engine: the same environment renders differently on
+  // another engine. Chromium, the default, keeps the ids results had before
+  // engines were selectable (comparisons across engines are incompatible
+  // anyway; this keeps ids used outside a comparison, such as benchmark
+  // labels, apart).
+  const engine = result.identity?.environment.browser?.name;
+  const cell =
+    (environment ? `${result.viewport}@${environment}` : result.viewport) +
+    (engine && engine !== 'chromium' ? `#${engine}` : '');
   const where = environment ? { environment } : {};
   const norm = (text: string): string =>
     marker ? text.replaceAll(marker, '{{marker}}') : text;

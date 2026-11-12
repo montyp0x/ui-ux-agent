@@ -26,7 +26,8 @@ import {
   MAX_RUN_COMBINATIONS,
   pseudoLocalizationScript,
 } from '../src/environments.js';
-import { compatibility } from '../src/compare.js';
+import { compatibility, findingInstances } from '../src/compare.js';
+import { environmentId } from '../src/audits/visual.js';
 import { suiteSchema, type Action, type Choice } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import type { Result } from '../src/results.js';
@@ -718,6 +719,68 @@ test('runs on different engines are never compared as compatible', async (t) => 
   assert.ok(fields.includes('environment.browser.name'), fields.join(', '));
   // The browser is part of the suite configuration too.
   assert.ok(fields.includes('suite.hash'), fields.join(', '));
+});
+
+test('finding ids and visual baselines of one environment are kept apart per engine; Chromium ids are unchanged', () => {
+  const result = (engine: Engine | null, environment?: string): Result =>
+    ({
+      journey: 'continue',
+      viewport: 'desktop',
+      attempt: 1,
+      findings: [
+        {
+          kind: 'observed',
+          category: 'overflow',
+          description: 'x',
+          step: 0,
+          screenshot: '',
+        },
+      ],
+      audits: { findings: [], runs: [], notReached: [] },
+      ...(environment
+        ? { environment: { name: environment, syntheticText: false } }
+        : {}),
+      ...(engine
+        ? {
+            identity: {
+              environment: {
+                browser: {
+                  name: engine,
+                  version: '1',
+                  build: 'bundled',
+                  headless: true,
+                },
+              },
+            },
+          }
+        : {}),
+    }) as unknown as Result;
+  const id = (engine: Engine | null, environment?: string) =>
+    findingInstances(result(engine, environment))[0]!.id;
+  for (const environment of [undefined, 'dark']) {
+    // Chromium, the default engine, keeps the ids results had before engines
+    // were selectable, so stored comparisons and benchmark labels still match.
+    assert.equal(id('chromium', environment), id(null, environment));
+    assert.notEqual(id('webkit', environment), id('chromium', environment));
+    assert.notEqual(id('firefox', environment), id('webkit', environment));
+  }
+  // The same environment on two engines never shares a visual baseline:
+  // the baseline file is keyed by the rendering environment, engine included.
+  const rendering = (name: Engine) => ({
+    viewport: { width: 1280, height: 800 },
+    browser: { name, version: '1', build: 'bundled', headless: true },
+    os: { platform: 'darwin', arch: 'arm64', release: '27' },
+    deviceScaleFactor: 1,
+    locale: 'en-US',
+    timezone: 'UTC',
+    colorScheme: 'dark' as const,
+    reducedMotion: 'no-preference' as const,
+    capture: { fullPage: false, masks: [], protected: true },
+  });
+  assert.notEqual(
+    environmentId(rendering('webkit')),
+    environmentId(rendering('chromium')),
+  );
 });
 
 test('kept defaults: Firefox suites are allowed with the engine.firefox gap, keyboard journeys stay refused on WebKit only, the environment cap is 24', () => {
