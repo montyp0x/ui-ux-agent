@@ -163,7 +163,11 @@ export function computeFriction(
   // The observed state of each step (the latest observation of that step).
   const observed = new Map<number, Observed>();
   for (const entry of events)
-    if (entry.event === 'observation' || entry.event === 'content_observation')
+    if (
+      entry.event === 'observation' ||
+      entry.event === 'content_observation' ||
+      entry.event === 'state_observation'
+    )
       observed.set(entry.data.step, entry.data);
   const shot = (step: number) => observed.get(step)?.screenshot ?? null;
   const link = (line: number, step: number) => ({
@@ -193,7 +197,8 @@ export function computeFriction(
   for (const entry of events) {
     switch (entry.event) {
       case 'observation':
-      case 'content_observation': {
+      case 'content_observation':
+      case 'state_observation': {
         const page = pageOf(entry.data.url);
         if (!seen.has(page)) seen.set(page, entry.data.step);
         moments.push({

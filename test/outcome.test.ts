@@ -16,6 +16,7 @@ import { evaluateQuality } from '../src/quality.js';
 import { reportHTML } from '../src/report.js';
 import { parseResults, type OutcomeCode, type Result } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
+import { computeFriction, eventLogRuns } from '../src/friction/index.js';
 
 type Scenario = {
   platform?: 'web' | 'macos';
@@ -112,7 +113,7 @@ function fakeDriver(scenario: Scenario): UIDriver {
   };
 }
 
-async function run(scenario: Scenario) {
+async function run(scenario: Scenario, driver?: UIDriver) {
   const directory = join(
     await mkdtemp(join(tmpdir(), 'ui-ux-outcome-')),
     'run',
@@ -179,7 +180,7 @@ async function run(scenario: Scenario) {
   });
   const [result] = await runSuite(suite, models, {
     directory,
-    driver: fakeDriver(scenario),
+    driver: driver ?? fakeDriver(scenario),
   });
   // results.json is parsed through the published contract, so every scenario
   // also proves that its status and outcome code agree.
@@ -483,4 +484,128 @@ test('the report names the outcome code and links the deciding screenshot', asyn
   assert.match(report, /Outcome <code>repeated_action<\/code>/);
   assert.match(report, /deciding screenshot/);
   assert.equal(reportHTML('x', [], '/tmp').includes('0/0 runs'), true);
+});
+
+test('a declared state that appears between the observation and the success checks is still recorded', async () => {
+  // The items render the moment the success check looks (no timing: the
+  // check itself flips the page), after the observation's state checks have
+  // already seen the loading page. The state must not go unrecorded.
+  let loaded = false;
+  const base = fakeDriver({ successAfter: 0 });
+  const observed: number[] = [];
+  const driver: UIDriver = {
+    ...base,
+    async openSession(options) {
+      const session = await base.openSession(options);
+      return {
+        ...session,
+        async observe(step, screenshot) {
+          observed.push(step);
+          return session.observe(step, screenshot);
+        },
+        async check(condition) {
+          // The success check: the items have appeared.
+          if (condition.kind === 'path') {
+            loaded = true;
+            return true;
+          }
+          if (condition.kind === 'visible' && condition.target.by === 'testId')
+            return loaded;
+          return session.check(condition);
+        },
+      };
+    },
+  };
+  const items = { kind: 'visible', target: { by: 'testId', value: 'items' } };
+  const suite = suiteSchema.parse({
+    name: 'Late state',
+    baseURL: 'https://app.example',
+    viewports: [{ name: 'desktop', width: 800, height: 600 }],
+    audits: { checks: [{ id: 'journey.state-checks' }] },
+    journeys: [
+      {
+        id: 'late',
+        goal: 'See the items',
+        persona: 'Visitor',
+        startPath: '/',
+        allowedPaths: ['/', '/done'],
+        ready: {
+          kind: 'visible',
+          target: { by: 'role', role: 'heading', name: 'Start' },
+        },
+        success: [{ kind: 'path', pattern: '^/done$' }],
+        states: [{ name: 'loaded', when: items, expect: [items] }],
+        maxSteps: 5,
+        maxDurationMs: 1000,
+      },
+    ],
+  });
+  const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-late-')), 'run');
+  const [result] = await runSuite(
+    suite,
+    {
+      async plan() {
+        return { objective: 'Wait', concerns: [] };
+      },
+      async choose(_j, _o, _p, actions) {
+        return {
+          type: 'choice',
+          choice: actions[0]!.id,
+          confidence: 1,
+          probabilities: { [actions[0]!.id]: 1 },
+        };
+      },
+    },
+    { directory, driver },
+  );
+  assert.equal(result!.status, 'passed', result!.reason);
+  assert.deepEqual(result!.audits.notReached, []);
+  const states = result!.audits.runs.filter(
+    (entry) => entry.auditId === 'journey.state-checks',
+  );
+  assert.deepEqual(
+    states.map((entry) => [entry.checkpoint.name, entry.status]),
+    [['loaded', 'clean']],
+  );
+  // One fresh observation of the same step, taken for the pending state.
+  assert.deepEqual(observed, [0, 0]);
+  const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line).event as string);
+  assert.equal(
+    events.filter((event) => event === 'state_observation').length,
+    1,
+  );
+  // Friction still reconciles with the event log, and the extra observation
+  // of the same page is no friction.
+  const [logged] = eventLogRuns(
+    await readFile(join(directory, 'events.jsonl'), 'utf8'),
+  );
+  assert.deepEqual(
+    computeFriction(logged!, suite.journeys[0]!),
+    result!.friction,
+  );
+  assert.ok(Object.values(result!.friction!.counts).every((count) => !count));
+});
+
+test('no extra observation is taken when no declared state is pending', async () => {
+  const observed: number[] = [];
+  const base = fakeDriver({ successAfter: 0 });
+  const driver: UIDriver = {
+    ...base,
+    async openSession(options) {
+      const session = await base.openSession(options);
+      return {
+        ...session,
+        async observe(step, screenshot) {
+          observed.push(step);
+          return session.observe(step, screenshot);
+        },
+      };
+    },
+  };
+  const { result } = await run({ successAfter: 0 }, driver);
+  assert.equal(result.status, 'passed', result.reason);
+  assert.deepEqual(observed, [0]);
 });
