@@ -71,7 +71,7 @@ Before a real run, copy `examples/benchmark.json`, replace the reviewer, point `
 - `targets` (1–10): each names a suite file (relative to the config), optionally one journey and/or viewport, an optional `sha256` pin of the suite file (a mismatch is refused), an optional dedicated `profile` or approved `storageState` for suites that require auth, and who reviewed it (`reviewed`, required). Target ids name the run directories.
 - `model`: the pinned configuration. These values override any `PLANNER_*`/`SELECTOR_*` endpoint, model, protocol and rate-limit variables in the environment (the report lists the variables it overrode); keys and headers still come from the environment, as in [Credentials](../README.md#credentials). An unpinned rate limit uses the engine default, not the environment's.
 - `repeat` (2–50): runs per journey/viewport. One run is not a pass rate.
-- `ceilings`: all four are required; a config without any of them is refused before anything starts.
+- `ceilings`: all four are required, `unknownUsage` included (it has no default); a config without any of them is refused before anything starts.
 
 ## What the ceilings bound
 

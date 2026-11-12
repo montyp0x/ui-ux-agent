@@ -631,6 +631,19 @@ test('incompatible runs are not compared, and the comparison says why', async ()
     ).incompatibilities.map((entry) => entry.field),
     ['identity'],
   );
+  // Another engine version blocks the comparison (not a warning): a newer
+  // engine can measure the same UI differently.
+  const newer = await run({});
+  await edit(newer.directory, (results) => {
+    results[0]!.identity!.engine.version = '9.9.9';
+  });
+  const engine = await compare(before.directory, newer.directory);
+  assert.equal(engine.compatible, false);
+  assert.deepEqual(
+    engine.incompatibilities.map((entry) => entry.field),
+    ['engine.version'],
+  );
+  assert.equal(engine.gate, null);
   const old = await run({});
   const file = join(old.directory, 'results.json');
   const raw = JSON.parse(await readFile(file, 'utf8'));
