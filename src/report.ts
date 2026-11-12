@@ -60,13 +60,18 @@ const VERDICT_LABEL: Record<Quality['verdict'], string> = {
   not_evaluated: 'QUALITY NOT EVALUATED',
 };
 
+// `href` maps a recorded evidence path to a link relative to the run
+// directory; the runner passes evidenceLinks (src/evidence/links.ts), which
+// also resolves paths the run's redaction rewrote. Without it, links are the
+// recorded paths relative to `directory`.
 export function reportHTML(
   name: string,
   results: Result[],
   directory: string,
+  href: (file: string) => string = (file) =>
+    relative(directory, file).split(sep).join('/'),
 ): string {
-  const link = (file: string) =>
-    escapeHTML(relative(directory, file).split(sep).join('/'));
+  const link = (file: string) => escapeHTML(href(file));
   const verdicts = { pass: 0, fail: 0, not_evaluated: 0 };
   for (const result of results) verdicts[result.quality.verdict]++;
   const outcome = (result: Result) => {

@@ -15,6 +15,7 @@ import type {
 } from './contracts.js';
 import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
+import { UNRESOLVED_LINK, evidenceLinks } from './evidence/links.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
 import { baselineDirectoryForRun } from './baselines.js';
@@ -1155,6 +1156,27 @@ export async function runSuite(
           options.profile,
         ));
   const results: Result[] = [];
+  // The report links every file it shows; paths the redaction rewrote in the
+  // results are resolved to the files they name (src/evidence/links.ts).
+  const report = async (name: string, shown: Result[]) => {
+    const files = new Set<string>();
+    reportHTML(name, shown, options.directory, (file) => {
+      files.add(file);
+      return '';
+    });
+    const links = await evidenceLinks(
+      options.directory,
+      redactor,
+      files,
+      baselines ? [baselines] : [],
+    );
+    return reportHTML(
+      name,
+      shown,
+      options.directory,
+      (file) => links.get(file) ?? UNRESOLVED_LINK,
+    );
+  };
   const lifecycle = suite.dataLifecycle
     ? new DataLifecycleHooks(suite.dataLifecycle, log)
     : null;
@@ -1252,7 +1274,7 @@ export async function runSuite(
           );
           await writeFile(
             join(options.directory, 'report.html'),
-            reportHTML(redactor.text(suite.name), results, options.directory),
+            await report(redactor.text(suite.name), results),
             { mode: 0o600 },
           );
         }
