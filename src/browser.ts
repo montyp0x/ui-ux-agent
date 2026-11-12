@@ -16,6 +16,7 @@ import type {
   Suite,
   Target,
 } from './contracts.js';
+import { fillValue } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
 import type { EventLogger } from './drivers/types.js';
@@ -985,7 +986,7 @@ export async function execute(
       throw new Error('Selected link changed or left the journey scope');
     await guard.element.click();
   } else if (action.kind === 'click') await guard.element.click();
-  else if (action.kind === 'fill') await guard.element.fill(action.value);
+  else if (action.kind === 'fill') await guard.element.fill(fillValue(action));
   else if (action.kind === 'select')
     await guard.element.selectOption(action.value);
   else if (action.kind === 'check')

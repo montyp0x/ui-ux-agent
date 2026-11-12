@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { allowedURL } from './browser.js';
 import { playwrightDriver } from './drivers/playwright.js';
 import type { EventLogger, UIDriver, UISession } from './drivers/types.js';
+import { missingFillEnv } from './contracts.js';
 import type {
   Action,
   Journey,
@@ -1040,6 +1041,12 @@ export async function runSuite(
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,
   );
+  // Fail before any run, naming every unset variable a fill reads.
+  const unset = missingFillEnv({ journeys });
+  if (unset.length)
+    throw new Error(
+      `Set the environment variable${unset.length > 1 ? 's' : ''} ${unset.join(', ')} read by fill valueEnv`,
+    );
   const viewports = suite.viewports.filter(
     (viewport) => !options.viewport || viewport.name === options.viewport,
   );

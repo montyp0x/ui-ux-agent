@@ -16,6 +16,7 @@ import {
 import type { AuditOutput } from '../audits/contract.js';
 import {
   KEYBOARD_KEYS,
+  fillValue,
   type Action,
   type Journey,
   type Observation,
@@ -500,7 +501,8 @@ export async function keyboardExecute(
     key = 'type';
     await page.keyboard.press('ControlOrMeta+A');
     await page.keyboard.press('Backspace');
-    if (action.value) await page.keyboard.type(action.value);
+    const value = fillValue(action);
+    if (value) await page.keyboard.type(value);
   } else throw new Error(`Unexpected keyboard action ${action.kind}`);
   await page.waitForTimeout(SETTLE_MS);
   const url = page.url();

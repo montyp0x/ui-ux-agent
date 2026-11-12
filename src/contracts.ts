@@ -45,6 +45,37 @@ export const checkSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 export type Check = z.infer<typeof checkSchema>;
+
+// The text a fill types: its value, or its valueEnv variable from the
+// environment. Throws, naming the variable, when it is not set.
+export function fillValue(
+  fill: { description: string; value?: string; valueEnv?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (fill.valueEnv === undefined) return fill.value ?? '';
+  const value = env[fill.valueEnv];
+  if (value === undefined)
+    throw new Error(
+      `The fill "${fill.description}" reads its value from the environment variable ${fill.valueEnv}, which is not set`,
+    );
+  return value;
+}
+
+// Environment variables the suite's fill interactions read that are unset.
+export function missingFillEnv(
+  suite: { journeys: Journey[] },
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const names = suite.journeys.flatMap((journey) =>
+    [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+      (interaction) =>
+        interaction.kind === 'fill' && interaction.valueEnv
+          ? [interaction.valueEnv]
+          : [],
+    ),
+  );
+  return [...new Set(names)].filter((name) => env[name] === undefined);
+}
 // Keys a keyboard-only journey (input: keyboard) is offered at every state,
 // pressed on whatever has focus with the browser's own keyboard.
 export const KEYBOARD_KEYS = [
@@ -87,14 +118,29 @@ const interactionSchema = z.discriminatedUnion('kind', [
       description: z.string().min(1),
     })
     .strict(),
+  // A fill types `value`, or the value of the environment variable
+  // `valueEnv` (for secrets such as a test password, so they never sit in a
+  // suite file). valueEnv is read when the field is filled, never stored in
+  // actions, results or logs.
   z
     .object({
       kind: z.literal('fill'),
       target: targetSchema,
       description: z.string().min(1),
-      value: z.string(),
+      value: z.string().optional(),
+      valueEnv: z
+        .string()
+        .regex(
+          /^[A-Za-z_][A-Za-z0-9_]{0,127}$/,
+          'valueEnv must be an environment variable name',
+        )
+        .optional(),
     })
-    .strict(),
+    .strict()
+    .refine(
+      (fill) => (fill.value === undefined) !== (fill.valueEnv === undefined),
+      'A fill interaction needs exactly one of value or valueEnv',
+    ),
   z
     .object({
       kind: z.literal('press'),
