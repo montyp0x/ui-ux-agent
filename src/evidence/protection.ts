@@ -34,11 +34,14 @@ export type EvidenceProtection = {
   // Its patterns are read at every capture, so values a run learns
   // (beginRun) are masked in screenshots of sessions opened before.
   screenshots: ScreenshotProtection;
-  formats: FormatStatus[];
-  // The suite declared content it wants protected.
-  sensitive: boolean;
+  // The current run's formats: read when a session opens, after beginRun.
+  readonly formats: FormatStatus[];
+  // The suite declared content it wants protected, or a run's setup
+  // returned a secret value (beginRun).
+  readonly sensitive: boolean;
   // Starts a run (runs are sequential): its dataLifecycle setup values,
-  // except the keys in publicValues, become secrets of the suite from now on.
+  // except the keys in publicValues, become secrets of the suite from now on,
+  // and make it sensitive whether or not a journey references them.
   beginRun(data: Record<string, string>, publicValues: readonly string[]): void;
   report(sanitizedFiles: number): EvidenceReport;
   // Warnings for the suite as loaded (declared secrets too short to redact),
@@ -56,7 +59,12 @@ export function evidenceProtection(
     envNames: policy.redactEnv,
     env,
   });
-  const formats = evidenceFormats(policy, context);
+  // Secret setup value keys every run so far returned. Like the redactor's
+  // secrets they stay for the rest of the suite: a later run's page can still
+  // show a value an earlier run created.
+  const learned = new Set<string>();
+  let current: RunEvidencePolicy = policy;
+  let formats = evidenceFormats(current, context);
   // Declared secrets too short to redact apply to every run.
   const suiteLimitations = redactor.tooShort.map(shortSecretLimitation);
   // The current run's redacted setup value keys, and those too short.
@@ -71,20 +79,31 @@ export function evidenceProtection(
       },
       maskColor: MASK_COLOR,
     },
-    formats,
-    sensitive: sensitive(policy),
+    get formats() {
+      return formats;
+    },
+    get sensitive() {
+      return sensitive(current);
+    },
     warnings: suiteLimitations,
     beginRun(data, publicValues) {
       redactedData = [];
       runLimitations = [];
       for (const [key, value] of Object.entries(data)) {
         if (publicValues.includes(key) || !value) continue;
+        // Secret even when too short to redact: it makes the run sensitive.
+        learned.add(key);
         if (redactor.addSecret(`data:${key}`, value)) redactedData.push(key);
         else
           runLimitations.push(
             shortSecretLimitation(`dataLifecycle setup value data.${key}`),
           );
       }
+      const secretData = [
+        ...new Set([...(policy.secretData ?? []), ...learned]),
+      ].sort();
+      current = secretData.length ? { ...policy, secretData } : policy;
+      formats = evidenceFormats(current, context);
     },
     report: (sanitizedFiles) => ({
       declaredPatterns: redactor.declared.length,

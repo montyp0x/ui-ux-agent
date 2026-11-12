@@ -16,7 +16,11 @@ import {
 } from '../src/contracts.js';
 import { protectedScreenshot } from '../src/drivers/playwright-evidence.js';
 import type { UIDriver } from '../src/drivers/types.js';
-import { evidenceFormats, sensitive } from '../src/evidence/policy.js';
+import {
+  evidenceFormats,
+  formatEnabled,
+  sensitive,
+} from '../src/evidence/policy.js';
 import { evidenceProtection } from '../src/evidence/protection.js';
 import { parseResults } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
@@ -290,6 +294,104 @@ test('a select whose value reads a secret setup value is masked in screenshots, 
     assert.equal(listed.red, 0, 'the list box is masked');
   } finally {
     await browser.close();
+  }
+});
+
+test('a non-public setup value the journeys never reference still makes the run sensitive', async () => {
+  const url = 'http://127.0.0.1:4174';
+  // The journey reads no {{data.*}} value.
+  const unreferenced = {
+    startPath: '/notes',
+    ready: { kind: 'visible', target: { by: 'label', value: 'Note' } },
+  };
+  const context = {
+    platform: 'web' as const,
+    authenticated: false,
+    videoRequested: true,
+  };
+  const formatsOf = (protection: ReturnType<typeof evidenceProtection>) =>
+    Object.fromEntries(
+      protection.report(0).formats.map((entry) => [entry.format, entry]),
+    );
+  const policy = suiteEvidencePolicy(
+    await notesSuite(url, { journey: unreferenced }),
+  );
+  assert.equal(sensitive(policy), false, 'nothing is known at load');
+  const protection = evidenceProtection(policy, {}, context);
+  assert.equal(formatsOf(protection).trace!.enabled, true);
+  // Setup answers a value no journey uses: it is redacted like any other,
+  // so the run is sensitive and traces and video are off.
+  protection.beginRun({ owner: 'owner-fixture-7310' }, []);
+  assert.equal(protection.sensitive, true);
+  assert.equal(formatsOf(protection).trace!.enabled, false);
+  assert.match(formatsOf(protection).trace!.reason, /sensitive/);
+  assert.equal(formatsOf(protection).video!.enabled, false);
+  assert.equal(
+    formatEnabled(protection.formats, 'trace'),
+    false,
+    'drivers read the run formats',
+  );
+
+  // A public value does not.
+  const open = evidenceProtection(policy, {}, context);
+  open.beginRun({ owner: 'owner-fixture-7310' }, ['owner']);
+  assert.equal(open.sensitive, false);
+  assert.equal(formatsOf(open).trace!.enabled, true);
+  // Nor does an empty one (nothing to redact).
+  const empty = evidenceProtection(policy, {}, context);
+  empty.beginRun({ owner: '' }, []);
+  assert.equal(formatsOf(empty).trace!.enabled, true);
+
+  // trace: 'local' is only refused at load for values the journeys use; a
+  // run that learns a secret it cannot sanitize turns the trace off.
+  const local = evidenceProtection(
+    suiteEvidencePolicy(
+      await notesSuite(url, {
+        journey: unreferenced,
+        evidence: { trace: 'local', video: 'local' },
+      }),
+    ),
+    {},
+    context,
+  );
+  assert.equal(formatsOf(local).trace!.enabled, true);
+  local.beginRun({ owner: 'owner-fixture-7310' }, []);
+  assert.equal(formatsOf(local).trace!.enabled, false);
+  assert.match(formatsOf(local).trace!.reason, /setup/);
+  assert.equal(formatsOf(local).video!.enabled, false);
+  // Secrets stay secrets for the rest of the suite (the redactor keeps
+  // them), so a later run without setup values is still sensitive.
+  local.beginRun({}, []);
+  assert.equal(formatsOf(local).trace!.enabled, false);
+});
+
+test('a run whose setup returns an unreferenced secret keeps its trace and video off', async () => {
+  const app = await notesFixture();
+  try {
+    const directory = await runDirectory();
+    const [result] = await runSuite(
+      await notesSuite(app.url, {
+        journey: {
+          startPath: '/notes',
+          ready: { kind: 'visible', target: { by: 'label', value: 'Note' } },
+        },
+      }),
+      scriptedDecisions(STATE_SCRIPTS),
+      { directory, video: true },
+    );
+    assert.deepEqual(result!.dataLifecycle!.values, ['owner']);
+    assert.deepEqual(result!.evidence.redactedData, ['owner']);
+    assert.equal(result!.trace, null);
+    const formats = Object.fromEntries(
+      result!.evidence.formats.map((entry) => [entry.format, entry]),
+    );
+    assert.equal(formats.trace!.enabled, false);
+    assert.equal(formats.video!.enabled, false);
+    assert.ok(
+      !(await files(directory)).some((path) => /\.(zip|webm)$/.test(path)),
+    );
+  } finally {
+    await app.close();
   }
 });
 
