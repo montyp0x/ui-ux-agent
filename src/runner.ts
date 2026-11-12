@@ -1101,9 +1101,11 @@ export async function runSuite(
       // Fills read process.env (fillValue): their values are redacted from
       // the same source, whatever environment the caller passed.
       ...Object.fromEntries(
-        policy.redactEnv.flatMap((name) =>
-          process.env[name] === undefined ? [] : [[name, process.env[name]]],
-        ),
+        policy.redactEnv
+          .filter((name) => !suite.evidence.redactEnv.includes(name))
+          .flatMap((name) =>
+            process.env[name] === undefined ? [] : [[name, process.env[name]]],
+          ),
       ),
     },
     {
