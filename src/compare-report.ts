@@ -4,6 +4,7 @@
 import { relative, sep } from 'node:path';
 import type { Comparison, FindingInstance } from './compare.js';
 import { escapeHTML } from './report.js';
+import { performanceComparisonHTML } from './performance-report.js';
 
 export function comparisonHTML(
   comparison: Comparison,
@@ -88,6 +89,7 @@ ${table(
   'Reported by the base; the candidate assessed the same check, page and elements and did not report it.',
   findings.resolved.map((entry) => row(entry.base, '', false)),
 )}
+${performanceComparisonHTML(comparison.performance, escapeHTML)}
 <h2>Checks not assessed by the candidate (${lost.length})</h2>${lost.length ? `<table><thead><tr><th>Journey/viewport</th><th>Audit</th><th>Checkpoint</th><th>Base</th><th>Candidate</th></tr></thead><tbody>${lost.map((check) => `<tr${check.coverageLost ? ' class="gating"' : ''}><td>${escapeHTML(check.environment ? `${check.journey}/${check.environment}/${check.viewport}` : `${check.journey}/${check.viewport}`)}</td><td><code>${escapeHTML(check.auditId)}</code></td><td>${escapeHTML(check.checkpoint)}</td><td>${check.base}</td><td>${check.candidate}${check.coverageLost ? ' · <strong>coverage lost</strong>' : ''}</td></tr>`).join('')}</tbody></table>` : '<p>None.</p>'}`
     : ''
 }

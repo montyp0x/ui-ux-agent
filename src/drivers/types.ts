@@ -52,6 +52,15 @@ export type DriverAuditRequest = {
   baselines: string | null;
   // The audit must finish within this; the runner also enforces it.
   timeoutMs: number;
+  // Harness time spent so far in the journey: wall clock since it started,
+  // model calls and earlier audit runs. Null or omitted when the runner does
+  // not track it.
+  harness?: {
+    elapsedMs: number;
+    modelCalls: number;
+    modelMs: number;
+    auditMs: number;
+  } | null;
 };
 
 export interface UISession {

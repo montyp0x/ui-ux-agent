@@ -6,6 +6,7 @@ import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
 import { visualAuditConfigShape } from './visual.js';
 import { designTokensConfigShape } from './design-tokens.js';
+import { performanceAuditConfigShape } from './performance-contract.js';
 
 // Where an audit runs: ready (first state after ready and setup), states
 // (each of the journey's declared `states`, once, when it first holds) and
@@ -139,6 +140,18 @@ const designTokensConfig = z
   })
   .strict();
 
+// Navigation timing and Web Vitals of the page under test, with optional
+// network/CPU conditions and suite-owned budgets (src/audits/performance.ts).
+// Opt-in; without budgets it measures and never gates.
+const performanceWebConfig = z
+  .object({
+    ...auditCheckFields,
+    id: z.literal('performance.web'),
+    at: auditAtSchema.default(['ready', 'completion']),
+    ...performanceAuditConfigShape,
+  })
+  .strict();
+
 export const auditConfigSchema = z.discriminatedUnion('id', [
   horizontalOverflowConfig,
   axeConfig,
@@ -147,6 +160,7 @@ export const auditConfigSchema = z.discriminatedUnion('id', [
   stateChecksConfig,
   keyboardFocusConfig,
   designTokensConfig,
+  performanceWebConfig,
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];

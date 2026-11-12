@@ -300,6 +300,11 @@ async function runJourney(
     baselines,
     session,
     log,
+    harness: () => ({
+      elapsedMs: Date.now() - started,
+      modelCalls: usage.planner.calls + usage.selector.calls,
+      modelMs: usage.planner.durationMs + usage.selector.durationMs,
+    }),
   });
   const deadlineTimer = setTimeout(
     () =>

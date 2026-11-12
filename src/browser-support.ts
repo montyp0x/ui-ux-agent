@@ -33,6 +33,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'journey.state-checks': null,
     'keyboard.focus': null,
     'design.tokens': null,
+    'performance.web': null,
   },
   webkit: {
     'layout.horizontal-overflow': null,
@@ -42,6 +43,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'journey.state-checks': null,
     'keyboard.focus': WEBKIT_TAB,
     'design.tokens': null,
+    'performance.web': null,
   },
   firefox: {
     'layout.horizontal-overflow': FIREFOX_UNVERIFIED,
@@ -51,6 +53,7 @@ export const ENGINE_AUDIT_SUPPORT: Record<
     'journey.state-checks': FIREFOX_UNVERIFIED,
     'keyboard.focus': FIREFOX_UNVERIFIED,
     'design.tokens': FIREFOX_UNVERIFIED,
+    'performance.web': FIREFOX_UNVERIFIED,
   },
 };
 

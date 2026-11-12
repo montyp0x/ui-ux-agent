@@ -1833,6 +1833,139 @@
         "additionalProperties": false
       }
     },
+    "performance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "journey": {
+            "type": "string"
+          },
+          "viewport": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string",
+            "enum": [
+              "ttfbMs",
+              "fcpMs",
+              "lcpMs",
+              "cls",
+              "inpMs",
+              "domContentLoadedMs",
+              "loadMs",
+              "blockingTimeMs"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "compared",
+              "incompatible",
+              "not_measured"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "median": {
+                    "type": "number"
+                  },
+                  "min": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "samples",
+                  "median",
+                  "min",
+                  "max"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "median": {
+                    "type": "number"
+                  },
+                  "min": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "samples",
+                  "median",
+                  "min",
+                  "max"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delta": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "journey",
+          "viewport",
+          "checkpoint",
+          "path",
+          "metric",
+          "status",
+          "reason",
+          "base",
+          "candidate",
+          "delta"
+        ],
+        "additionalProperties": false
+      }
+    },
     "counts": {
       "type": "object",
       "properties": {
@@ -2040,6 +2173,7 @@
     "outcomes",
     "findings",
     "checks",
+    "performance",
     "counts",
     "gate"
   ],

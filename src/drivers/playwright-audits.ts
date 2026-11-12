@@ -19,6 +19,10 @@ import type { DriverAuditRequest } from './types.js';
 import type { Journey } from '../contracts.js';
 import { keyboardFocusPlaywrightAudit } from './playwright-keyboard.js';
 import { designTokensPlaywrightAudit } from './playwright-design.js';
+import {
+  performanceWebPlaywrightAudit,
+  type PerformanceRecorder,
+} from './playwright-performance.js';
 
 // What the session knows beyond the page, for audits that read it.
 export type PlaywrightAuditContext = {
@@ -30,6 +34,8 @@ export type PlaywrightAuditContext = {
   // The run's screenshot protection, for audits that capture images;
   // undefined only for sessions opened without an evidence policy.
   protection: ScreenshotProtection | undefined;
+  // The session's performance.web collector; null when not configured.
+  performance?: PerformanceRecorder | null;
 };
 
 export type PlaywrightAudit = (
@@ -79,6 +85,13 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
     );
   },
   'design.tokens': designTokensPlaywrightAudit,
+  async 'performance.web'(page, request, context) {
+    return performanceWebPlaywrightAudit(
+      page,
+      request,
+      context?.performance ?? null,
+    );
+  },
 };
 
 export async function runPlaywrightAudit(
