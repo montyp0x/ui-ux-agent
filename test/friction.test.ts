@@ -539,11 +539,21 @@ const SCRIPTS: Record<string, string[]> = {
   ],
 };
 
-function scripted(): Models & { calls: Record<string, number> } {
+function scripted(): Models & {
+  calls: Record<string, number>;
+  // Journeys the adapter received that carried reference paths.
+  sawReferencePaths: string[];
+} {
   const calls: Record<string, number> = {};
+  const sawReferencePaths: string[] = [];
+  const seen = (journey: { id: string; referencePaths?: unknown }) => {
+    if ('referencePaths' in journey) sawReferencePaths.push(journey.id);
+  };
   return {
     calls,
+    sawReferencePaths,
     async plan(journey, _observation, _history, _budget, _actions, context) {
+      seen(journey);
       // One model concern on the first plan of the wandering journey.
       return {
         objective: 'Find the installation guide',
@@ -559,6 +569,7 @@ function scripted(): Models & { calls: Record<string, number> } {
       };
     },
     async choose(journey, _observation, _plan, actions) {
+      seen(journey);
       const index = calls[journey.id] ?? 0;
       calls[journey.id] = index + 1;
       const intent = SCRIPTS[journey.id]![index];
@@ -625,6 +636,9 @@ test('real runs: friction reconciles exactly with events.jsonl, covers alternate
       'via-search': 2,
       wander: 10,
     });
+    // Reference paths are reviewed answers: no model adapter, built-in or
+    // custom, receives them.
+    assert.deepEqual(models.sawReferencePaths, []);
     const results = parseResults(
       await readFile(join(directory, 'results.json'), 'utf8'),
     );
