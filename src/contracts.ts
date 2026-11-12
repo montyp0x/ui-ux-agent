@@ -6,6 +6,7 @@ import {
 } from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
 import { dataLifecycleSchema } from './lifecycle.js';
+import { referencePathsSchema } from './friction/contract.js';
 
 export { targetSchema, type Target };
 
@@ -184,6 +185,10 @@ export const journeySchema = z
       )
       .max(10)
       .optional(),
+    // Optional reviewed routes to the goal (alternate valid paths allowed),
+    // compared with each run's task-friction summary. Never sent to the HTTP
+    // model adapters, and never part of an outcome or quality verdict.
+    referencePaths: referencePathsSchema.optional(),
     interactions: z.array(interactionSchema).default([]),
     // Steps run once after ready and before the first observation, to reach a
     // known starting state (e.g. clear a calculator). Each must match the

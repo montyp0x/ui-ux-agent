@@ -34,6 +34,7 @@ import {
 import { providerModels } from './evidence/provider.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
+import { FrictionRecorder, computeFriction } from './friction/index.js';
 import {
   DataLifecycleHooks,
   withData,
@@ -232,6 +233,8 @@ async function runJourney(
   baselines: string | null,
   lifecycle: LifecycleRun | null = null,
   cancel?: AbortSignal,
+  // This run's friction-relevant events as written to events.jsonl.
+  friction: FrictionRecorder | null = null,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -1015,6 +1018,10 @@ async function runJourney(
           screenshot: finalScreenshot ?? join(directory, 'final.png'),
         });
     }
+    // Task friction from the events this run wrote (already redacted), so it
+    // reconciles exactly with events.jsonl. Descriptive only: computed after
+    // the outcome and never read by the quality verdict.
+    if (friction) result.friction = computeFriction(friction, journey);
     const policyBlocks = new Set(session.policyBlocks ?? []).size;
     result.outcome.signals = {
       staleActions,
@@ -1115,22 +1122,32 @@ export async function runSuite(
     },
   );
   const { redactor } = protection;
-  // Journeys run one at a time, so model calls belong to the current run.
+  // Journeys run one at a time, so model calls and friction events belong
+  // to the current run.
   let currentUsage: Usage | null = null;
+  let currentFriction: FrictionRecorder | null = null;
+  // Writes are serialized, so each event lands on the line it was numbered
+  // with, even when a driver logs without awaiting.
+  let lines = 0;
+  let written: Promise<void> = Promise.resolve();
   const log: Logger = async (event, data) => {
     if (event === 'model_call' && currentUsage)
       addModelCall(currentUsage, data);
     // Every event is redacted before it is written: page text, errors,
     // model responses and audit output alike.
-    await appendFile(
-      join(options.directory, 'events.jsonl'),
-      JSON.stringify({
-        time: new Date().toISOString(),
-        event,
-        data: redactor.deep(data),
-      }) + '\n',
-      { mode: 0o600 },
+    const redacted = redactor.deep(data);
+    const line = ++lines;
+    currentFriction?.record(line, event, redacted);
+    const text =
+      JSON.stringify({ time: new Date().toISOString(), event, data: redacted }) +
+      '\n';
+    const write = written.then(() =>
+      appendFile(join(options.directory, 'events.jsonl'), text, {
+        mode: 0o600,
+      }),
     );
+    written = write.catch(() => undefined);
+    await write;
   };
   // Model adapters receive only the redacted, provider-visible view.
   const engine = providerModels(
@@ -1188,6 +1205,8 @@ export async function runSuite(
               data.missingValue(filled.missing);
             runJourneyConfig = filled.journey;
           }
+          const friction = new FrictionRecorder();
+          currentFriction = friction;
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,
@@ -1222,11 +1241,13 @@ export async function runSuite(
                 baselines,
                 data,
                 options.signal,
+                friction,
               );
               if (runJourneyConfig !== journey || data) result.marker = marker;
               results.push(result);
             } finally {
               currentUsage = null;
+              currentFriction = null;
             }
           } finally {
             // A run that never produced a result (the session failed to
