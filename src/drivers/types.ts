@@ -18,8 +18,9 @@ export type SessionOptions = {
   journey: Journey;
   viewport: { width: number; height: number };
   // The suite environment to emulate (src/environments.ts); null or omitted
-  // keeps the browser's defaults. Drivers that cannot apply every setting
-  // must fail the run rather than measure another environment.
+  // keeps the browser's defaults. A setting the driver applies but the page
+  // does not show fails the run; a setting the driver's engine does not
+  // emulate is withheld and reported in UISession.environmentGaps.
   environment?: Environment | null;
   directory: string;
   storageState?: string;
@@ -67,6 +68,11 @@ export interface UISession {
   // and the reason an audit is reported unsupported instead of run (null when
   // the engine runs it). Omitted: no engine-specific gaps.
   readonly engineGaps?: EngineGap[];
+  // Settings of the suite environment the engine does not emulate, withheld
+  // from the session (src/browser-support.ts environmentEmulation): listed
+  // on the result's environment and in quality.unsupported, and the quality
+  // verdict cannot pass. Omitted or empty: the whole environment applied.
+  readonly environmentGaps?: EngineGap[];
   auditUnsupported?(id: AuditId): string | null;
   start(timeoutMs: number): Promise<void>;
   setTimeout(timeoutMs: number): void;

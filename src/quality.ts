@@ -17,6 +17,10 @@ export type QualityInputs = {
   // Run-wide gaps of the session's browser engine (src/browser-support.ts),
   // listed as unsupported; they never change the verdict.
   engineGaps?: QualityGap[];
+  // Settings of the run's suite environment the engine does not emulate
+  // (src/browser-support.ts environmentEmulation): listed as unsupported, and
+  // the verdict cannot pass, since the checks measured another environment.
+  environmentGaps?: QualityGap[];
 };
 
 // Checks this engine version does not perform, listed on every result so a
@@ -165,6 +169,8 @@ export function verdict(
   executed: QualityCheck[],
   // Configured audits that were unsupported or never ran.
   gaps: QualityGap[] = [],
+  // Environment settings the run did not emulate.
+  environmentGaps: QualityGap[] = [],
 ): Pick<Quality, 'verdict' | 'reason'> {
   const failed = executed.filter((check) => check.status === 'failed');
   const unclear = executed.filter(
@@ -180,13 +186,17 @@ export function verdict(
       verdict: 'not_evaluated',
       reason: 'No quality checks were executed',
     };
-  if (unclear.length || gaps.length)
+  if (unclear.length || gaps.length || environmentGaps.length)
     return {
       verdict: 'not_evaluated',
       reason: `No check failed, but ${[
         ...unclear.map((check) => `${check.id} was ${check.status}`),
         ...gaps.map(
           (gap) => `configured audit ${gap.id} did not run (${gap.reason})`,
+        ),
+        ...environmentGaps.map(
+          (gap) =>
+            `the run did not emulate ${gap.id}, so the checks measured another environment (${gap.reason})`,
         ),
       ].join(', ')}`,
     };
@@ -218,6 +228,7 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
     ),
     ...audits.unsupported,
     ...(inputs.engineGaps ?? []),
+    ...(inputs.environmentGaps ?? []),
   ];
   for (const check of BUILT_IN) {
     const reason = check.unsupported[inputs.platform];
@@ -227,7 +238,11 @@ export function evaluateQuality(inputs: QualityInputs): Quality {
     else executed.push(check.evaluate(inputs));
   }
   return {
-    ...verdict(executed, [...audits.unsupported, ...audits.skipped]),
+    ...verdict(
+      executed,
+      [...audits.unsupported, ...audits.skipped],
+      inputs.environmentGaps ?? [],
+    ),
     executed,
     skipped,
     unsupported,

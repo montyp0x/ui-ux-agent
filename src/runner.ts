@@ -312,7 +312,22 @@ async function runJourney(
     resultVersion: RESULT_VERSION,
     journey: journey.id,
     viewport,
-    ...(environment ? { environment } : {}),
+    ...(environment
+      ? {
+          // The requested settings, plus the ones the engine withheld.
+          environment: session.environmentGaps?.length
+            ? {
+                ...environment,
+                syntheticText:
+                  environment.syntheticText &&
+                  !session.environmentGaps.some(
+                    (gap) => gap.id === 'environment.pseudoLocalization',
+                  ),
+                unsupported: session.environmentGaps,
+              }
+            : environment,
+        }
+      : {}),
     attempt,
     usage,
     status: 'error',
@@ -1079,6 +1094,7 @@ async function runJourney(
       evidenceComplete,
       audits: result.audits,
       engineGaps: session.engineGaps,
+      environmentGaps: session.environmentGaps,
     });
     result.durationMs = Date.now() - started;
     // Files drivers and audits wrote (measurements, the native tree) get the

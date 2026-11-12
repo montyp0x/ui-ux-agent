@@ -39,7 +39,11 @@ import {
   pseudoLocalizationScript,
   unappliedSettings,
 } from '../environments.js';
-import { ENGINE_GAPS, engineAuditGap } from '../browser-support.js';
+import {
+  ENGINE_GAPS,
+  engineAuditGap,
+  environmentEmulation,
+} from '../browser-support.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -133,10 +137,17 @@ export async function playwrightDriver(
         await log('storage_state_scoped', report);
         scoped = state as BrowserContextOptions['storageState'];
       }
+      // Only what this engine is verified to emulate is applied; the rest of
+      // the environment is withheld and reported unsupported (never
+      // half-applied, never assumed).
+      const emulation = environment
+        ? environmentEmulation(browserName, environment)
+        : null;
+      const emulated = emulation?.environment ?? null;
       const contextOptions = {
         viewport,
         // Locale, time zone and media emulation of the suite environment.
-        ...environmentContextOptions(environment ?? null),
+        ...environmentContextOptions(emulated),
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
         ...(recorded ? { recordVideo: { dir: directory } } : {}),
@@ -153,9 +164,9 @@ export async function playwrightDriver(
         : (context.pages()[0] ?? (await context.newPage()));
       // Pseudo-localized long text: expand the application's text in every
       // page the session loads (src/environments.ts).
-      if (environment?.pseudoLocalization) {
+      if (emulated?.pseudoLocalization) {
         await context.addInitScript({
-          content: pseudoLocalizationScript(environment.pseudoLocalization),
+          content: pseudoLocalizationScript(emulated.pseudoLocalization),
         });
         markPseudoLocalized(page);
       }
@@ -256,6 +267,7 @@ export async function playwrightDriver(
           return unauthorized;
         },
         engineGaps: ENGINE_GAPS[browserName],
+        environmentGaps: emulation?.unsupported ?? [],
         auditUnsupported(id) {
           return engineAuditGap(browserName, id);
         },
@@ -273,19 +285,21 @@ export async function playwrightDriver(
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
           });
-          if (environment) {
+          if (environment && emulated) {
             // The page, not the configuration, says what was emulated: a
             // setting the browser did not apply fails the run instead of
-            // measuring another environment.
+            // measuring another environment. Settings the engine does not
+            // emulate were withheld and are reported unsupported instead.
             const measured = environmentProbeSchema.parse(
               await page.evaluate(ENVIRONMENT_PROBE),
             );
-            const missing = unappliedSettings(environment, measured);
+            const missing = unappliedSettings(emulated, measured);
             await log('environment_applied', {
               environment: environment.name,
               measured,
-              pseudoLocalization: !!environment.pseudoLocalization,
+              pseudoLocalization: !!emulated.pseudoLocalization,
               unapplied: missing,
+              unsupported: emulation?.unsupported ?? [],
             });
             if (missing.length)
               throw new Error(

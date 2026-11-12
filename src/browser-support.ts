@@ -5,6 +5,7 @@
 // reported `unsupported` there with the reason below, never assumed to behave
 // like Chromium. Changing a row needs the execution that proves it.
 import type { AuditId } from './audits/config.js';
+import type { Environment } from './environments.js';
 
 export type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 
@@ -85,6 +86,8 @@ export function engineAuditGap(
 // the media query matches but the engine does not render the setting (for
 // forced colors: author colours are not replaced), so a read-back alone would
 // wrongly report it applied. untested: never executed on the engine.
+// pseudoLocalization is the harness's init script (src/environments.ts),
+// not a context option: applied means the page's text was padded.
 export type EmulationSupport = 'applied' | 'media-only' | 'untested';
 export type EmulatedSetting =
   | 'colorScheme'
@@ -92,7 +95,8 @@ export type EmulatedSetting =
   | 'forcedColors'
   | 'contrast'
   | 'locale'
-  | 'timezoneId';
+  | 'timezoneId'
+  | 'pseudoLocalization';
 export const ENGINE_EMULATION: Record<
   BrowserEngine,
   Record<EmulatedSetting, EmulationSupport>
@@ -104,6 +108,7 @@ export const ENGINE_EMULATION: Record<
     contrast: 'applied',
     locale: 'applied',
     timezoneId: 'applied',
+    pseudoLocalization: 'applied',
   },
   webkit: {
     colorScheme: 'applied',
@@ -112,6 +117,7 @@ export const ENGINE_EMULATION: Record<
     contrast: 'applied',
     locale: 'applied',
     timezoneId: 'applied',
+    pseudoLocalization: 'applied',
   },
   firefox: {
     colorScheme: 'untested',
@@ -120,8 +126,70 @@ export const ENGINE_EMULATION: Record<
     contrast: 'untested',
     locale: 'untested',
     timezoneId: 'untested',
+    pseudoLocalization: 'untested',
   },
 };
+
+const ENGINE_LABEL: Record<BrowserEngine, string> = {
+  chromium: 'Chromium',
+  firefox: 'Firefox',
+  webkit: 'WebKit',
+};
+
+// Environment fields (src/environments.ts) and the setting each emulates,
+// in the order gaps are listed.
+const ENVIRONMENT_SETTINGS = [
+  ['locale', 'locale'],
+  ['timezone', 'timezoneId'],
+  ['colorScheme', 'colorScheme'],
+  ['reducedMotion', 'reducedMotion'],
+  ['forcedColors', 'forcedColors'],
+  ['contrast', 'contrast'],
+  ['pseudoLocalization', 'pseudoLocalization'],
+] as const satisfies readonly (readonly [keyof Environment, EmulatedSetting])[];
+
+function emulationGap(
+  engine: BrowserEngine,
+  field: keyof Environment,
+  support: EmulationSupport,
+): string {
+  if (support === 'untested')
+    return engine === 'firefox'
+      ? `${field} is not emulated: ${FIREFOX_UNVERIFIED}`
+      : `${field} is not emulated: never executed on ${ENGINE_LABEL[engine]}`;
+  // media-only: today only forced colours (see ENGINE_EMULATION).
+  return `${field} is not emulated on ${ENGINE_LABEL[engine]}: the media query matches, but author colours are not replaced, so the page would be measured in a state no user of the engine sees`;
+}
+
+// What of an environment the engine emulates. `environment` keeps only the
+// settings the engine applies; every other requested setting is withheld
+// (never half-applied: a media-only setting would change the media query
+// without the rendering) and listed in `unsupported` with the engine's
+// reason, as `environment.<field>`. A setting set to its no-op value
+// (forcedColors none) is applied wherever the engine renders it.
+export function environmentEmulation(
+  engine: BrowserEngine,
+  environment: Environment,
+): { environment: Environment; unsupported: EngineGap[] } {
+  const applied: Environment = { ...environment };
+  const unsupported: EngineGap[] = [];
+  for (const [field, setting] of ENVIRONMENT_SETTINGS) {
+    if (environment[field] === undefined) continue;
+    const support = ENGINE_EMULATION[engine][setting];
+    const appliedHere =
+      support === 'applied' ||
+      (support === 'media-only' &&
+        field === 'forcedColors' &&
+        environment.forcedColors === 'none');
+    if (appliedHere) continue;
+    delete applied[field];
+    unsupported.push({
+      id: `environment.${field}`,
+      reason: emulationGap(engine, field, support),
+    });
+  }
+  return { environment: applied, unsupported };
+}
 
 // CSS Typed OM (element.computedStyleMap()), by engine, as executed.
 // lengths: computed padding, margin and border radii are CSSUnitValue px.

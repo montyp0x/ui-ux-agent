@@ -230,6 +230,17 @@ export const resultEnvironmentSchema = environmentSchema
     // findings in this run were measured on synthetic text, marked ⟦…⟧ in
     // screenshots, snapshots and control names.
     syntheticText: z.boolean(),
+    // Requested settings the run's browser engine does not emulate, withheld
+    // from the session (src/browser-support.ts), with the engine's reason;
+    // absent when every setting was applied. Optional: added within
+    // version 4.
+    unsupported: z
+      .array(
+        z
+          .object({ id: z.string().min(1), reason: z.string().min(1) })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 export type ResultEnvironment = z.infer<typeof resultEnvironmentSchema>;

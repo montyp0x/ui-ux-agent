@@ -20,7 +20,12 @@ import {
   ENGINE_GAPS,
   ENGINE_TYPED_OM,
   KEYBOARD_JOURNEY_UNSUPPORTED,
+  environmentEmulation,
 } from '../src/browser-support.js';
+import {
+  MAX_RUN_COMBINATIONS,
+  pseudoLocalizationScript,
+} from '../src/environments.js';
 import { compatibility } from '../src/compare.js';
 import { suiteSchema, type Action, type Choice } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
@@ -42,10 +47,14 @@ const START = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title
 const DONE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Done</title></head><body><main><h1>Done</h1><p data-testid="status">Saved</p></main></body></html>`;
 const TAB_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Tab</title></head><body><main><input aria-label="Name"><a href="#a">Docs</a><button>Save</button></main></body></html>`;
 
-async function site() {
+// The start page without its planted defects, for runs whose quality must
+// be able to pass.
+const CLEAN_START = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Cross-browser fixture</title></head><body><main><h1>Cross-browser fixture</h1><p><a href="/done">Continue</a></p></main></body></html>`;
+
+async function site(start = START) {
   const server = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
-    response.end(request.url === '/done' ? DONE : START);
+    response.end(request.url === '/done' ? DONE : start);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -232,6 +241,62 @@ test('a keyboard-only journey is refused on WebKit, at suite validation', () => 
       journeys: [{ ...plainJourney, input: 'keyboard' }],
     }).success,
     true,
+  );
+});
+
+test('an environment setting is emulated only where the engine applies it; elsewhere it is an unsupported gap with the engine reason', () => {
+  const everything = {
+    name: 'everything',
+    locale: 'de-DE',
+    timezone: 'Asia/Tokyo',
+    colorScheme: 'dark' as const,
+    reducedMotion: 'reduce' as const,
+    forcedColors: 'active' as const,
+    contrast: 'more' as const,
+    pseudoLocalization: {},
+  };
+  // Chromium applies every setting: nothing is withheld.
+  const chromium = environmentEmulation('chromium', everything);
+  assert.deepEqual(chromium.unsupported, []);
+  assert.deepEqual(chromium.environment, everything);
+  // WebKit matches (forced-colors: active) without replacing author colours,
+  // so forced colours are not emulated there and the run says so; the other
+  // settings are applied.
+  const webkit = environmentEmulation('webkit', everything);
+  assert.deepEqual(
+    webkit.unsupported.map((gap) => gap.id),
+    ['environment.forcedColors'],
+  );
+  assert.match(webkit.unsupported[0]!.reason, /WebKit/);
+  assert.match(webkit.unsupported[0]!.reason, /author colours are not replaced/);
+  const { forcedColors: _forced, ...withoutForced } = everything;
+  assert.deepEqual(webkit.environment, withoutForced);
+  // Forced colours off is what WebKit renders anyway: applied.
+  assert.deepEqual(
+    environmentEmulation('webkit', { name: 'plain', forcedColors: 'none' })
+      .unsupported,
+    [],
+  );
+  // Nothing was executed on Firefox: every requested setting is unsupported.
+  const firefox = environmentEmulation('firefox', everything);
+  assert.deepEqual(
+    firefox.unsupported.map((gap) => gap.id),
+    [
+      'environment.locale',
+      'environment.timezone',
+      'environment.colorScheme',
+      'environment.reducedMotion',
+      'environment.forcedColors',
+      'environment.contrast',
+      'environment.pseudoLocalization',
+    ],
+  );
+  for (const gap of firefox.unsupported) assert.match(gap.reason, /Firefox/);
+  assert.deepEqual(firefox.environment, { name: 'everything' });
+  // Settings an environment leaves out are never gaps.
+  assert.deepEqual(
+    environmentEmulation('firefox', { name: 'default' }).unsupported,
+    [],
   );
 });
 
@@ -461,9 +526,16 @@ for (const engine of ENGINES) {
   test(`${engine}: emulated user settings are read back and rendered as the support table says`, { skip }, async () => {
     const browser = await ENGINE_TYPES[engine].launch();
     try {
-      const read = async (options: Parameters<typeof browser.newContext>[0]) => {
+      const read = async (
+        options: Parameters<typeof browser.newContext>[0],
+        pseudo = false,
+      ) => {
         const context = await browser.newContext(options);
         try {
+          if (pseudo)
+            await context.addInitScript({
+              content: pseudoLocalizationScript({}),
+            });
           const page = await context.newPage();
           await page.setContent(
             '<p id="x" style="color:rgb(255,0,0);background:rgb(0,0,255)">x</p>',
@@ -485,6 +557,10 @@ for (const engine of ENGINES) {
                 new Date('2026-01-01T00:00:00Z').getTimezoneOffset() === -540,
               // Forced colours replace author colours when rendered.
               forcedRendered: style.color !== 'rgb(255, 0, 0)',
+              // The harness's padding was appended to the page text.
+              pseudoLocalization: /^x ⟦[^⟧]+⟧$/.test(
+                document.getElementById('x')!.textContent ?? '',
+              ),
             };
           });
         } finally {
@@ -498,7 +574,7 @@ for (const engine of ENGINES) {
         contrast: 'more',
         locale: 'de-DE',
         timezoneId: 'Asia/Tokyo',
-      });
+      }, true);
       const plain = await read({
         colorScheme: 'light',
         reducedMotion: 'no-preference',
@@ -521,6 +597,51 @@ for (const engine of ENGINES) {
       );
     } finally {
       await browser.close();
+    }
+  });
+
+  test(`${engine}: an environment runs with exactly the settings the engine applies; the rest are unsupported, never a pass or a driver error`, { skip }, async () => {
+    const app = await site(CLEAN_START);
+    try {
+      const environment = {
+        name: 'forced-dark',
+        colorScheme: 'dark' as const,
+        forcedColors: 'active' as const,
+      };
+      const { result, directory } = await run(engine, app.url, {
+        environments: [environment],
+        combinations: [{ environment: 'forced-dark', viewport: 'desktop' }],
+      });
+      const expected = environmentEmulation(engine, environment).unsupported;
+      assert.equal(result.outcome.code, 'assertions_passed');
+      assert.deepEqual(result.environment?.unsupported ?? [], expected);
+      const gaps = result.quality.unsupported.filter((gap) =>
+        gap.id.startsWith('environment.'),
+      );
+      assert.deepEqual(gaps, expected);
+      const applied = (
+        await readFile(join(directory, 'events.jsonl'), 'utf8')
+      )
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { event: string; data: any })
+        .find((entry) => entry.event === 'environment_applied');
+      assert.ok(applied);
+      assert.deepEqual(applied.data.unsupported, expected);
+      assert.equal(applied.data.measured.colorScheme, 'dark');
+      if (expected.length) {
+        // Withheld, not half-applied: the page never sees the media query,
+        // and the run cannot pass quality for an environment it did not
+        // emulate.
+        assert.equal(applied.data.measured.forcedColors, 'none');
+        assert.notEqual(result.quality.verdict, 'pass');
+        assert.match(result.quality.reason, /environment/i);
+      } else {
+        assert.equal(applied.data.measured.forcedColors, 'active');
+        assert.equal(result.quality.verdict, 'pass', result.quality.reason);
+      }
+    } finally {
+      await app.close();
     }
   });
 
@@ -597,4 +718,27 @@ test('runs on different engines are never compared as compatible', async (t) => 
   assert.ok(fields.includes('environment.browser.name'), fields.join(', '));
   // The browser is part of the suite configuration too.
   assert.ok(fields.includes('suite.hash'), fields.join(', '));
+});
+
+test('kept defaults: Firefox suites are allowed with the engine.firefox gap, keyboard journeys stay refused on WebKit only, the environment cap is 24', () => {
+  const base = {
+    name: 'LOCAL defaults',
+    baseURL: 'http://127.0.0.1:1',
+    viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+    journeys: [plainJourney],
+  };
+  // Firefox runs are not refused: every audit reports unsupported and every
+  // result carries the engine-wide gap.
+  assert.equal(suiteSchema.safeParse({ ...base, browser: 'firefox' }).success, true);
+  assert.ok(ENGINE_GAPS.firefox.some((gap) => gap.id === 'engine.firefox'));
+  assert.deepEqual(Object.keys(KEYBOARD_JOURNEY_UNSUPPORTED), ['webkit']);
+  assert.equal(MAX_RUN_COMBINATIONS, 24);
+  const matrix = (max: number) =>
+    suiteSchema.safeParse({
+      ...base,
+      environments: [{ name: 'light' }],
+      matrix: { environments: ['light'], viewports: ['desktop'], max },
+    }).success;
+  assert.equal(matrix(24), true);
+  assert.equal(matrix(25), false);
 });
