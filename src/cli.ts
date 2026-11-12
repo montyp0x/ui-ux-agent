@@ -13,6 +13,7 @@ import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
 import { browserLaunchOptions } from './drivers/playwright.js';
 import { suiteEvidencePolicy, suiteSchema } from './contracts.js';
+import { loadDesignTokens } from './audits/design-tokens.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
@@ -144,7 +145,11 @@ if (values.help) {
       const raw: unknown = JSON.parse(
         await readFile(resolve(values.suite), 'utf8'),
       );
-      const suite = suiteSchema.parse(raw);
+      // A design.tokens file path is read relative to the suite file.
+      const suite = await loadDesignTokens(
+        suiteSchema.parse(raw),
+        resolve(values.suite),
+      );
       redactor = new Redactor({
         patterns: suite.evidence.redact,
         envNames: suiteEvidencePolicy(suite).redactEnv,
