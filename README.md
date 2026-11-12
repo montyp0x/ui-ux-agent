@@ -472,7 +472,36 @@ The runner creates the directory (mode 0700) and marks it as its own. It refuses
 
 The runner never extracts a personal browser profile: there is no option to read cookies or sessions from an installed browser, and unknown options are rejected. Runs use isolated contexts, or the dedicated profile above.
 
-Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. Browser integration tests and the bundled demo currently verify Chromium only; Firefox/WebKit are configurable but unverified in this checkout.
+Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. What each engine is verified to do is below.
+
+### Browser support
+
+`browser` (`chromium`, `firefox` or `webkit`, default `chromium`) selects the Playwright engine for the whole suite, and `--browser` overrides it (the suite is validated again). The engine is part of the run identity twice: in the suite hash and in `environment.browser` (name, version, build, headless). Runs on different engines are therefore never compared as compatible, and visual baselines are keyed by engine and version.
+
+Support is declared per engine in `src/browser-support.ts` and proved by `test/cross-browser.test.ts`, which runs every row on every engine that launches on the machine. An engine that is not installed, or does not launch, is **skipped with the reason**, never counted as verified. What is not verified on an engine is not assumed to behave like Chromium. An audit that is not verified there runs as `unsupported` with the engine's reason (shown in the report and in `quality.unsupported`), and an engine-wide gap is listed in `quality.unsupported` on every result.
+
+What was executed for this table: macOS 27.0.1 (arm64), Playwright 1.61.1, headless, bundled builds. Chromium 149.0.7827.55 and WebKit 26.5 ran the whole of `test/cross-browser.test.ts`, `npm run demo -- --browser <engine>` and `npm run demo:states -- --browser <engine>`. Firefox 151.0 (Playwright build 1532) is installed but **does not launch on this machine**: `browserType.launch` times out, with `sandbox_extension_issue_file_to_process failed … plugin-container.app (Operation not permitted)` on stderr. A probe of Playwright 1.65's Firefox build 1572 also failed, differently: it exits at once with `Could not find profile folder`. So a Playwright upgrade is not a known fix. Nothing about Firefox was executed. CI (Linux) installs only Chromium, so it verifies only the Chromium rows.
+
+| Feature | Chromium | WebKit | Firefox |
+| --- | --- | --- | --- |
+| Scripted journey (navigate, click, fill, outcome checks) | verified | verified | not verified: runs are allowed, with an `engine.firefox` gap on every result |
+| `back` action (session history) | verified, launched and persistent profile | not offered (`navigation.back` gap): history needs CDP | not offered (`navigation.back` gap) |
+| Keyboard-only journeys (`input: keyboard`) | verified (Tab reaches links and buttons) | **refused at suite validation**: Tab reaches only form fields on WebKit (macOS default) | not verified |
+| `accessibility.axe` | verified (finds `label`) | verified (finds `label`) | `unsupported` |
+| `layout.horizontal-overflow` | verified | verified | `unsupported` |
+| `layout.responsive` | verified | verified | `unsupported` |
+| `visual.baseline` (missing → approve → match) | verified | verified | `unsupported` |
+| `journey.state-checks` | verified | verified (all 7 state example journeys pass) | `unsupported` |
+| `keyboard.focus` | verified | `unsupported` (Tab model above) | `unsupported` |
+| Screenshot masks (planted secret never in an image) | verified | verified | not verified |
+| Trace and video | verified | verified | not verified |
+| Dedicated persistent profile (`--profile`), same version in the identity | verified | verified | not verified |
+| `browserChannel` / `browserExecutable` | Chromium only (validated); not executed in this verification | n/a | n/a |
+| Emulated `colorScheme`, `reducedMotion`, `contrast`, `locale`, `timezoneId` | applied (read back) | applied (read back) | untested |
+| Emulated `forcedColors: active` | applied: media query matches and author colours are replaced | **media query only**: `(forced-colors: active)` matches, but author colours are not replaced | untested |
+| CSS Typed OM (`computedStyleMap`) | lengths: padding, margin and radii are `CSSUnitValue` px | partial: the API exists and padding/margin are `CSSUnitValue`, but border-radius longhands are an untyped `CSSStyleValue` (`"8px"`; `CSSNumericValue.parse` reads it) | untested |
+
+Two things need care when reading a result. WebKit's forced-colours emulation passes a `matchMedia` read-back without changing how the page renders. And the default WebKit tab model is that of macOS Safari; Linux WebKit was not executed. Running the existing low-level Chromium tests against WebKit (a one-off exploration, not part of `npm test`) found only these differences, plus timing-sensitive tests that passed when rerun alone.
 
 ## macOS apps
 
@@ -742,7 +771,7 @@ npm test
 npm run demo
 ```
 
-Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
+Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. `test/cross-browser.test.ts` also runs each [browser support](#browser-support) row on WebKit and Firefox when they are installed and launch, and skips them with the reason otherwise (install with `npx playwright install webkit firefox`). Run the demos on another engine with `npm run demo -- --browser webkit` and `npm run demo:states -- --browser webkit`. CI installs Chromium only and runs these checks without model credentials, so the WebKit and Firefox rows are skipped there. No run evidence is uploaded by CI.
 
 Current limits: redaction covers declared patterns, credential environment values and known credential shapes only (see [Evidence protection](#evidence-protection)); no Windows or mobile drivers, shared baseline storage (visual baselines are local only), complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or a live model-quality baseline (the opt-in [benchmark harness](docs/benchmark.md) exists; no live results or release thresholds yet; its usage reconciliation compares each target's totals with the runner's results, not each run's). Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 

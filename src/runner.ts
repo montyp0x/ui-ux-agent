@@ -1078,6 +1078,7 @@ async function runJourney(
       policyBlocks,
       evidenceComplete,
       audits: result.audits,
+      engineGaps: session.engineGaps,
     });
     result.durationMs = Date.now() - started;
     // Files drivers and audits wrote (measurements, the native tree) get the

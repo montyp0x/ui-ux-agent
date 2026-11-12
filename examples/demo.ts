@@ -14,9 +14,14 @@ await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const address = server.address();
 if (!address || typeof address === 'string')
   throw new Error('Demo server failed to bind');
+// `npm run demo -- --browser webkit` runs the same demo on another engine
+// (validated by the suite schema; see README "Browser support").
+const browserAt = process.argv.indexOf('--browser');
+const browser = browserAt === -1 ? undefined : process.argv[browserAt + 1];
 const suite = suiteSchema.parse({
   name: 'Offline documentation demo — deterministic decisions',
   baseURL: `http://127.0.0.1:${address.port}`,
+  ...(browser === undefined ? {} : { browser }),
   requiresAuth: false,
   viewports: [
     { name: 'desktop', width: 1280, height: 800 },
@@ -86,7 +91,7 @@ try {
   const results = await runSuite(suite, decisions, { directory, video: true });
   for (const result of results)
     console.log(
-      `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · quality ${result.quality.verdict} · agent friction: ${result.friction?.actions.product ?? 0} product action(s), ${result.friction?.counts.backtracks ?? 0} backtrack(s), closest reference path ${result.friction?.reference?.closest ?? 'none'}`,
+      `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · ${suite.browser} · quality ${result.quality.verdict} · agent friction: ${result.friction?.actions.product ?? 0} product action(s), ${result.friction?.counts.backtracks ?? 0} backtrack(s), closest reference path ${result.friction?.reference?.closest ?? 'none'}`,
     );
   console.log(`Report: ${directory}/report.html`);
   process.exitCode = results.every((result) => result.status === 'passed')

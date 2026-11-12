@@ -226,6 +226,17 @@ export class JourneyAudits {
         null,
         started,
       );
+    // Supported by the driver, but not verified on this session's engine.
+    const engineGap = this.options.session.auditUnsupported?.(config.id);
+    if (engineGap)
+      return this.push(
+        config,
+        checkpoint,
+        'unsupported',
+        engineGap,
+        null,
+        started,
+      );
     let output: ParsedAuditOutput;
     try {
       const { session, directory, suite } = this.options;

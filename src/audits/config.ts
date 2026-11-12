@@ -136,6 +136,10 @@ export const auditConfigSchema = z.discriminatedUnion('id', [
 ]);
 export type AuditConfig = z.infer<typeof auditConfigSchema>;
 export type AuditId = AuditConfig['id'];
+// Every audit id, in declaration order (for per-engine support tables).
+export const AUDIT_IDS = auditConfigSchema.options.map(
+  (option) => option.shape.id.value,
+) as AuditId[];
 
 export const DEFAULT_AUDITS: AuditConfig[] = [
   { id: 'layout.horizontal-overflow', at: ['completion'] },

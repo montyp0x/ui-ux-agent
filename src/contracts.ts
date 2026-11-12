@@ -8,6 +8,7 @@ import { targetSchema, type Target } from './target.js';
 import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
 import { referencePathsSchema } from './friction/contract.js';
 import { environmentSuiteShape, selectCombinations } from './environments.js';
+import { KEYBOARD_JOURNEY_UNSUPPORTED } from './browser-support.js';
 
 export { targetSchema, type Target };
 
@@ -518,6 +519,17 @@ const suiteObject = z
         code: 'custom',
         message: 'Use browserChannel or browserExecutable, not both',
       });
+    // An engine whose keyboard navigation differs from the measured model
+    // (src/browser-support.ts) refuses keyboard-only journeys outright.
+    const keyboardRefused =
+      suite.platform === 'web'
+        ? KEYBOARD_JOURNEY_UNSUPPORTED[suite.browser]
+        : undefined;
+    if (
+      keyboardRefused &&
+      suite.journeys.some((journey) => journey.input === 'keyboard')
+    )
+      ctx.addIssue({ code: 'custom', message: keyboardRefused });
     const auditsAtStates = suite.audits.checks.some((check) =>
       (check.at as string[]).includes('states'),
     );

@@ -39,6 +39,7 @@ import {
   pseudoLocalizationScript,
   unappliedSettings,
 } from '../environments.js';
+import { ENGINE_GAPS, engineAuditGap } from '../browser-support.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -253,6 +254,10 @@ export async function playwrightDriver(
         policyBlocks,
         get unauthorized() {
           return unauthorized;
+        },
+        engineGaps: ENGINE_GAPS[browserName],
+        auditUnsupported(id) {
+          return engineAuditGap(browserName, id);
         },
         async start(timeoutMs) {
           if (
