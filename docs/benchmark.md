@@ -86,7 +86,7 @@ The worst-case spend is therefore `maxModelCalls` requests at your providers' pe
 
 ## The report
 
-`benchmark-report.md` and `benchmark-report.json` in the benchmark directory, built from `benchmark.json` (targets, pinned configuration, ceilings, stop reason, and each model call's role, model, latency and reported tokens, with no request or response bodies) and each target's `results.json`.
+`benchmark-report.md` and `benchmark-report.json` in the benchmark directory, built from `benchmark.json` (targets and their runs, pinned configuration, ceilings, stop reason, and each model call's run, role, model, latency and reported tokens, with no request or response bodies) and each target's `results.json`.
 
 - **Identity:** the config path and sha256, each target's suite, sha256, scope and reviewer, the pinned models, endpoints and rate limits, repeat, ceilings, result and audit contract versions, the Git revision (and whether the worktree had uncommitted changes), Node version and platform.
 - **Rates:** completion is `passed / n` with `n` and a 95% Wilson score interval, overall, per target and per journey/viewport. A run cut off by a ceiling or Ctrl-C is `interrupted`: listed, never counted as a failure or a pass. Runs that never started are listed as not started.
@@ -106,6 +106,7 @@ The worst-case spend is therefore `maxModelCalls` requests at your providers' pe
 
   *Model-attributable completion* is `passed / (passed + agent + model + budget)`; *completion (all)* counts every evaluated run. The model-quality section also reports loops (runs ended by a repeated action, plus `loop_check` replans and rejections from `events.jsonl`), planner and selector latency (n, median, p90, max; measured around each adapter call, so it includes client-side rate-limit waits), model calls per run, and tokens. The harness section checks this run's bookkeeping: every `results.json` validates against the result contract, per-run usage reconciles with the benchmark's call log, requests stayed within `maxModelCalls`, requests without an accepted response, and policy/environment/precondition/harness failures. Harness *behaviour* is verified by `npm test`, not by a live run.
 - **Tokens** are `unknown`, never 0, when any request's usage was not reported; the report then gives the reported tokens as a lower bound and the number of requests without usage, per role.
+- **Per run:** besides the per-target and overall totals, each target lists its runs in start order (`targets[].runs` in `benchmark-report.json`, the *Per run* table in `benchmark-report.md`): journey, viewport, attempt, outcome code (`null`, shown as *no result*, for a run that left none), requests sent (retries included) and answered per role, tokens (`unknown` with the reported lower bound when any of that run's requests lacked usage) and latency (distribution and summed milliseconds per role). `benchmark.json` attributes each call to its run (`calls[].run`) and lists each target's runs with the requests they sent (`targets[].runs`). A record written before per-run attribution still loads: its runs list is empty and its calls are counted under `unattributedCalls`.
 - **Finding precision** needs human review. Without a labels file it is reported as `unknown`. Findings are identified by the stable id the run comparison uses (`findingInstances` in `src/compare.ts`: journey, viewport, kind and rule, checkpoint, path and target, never volatile ids, timestamps or raw secrets), per target, so one label covers every attempt that reported the finding and the same finding keeps its id in a later benchmark of the same suite. `benchmark-report.json` lists every distinct finding under `precision.items` (target, id, kind, journey, viewport, rule, attempts, verdict; identifiers only, no finding text, which stays in each target's `results.json`), and `benchmark-report.md` shows the same table. A labels file marks findings as `confirmed` (reproduced as a real issue) or `rejected`:
 
   ```json
@@ -130,6 +131,6 @@ The benchmark directory is a new directory under `runs/` (gitignored, never reus
 
 ## Limits
 
-- Tokens and latency are attributed per target (runs within a target run in sequence); per-run usage stays in each `results.json`, where missing usage counts as 0 as documented there.
+- Per-run token and latency totals come from the benchmark's own call log, where missing usage is unknown; the usage in each `results.json` counts missing usage as 0, as documented there.
 - A provider that never reports usage (check whether yours does) makes every token total unknown; with `unknownUsage: "stop"` the benchmark then stops at its first such response.
 - Targets and runs execute one at a time.

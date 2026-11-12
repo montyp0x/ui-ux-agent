@@ -30,11 +30,23 @@ export const stopSchema = z
 export type Stop = z.infer<typeof stopSchema>;
 
 const role = z.enum(['planner', 'selector']);
+// A run of a target: its journey, viewport and attempt (repeat number).
+export const runRefSchema = z
+  .object({
+    journey: z.string(),
+    viewport: z.string(),
+    attempt: z.number().int().positive(),
+  })
+  .strict();
+export type RunRef = z.infer<typeof runRefSchema>;
 // One completed model call. Token counts are null when the provider did not
 // report them: unknown, never zero.
 export const callRecordSchema = z
   .object({
     target: z.string(),
+    // The run that made the call; null in records written before calls were
+    // attributed to runs.
+    run: runRefSchema.nullable().default(null),
     role,
     model: z.string(),
     durationMs: z.number().nonnegative(),
@@ -90,6 +102,18 @@ export class BenchmarkBudget {
     string,
     { planner: number; selector: number }
   >();
+  // Per target: its runs in start order, with the requests each sent.
+  readonly runsByTarget = new Map<
+    string,
+    (RunRef & { dispatched: { planner: number; selector: number } })[]
+  >();
+  // The run in progress (of `target`); calls and requests are attributed to
+  // it. Null between targets.
+  private run:
+    | (RunRef & {
+        dispatched: { planner: number; selector: number };
+      })
+    | null = null;
   readonly calls: CallRecord[] = [];
   // Tokens the providers reported.
   readonly tokens = { input: 0, output: 0 };
@@ -146,6 +170,19 @@ export class BenchmarkBudget {
     this.halt('cancelled', detail);
   }
 
+  // A run of the current target starts (RunOptions.onRunStart).
+  startRun(run: RunRef): void {
+    this.run = { ...run, dispatched: { planner: 0, selector: 0 } };
+    this.runsByTarget.set(this.target, [
+      ...(this.runsByTarget.get(this.target) ?? []),
+      this.run,
+    ]);
+  }
+  // The current target's runs are over (or it has not started one yet).
+  endTarget(): void {
+    this.run = null;
+  }
+
   private halt(reason: StopReason, detail: string): void {
     if (this.stopped) return;
     this.stopped = { reason, detail, atMs: this.elapsedMs };
@@ -185,6 +222,7 @@ export class BenchmarkBudget {
     };
     target[data.role]++;
     this.dispatchedByTarget.set(this.target, target);
+    if (this.run) this.run.dispatched[data.role]++;
   }
 
   // Called with each completed call (the onCall payload).
@@ -193,6 +231,13 @@ export class BenchmarkBudget {
     if (!call.success) return null;
     const record: CallRecord = {
       target: this.target,
+      run: this.run
+        ? {
+            journey: this.run.journey,
+            viewport: this.run.viewport,
+            attempt: this.run.attempt,
+          }
+        : null,
       role: call.data.role,
       model: call.data.model,
       durationMs: call.data.durationMs,

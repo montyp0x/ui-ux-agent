@@ -84,6 +84,13 @@ export type RunOptions = {
   // The model endpoints and names in use (never keys), for the identity;
   // omitted for custom Models implementations.
   modelIdentity?: ModelIdentity | null;
+  // Called as each run starts, before its session opens and its first model
+  // call (the benchmark attributes model calls to runs with it).
+  onRunStart?: (run: {
+    journey: string;
+    viewport: string;
+    attempt: number;
+  }) => void;
 };
 export type Logger = EventLogger;
 
@@ -1291,6 +1298,11 @@ export async function runSuite(
           }
           const friction = new FrictionRecorder();
           currentFriction = friction;
+          options.onRunStart?.({
+            journey: journey.id,
+            viewport: viewport.name,
+            attempt,
+          });
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,

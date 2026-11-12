@@ -4,7 +4,7 @@
 // from both, so a report can be rebuilt (for example with reviewer labels)
 // without running anything again.
 import { z } from 'zod';
-import { callRecordSchema, stopSchema } from './budget.js';
+import { callRecordSchema, runRefSchema, stopSchema } from './budget.js';
 import {
   BENCHMARK_VERSION,
   ceilingsSchema,
@@ -64,6 +64,12 @@ export const benchmarkRecordSchema = z
           // The runner refused or failed to start the target.
           error: z.string().nullable(),
           dispatched: countByRole,
+          // Its runs in start order and the requests each sent (retries
+          // included); empty in records written before calls were
+          // attributed to runs.
+          runs: z
+            .array(runRefSchema.extend({ dispatched: countByRole }).strict())
+            .default([]),
         })
         .strict(),
     ),

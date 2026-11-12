@@ -172,6 +172,7 @@ export async function runBenchmark(
         started: false,
         error: null,
         dispatched: { planner: 0, selector: 0 },
+        runs: [],
       };
       targets.push(entry);
       if (budget.stop) continue;
@@ -209,6 +210,7 @@ export async function runBenchmark(
               : undefined,
             env,
             signal: budget.signal,
+            onRunStart: (run) => budget.startRun(run),
           },
         );
       } catch (caught) {
@@ -219,12 +221,17 @@ export async function runBenchmark(
         );
         options.progress?.(`Target ${target.id} did not run: ${entry.error}`);
       }
+      budget.endTarget();
       entry.dispatched = {
         ...(budget.dispatchedByTarget.get(target.id) ?? {
           planner: 0,
           selector: 0,
         }),
       };
+      entry.runs = (budget.runsByTarget.get(target.id) ?? []).map((run) => ({
+        ...run,
+        dispatched: { ...run.dispatched },
+      }));
       // Read again: runSuite may have stopped the budget.
       const stop = budget.stop as Stop | null;
       if (stop) options.progress?.(`Stopped: ${stop.reason} (${stop.detail})`);

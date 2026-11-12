@@ -522,6 +522,126 @@ test('a fixture benchmark aggregates completion with n and interval, calls, toke
   assert.match(markdown, /release thresholds/i);
 });
 
+test('tokens, requests and latency are totalled per run as well as per target', async () => {
+  const fake = await fakeModel();
+  const { run, root } = await setup(fake, [
+    { id: 'passes', scenario: success },
+    { id: 'no-path', scenario: { changes: true }, goal: 'Finish [no-match]' },
+  ]);
+  const { report, record } = await run();
+  // Every call is attributed to the run that made it.
+  assert.ok(record.calls.every((call) => call.run !== null));
+  for (const target of report.targets) {
+    const results = parseResults(
+      await readFile(join(root, 'out', target.id, 'results.json'), 'utf8'),
+    );
+    assert.equal(target.unattributedCalls, 0);
+    assert.deepEqual(
+      target.runs.map((entry) => entry.attempt),
+      [1, 2, 3],
+    );
+    for (const entry of target.runs) {
+      const result = results.find((r) => r.attempt === entry.attempt)!;
+      assert.equal(entry.journey, 'finish');
+      assert.equal(entry.viewport, 'desktop');
+      assert.equal(entry.outcome, result.outcome.code);
+      // The run's own requests, matching the usage the runner recorded.
+      const runnerCalls =
+        result.usage.planner.calls + result.usage.selector.calls;
+      assert.equal(entry.calls.dispatched, runnerCalls);
+      assert.equal(entry.calls.completed, runnerCalls);
+      assert.equal(
+        entry.tokens.input,
+        result.usage.planner.inputTokens + result.usage.selector.inputTokens,
+      );
+      assert.equal(entry.tokens.unknownCalls, 0);
+      assert.equal(
+        entry.latency.planner.n + entry.latency.selector.n,
+        runnerCalls,
+      );
+      assert.ok(entry.latencyTotalMs.planner >= 0);
+      assert.ok(
+        Math.abs(
+          entry.latencyTotalMs.planner +
+            entry.latencyTotalMs.selector -
+            (result.usage.planner.durationMs +
+              result.usage.selector.durationMs),
+        ) < 1e-6,
+      );
+    }
+    // Per-run totals add up to the target's.
+    const sum = (pick: (entry: (typeof target.runs)[number]) => number) =>
+      target.runs.reduce((total, entry) => total + pick(entry), 0);
+    assert.equal(
+      sum((entry) => entry.calls.dispatched),
+      target.calls.dispatched,
+    );
+    assert.equal(
+      sum((entry) => entry.tokens.lowerBound.input),
+      target.tokens.lowerBound.input,
+    );
+    assert.equal(
+      sum((entry) => entry.tokens.lowerBound.output),
+      target.tokens.lowerBound.output,
+    );
+  }
+  const markdown = benchmarkMarkdown(report);
+  assert.match(markdown, /### Per run/);
+  assert.match(
+    markdown,
+    /\| passes \| finish \| desktop \| 3 \| [a-z_]+ \| \d+\/\d+ \| \d+ in, \d+ out \|/,
+  );
+});
+
+test('per-run tokens are unknown, never zero, when a run has a request without usage', async () => {
+  const fake = await fakeModel({ missingUsage: ['selector'] });
+  const { run } = await setup(fake, [{ id: 'passes', scenario: success }]);
+  const { report } = await run();
+  const [target] = report.targets;
+  assert.equal(target!.runs.length, 3);
+  for (const entry of target!.runs) {
+    assert.equal(entry.tokens.input, 'unknown');
+    assert.equal(entry.tokens.output, 'unknown');
+    assert.ok(entry.tokens.unknownCalls > 0);
+    assert.equal(
+      entry.tokens.unknownCalls,
+      entry.calls.byRole.selector.dispatched,
+    );
+    assert.equal(
+      entry.tokens.lowerBound.input,
+      entry.calls.byRole.planner.dispatched * 100,
+    );
+  }
+  assert.match(
+    benchmarkMarkdown(report),
+    /\| unknown \(≥ \d+ in, \d+ out; \d+ without usage\) \|/,
+  );
+});
+
+test('a benchmark recorded before per-run attribution still reports, without per-run totals', async () => {
+  const fake = await fakeModel();
+  const { run, root } = await setup(fake, [
+    { id: 'passes', scenario: success },
+  ]);
+  const { record } = await run();
+  // benchmark.json as written before calls named their run.
+  const legacy = {
+    ...record,
+    targets: record.targets.map(({ runs: _runs, ...target }) => target),
+    calls: record.calls.map(({ run: _run, ...call }) => call),
+  };
+  await writeFile(
+    join(root, 'out', 'benchmark.json'),
+    JSON.stringify(legacy, null, 2),
+  );
+  const report = await loadBenchmarkReport(join(root, 'out'));
+  const [target] = report.targets;
+  assert.deepEqual(target!.runs, []);
+  assert.equal(target!.unattributedCalls, record.calls.length);
+  assert.equal(target!.calls.completed, record.calls.length);
+  assert.match(benchmarkMarkdown(report), /not attributed to runs/);
+});
+
 test('benchmark output holds no credentials or suite-declared secrets', async () => {
   const fake = await fakeModel();
   const key = 'sk-fixture-planted-credential-0123456789';

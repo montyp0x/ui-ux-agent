@@ -203,6 +203,21 @@ export type Aggregate = RunStats & {
   tokens: Tokens;
   latency: { planner: Distribution; selector: Distribution };
 };
+// One run's model usage: its requests (retries included), tokens (unknown
+// when any of its requests' usage was not reported, never zero) and latency.
+export type RunTotals = {
+  journey: string;
+  viewport: string;
+  attempt: number;
+  // The run's outcome code; null when it left no result (it was interrupted
+  // before one was written, or its session never opened).
+  outcome: OutcomeCode | null;
+  calls: Calls;
+  tokens: Tokens;
+  latency: { planner: Distribution; selector: Distribution };
+  // Summed latency of the run's answered requests, per role.
+  latencyTotalMs: { planner: number; selector: number };
+};
 export type TargetSummary = Aggregate & {
   id: string;
   suite: string;
@@ -214,6 +229,11 @@ export type TargetSummary = Aggregate & {
   started: boolean;
   error: string | null;
   cells: CellSummary[];
+  // Per-run totals, in start order; empty for records written before calls
+  // were attributed to runs.
+  runs: RunTotals[];
+  // Answered calls the record attributes to no run (older records).
+  unattributedCalls: number;
 };
 export type BenchmarkReport = {
   benchmarkVersion: 1;
@@ -392,6 +412,40 @@ function callStats(
   };
 }
 
+const sameRun = (
+  a: { journey: string; viewport: string; attempt: number },
+  b: { journey: string; viewport: string; attempt: number },
+) =>
+  a.journey === b.journey &&
+  a.viewport === b.viewport &&
+  a.attempt === b.attempt;
+
+function runTotals(
+  target: BenchmarkRecord['targets'][number],
+  calls: CallRecord[],
+  results: Result[],
+): RunTotals[] {
+  return target.runs.map((run) => {
+    const mine = calls.filter((call) => call.run && sameRun(call.run, run));
+    const total = (role: 'planner' | 'selector') =>
+      mine
+        .filter((call) => call.role === role)
+        .reduce((sum, call) => sum + call.durationMs, 0);
+    return {
+      journey: run.journey,
+      viewport: run.viewport,
+      attempt: run.attempt,
+      outcome:
+        results.find((result) => sameRun(result, run))?.outcome.code ?? null,
+      ...callStats(mine, run.dispatched),
+      latencyTotalMs: {
+        planner: total('planner'),
+        selector: total('selector'),
+      },
+    };
+  });
+}
+
 const refKey = (target: string, id: string) => `${target}\u0000${id}`;
 
 function precision(
@@ -503,6 +557,7 @@ export function aggregateBenchmark(data: BenchmarkData): BenchmarkReport {
       const key = cellKey(result.journey, result.viewport);
       cells.set(key, [...(cells.get(key) ?? []), result]);
     }
+    const calls = record.calls.filter((call) => call.target === target.id);
     return {
       id: target.id,
       suite: target.suite,
@@ -516,15 +571,14 @@ export function aggregateBenchmark(data: BenchmarkData): BenchmarkReport {
       planned: target.planned,
       notStarted: target.planned - results.length,
       ...runStats(results, loops),
-      ...callStats(
-        record.calls.filter((call) => call.target === target.id),
-        target.dispatched,
-      ),
+      ...callStats(calls, target.dispatched),
       cells: [...cells.values()].map((list) => ({
         journey: list[0]!.journey,
         viewport: list[0]!.viewport,
         ...runStats(list, loops),
       })),
+      runs: runTotals(target, calls, results),
+      unattributedCalls: calls.filter((call) => !call.run).length,
     };
   });
   const allResults = record.targets.flatMap(

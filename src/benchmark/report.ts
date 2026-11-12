@@ -27,6 +27,14 @@ function formatTokens(tokens: Tokens): string {
   return total;
 }
 
+// A run's tokens in a table cell: unknown, with the reported lower bound,
+// when any of its requests' usage was not reported.
+function tokenCell(tokens: Tokens): string {
+  return tokens.input === 'unknown' || tokens.output === 'unknown'
+    ? `unknown (≥ ${tokens.lowerBound.input} in, ${tokens.lowerBound.output} out; ${tokens.unknownCalls} without usage)`
+    : `${tokens.input} in, ${tokens.output} out`;
+}
+
 // Model and URL text from the config is shown verbatim; escape table pipes.
 const cell = (value: string) => value.replaceAll('|', '\\|');
 
@@ -94,6 +102,27 @@ export function benchmarkMarkdown(report: BenchmarkReport): string {
         (row) =>
           `| ${cell(target.id)} | ${cell(row.journey)} | ${cell(row.viewport)} | ${formatRate(row.modelCompletion)} | ${formatRate(row.completion)} | ${row.failures.agent} | ${row.failures.model} | ${row.failures.budget} |`,
       ),
+    ),
+    '',
+    '### Per run',
+    '',
+    'Requests sent (retries included) and answered, tokens and summed latency of each run.',
+    '',
+    '| Target | Journey | Viewport | Attempt | Outcome | Requests (sent/answered) | Tokens | Planner latency | Selector latency |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...report.targets.flatMap((target) =>
+      target.runs.map(
+        (row) =>
+          `| ${cell(target.id)} | ${cell(row.journey)} | ${cell(row.viewport)} | ${row.attempt} | ${row.outcome ?? 'no result'} | ${row.calls.dispatched}/${row.calls.completed} | ${tokenCell(row.tokens)} | ${ms(row.latencyTotalMs.planner)} (${row.latency.planner.n}) | ${ms(row.latencyTotalMs.selector)} (${row.latency.selector.n}) |`,
+      ),
+    ),
+    ...report.targets.flatMap((target) =>
+      target.unattributedCalls
+        ? [
+            '',
+            `Target ${cell(target.id)}: ${target.unattributedCalls} answered request(s) not attributed to runs (recorded before per-run attribution); per-run totals are unavailable for them.`,
+          ]
+        : [],
     ),
     '',
     '## Application outcome',
