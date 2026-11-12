@@ -1,0 +1,43 @@
+{
+  "name": "Billing page performance — deterministic decisions",
+  "baseURL": "http://127.0.0.1:4173",
+  "requiresAuth": false,
+  "viewports": [{ "name": "desktop", "width": 1280, "height": 800 }],
+  "journeys": [
+    {
+      "id": "apply",
+      "goal": "Apply the billing changes",
+      "persona": "A billing admin reviewing the plan",
+      "startPath": "/",
+      "allowedPaths": ["/"],
+      "ready": { "kind": "visible", "target": { "by": "testId", "value": "promo" } },
+      "success": [
+        { "kind": "text", "target": { "by": "testId", "value": "status" }, "pattern": "^Applied$" }
+      ],
+      "interactions": [
+        {
+          "kind": "click",
+          "target": { "by": "role", "role": "button", "name": "Apply" },
+          "description": "Apply the changes"
+        }
+      ],
+      "maxSteps": 4
+    }
+  ],
+  "audits": {
+    "checks": [
+      {
+        "id": "performance.web",
+        "at": ["ready", "completion"],
+        "conditions": { "cpuSlowdown": 2 },
+        "interactionTargets": ["#apply"],
+        "budgets": [
+          { "metric": "lcpMs", "max": 600, "severity": "serious" },
+          { "metric": "cls", "max": 0.1, "severity": "moderate" },
+          { "metric": "inpMs", "max": 200, "severity": "moderate" }
+        ]
+      }
+    ],
+    "failOn": "serious"
+  }
+}

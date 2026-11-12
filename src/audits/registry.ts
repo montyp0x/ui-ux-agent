@@ -20,6 +20,7 @@ import { layoutResponsiveAudit } from './layout-output.js';
 import { visualBaselineAudit } from './visual.js';
 import { keyboardFocusAudit } from './keyboard.js';
 import { stateChecksAudit } from './state-checks.js';
+import { performanceWebAudit } from './performance.js';
 
 export type AuditContext<C extends AuditConfig = AuditConfig> = {
   checkpoint: AuditCheckpoint;
@@ -59,6 +60,7 @@ export const AUDITS: Registry = {
   'visual.baseline': visualBaselineAudit,
   'journey.state-checks': stateChecksAudit,
   'keyboard.focus': keyboardFocusAudit,
+  'performance.web': performanceWebAudit,
 };
 
 export const auditDefinition = (id: AuditId): AuditDefinition =>

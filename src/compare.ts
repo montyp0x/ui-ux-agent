@@ -15,6 +15,11 @@
 // assessed the same check (audit, checkpoint and page): a missing, errored,
 // unsupported, incomplete or unreached check leaves the base finding
 // `unassessed`, never resolved.
+//
+// performance.web measurements are compared per journey, viewport,
+// checkpoint, document path and metric, and only when both sides measured
+// under the same conditions in the same browser with the same metric
+// support; otherwise the entry is `incompatible`. There is no overall score.
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -33,6 +38,11 @@ import {
   type RunIdentity,
 } from './identity.js';
 import { RESULT_VERSION, parseResults, type Result } from './results.js';
+import {
+  PERFORMANCE_METRICS,
+  performanceMetricSchema,
+  type PerformanceMeasurement,
+} from './audits/performance-contract.js';
 import {
   gates,
   resolveGate,
@@ -157,6 +167,36 @@ export const gateFailureSchema = z
   .strict();
 export type GateFailure = z.infer<typeof gateFailureSchema>;
 
+const performanceSide = z
+  .object({
+    // Measurements (attempts) behind the median.
+    samples: count,
+    median: z.number(),
+    min: z.number(),
+    max: z.number(),
+  })
+  .strict()
+  .nullable();
+
+export const performanceComparisonSchema = z
+  .object({
+    journey: z.string(),
+    viewport: z.string(),
+    checkpoint: z.string().min(1),
+    path: z.string(),
+    metric: performanceMetricSchema,
+    // compared: both sides measured it under the same conditions.
+    // incompatible: the conditions, browser or metric support differ, so
+    // the values are not compared. not_measured: a side has no value.
+    status: z.enum(['compared', 'incompatible', 'not_measured']),
+    reason: z.string().nullable(),
+    base: performanceSide,
+    candidate: performanceSide,
+    // Candidate median minus base median; null unless compared.
+    delta: z.number().nullable(),
+  })
+  .strict();
+
 export const comparisonSchema = z
   .object({
     comparisonVersion: z.literal(COMPARISON_VERSION),
@@ -231,6 +271,9 @@ export const comparisonSchema = z
         })
         .strict(),
     ),
+    // performance.web metrics of both runs (added within comparison version
+    // 1). Empty when the comparison is invalid or nothing was measured.
+    performance: z.array(performanceComparisonSchema),
     counts: z
       .object({
         new: count,
@@ -252,6 +295,7 @@ export const comparisonSchema = z
   })
   .strict();
 export type Comparison = z.infer<typeof comparisonSchema>;
+export type PerformanceComparison = Comparison['performance'][number];
 
 // ---------------------------------------------------------------- loading
 
@@ -759,6 +803,7 @@ export function compareRuns(
     outcomes: [],
     findings: emptyFindings(),
     checks: [],
+    performance: [],
     counts: {
       new: 0,
       persisting: 0,
@@ -957,8 +1002,139 @@ export function compareRuns(
     coverageLost: comparison.checks.filter((check) => check.coverageLost)
       .length,
   };
+  comparison.performance = comparePerformance(baseResults, candidateResults);
   comparison.gate = { passed: !failures.length, config: gate, failures };
   return comparison;
+}
+
+// ------------------------------------------------------------ performance
+
+type Measured = {
+  journey: string;
+  viewport: string;
+  checkpoint: string;
+  path: string;
+  measurements: PerformanceMeasurement[];
+};
+
+function measurementsOf(results: Result[]): Map<string, Measured> {
+  const out = new Map<string, Measured>();
+  for (const result of results)
+    for (const run of result.audits.runs) {
+      if (run.auditId !== 'performance.web' || !run.performance) continue;
+      const path = run.performance.document.path;
+      const key = canonicalJSON([
+        result.journey,
+        result.viewport,
+        run.checkpoint.id,
+        path,
+      ]);
+      const entry = out.get(key) ?? {
+        journey: result.journey,
+        viewport: result.viewport,
+        checkpoint: run.checkpoint.id,
+        path,
+        measurements: [],
+      };
+      entry.measurements.push(run.performance);
+      out.set(key, entry);
+    }
+  return out;
+}
+
+// What must match for two measurements to be compared.
+const conditionsKey = (measurement: PerformanceMeasurement) =>
+  canonicalJSON({
+    conditions: measurement.conditions,
+    browser: measurement.browser,
+    unsupported: measurement.unsupported,
+  });
+
+function stats(values: number[]): z.infer<typeof performanceSide> {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2
+      ? sorted[middle]!
+      : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  return {
+    samples: sorted.length,
+    median: Math.round(median * 10000) / 10000,
+    min: sorted[0]!,
+    max: sorted.at(-1)!,
+  };
+}
+
+export function comparePerformance(
+  base: Result[],
+  candidate: Result[],
+): PerformanceComparison[] {
+  const baseMeasured = measurementsOf(base);
+  const candidateMeasured = measurementsOf(candidate);
+  const out: PerformanceComparison[] = [];
+  for (const key of new Set([
+    ...baseMeasured.keys(),
+    ...candidateMeasured.keys(),
+  ])) {
+    const a = baseMeasured.get(key);
+    const b = candidateMeasured.get(key);
+    const where = (a ?? b)!;
+    const keys = (entry: Measured | undefined) =>
+      new Set(entry?.measurements.map(conditionsKey) ?? []);
+    const baseKeys = keys(a);
+    const candidateKeys = keys(b);
+    let incompatible: string | null = null;
+    if (baseKeys.size > 1 || candidateKeys.size > 1)
+      incompatible =
+        'One run measured this document under different conditions or browsers';
+    else if (a && b && [...baseKeys][0] !== [...candidateKeys][0]) {
+      const x = a.measurements[0]!;
+      const y = b.measurements[0]!;
+      incompatible = `Measured under different conditions, browser or metric support (base ${x.browser}: ${canonicalJSON(x.conditions)}; candidate ${y.browser}: ${canonicalJSON(y.conditions)})`;
+    }
+    for (const metric of PERFORMANCE_METRICS) {
+      const values = (entry: Measured | undefined) =>
+        (entry?.measurements ?? []).flatMap((measurement) => {
+          const value = measurement.metrics[metric];
+          return value === null ? [] : [value];
+        });
+      const baseStats = stats(values(a));
+      const candidateStats = stats(values(b));
+      if (!baseStats && !candidateStats) continue;
+      const compared = !incompatible && baseStats && candidateStats;
+      out.push({
+        journey: where.journey,
+        viewport: where.viewport,
+        checkpoint: where.checkpoint,
+        path: where.path,
+        metric,
+        status: incompatible
+          ? 'incompatible'
+          : compared
+            ? 'compared'
+            : 'not_measured',
+        reason:
+          incompatible ??
+          (compared
+            ? null
+            : `Only the ${baseStats ? 'base' : 'candidate'} run has a value`),
+        base: baseStats,
+        candidate: candidateStats,
+        delta: compared
+          ? Math.round((candidateStats.median - baseStats.median) * 10000) /
+            10000
+          : null,
+      });
+    }
+  }
+  return out.sort(
+    (x, y) =>
+      x.journey.localeCompare(y.journey) ||
+      x.viewport.localeCompare(y.viewport) ||
+      x.checkpoint.localeCompare(y.checkpoint) ||
+      x.path.localeCompare(y.path),
+  );
 }
 
 // Null when the candidate assessed the base finding's check; otherwise why

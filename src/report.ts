@@ -7,6 +7,7 @@ import type {
 import type { Quality, Result } from './results.js';
 import { summarize } from './summary.js';
 import { frictionHTML } from './friction/report.js';
+import { performanceHTML } from './performance-report.js';
 
 export function escapeHTML(value: string): string {
   return value.replace(
@@ -196,7 +197,7 @@ export function reportHTML(
     const attention = audits.runs.some(
       (run) => run.visual && run.visual.status !== 'match',
     );
-    return `${budgetNote}<details${attention ? ' open' : ''}><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${visualHTML(audits.runs, link)}${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
+    return `${budgetNote}<details${attention ? ' open' : ''}><summary>Audits: ${audits.runs.length} run(s), ${violations.length} violation(s), ${review.length} needing manual review · ${(auditMs / 1000).toFixed(1)} s audit time · fail on ${escapeHTML(audits.failOn)}</summary><ul>${runs}${notReached}</ul>${visualHTML(audits.runs, link)}${performanceHTML(audits.runs, escapeHTML)}${violations.length ? `<h3>Audit violations</h3><ul>${violations.map(finding).join('')}</ul>` : ''}${review.length ? `<h3>Needs manual review</h3><p><small>Not counted in the quality verdict.</small></p><ul>${review.map(finding).join('')}</ul>` : ''}</details>`;
   };
   // What each evidence format captured or why it was disabled.
   const evidence = ({ evidence }: Result) => {

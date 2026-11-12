@@ -28,6 +28,10 @@ import { runPlaywrightAudit } from './playwright-audits.js';
 import { protectedScreenshot } from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
 import { focusKey } from './playwright-keyboard.js';
+import {
+  preparePerformance,
+  type PerformanceRecorder,
+} from './playwright-performance.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -100,12 +104,16 @@ export async function playwrightDriver(
       // Written by the runner, not by Playwright, so the file is private
       // (0600) from the moment it exists.
       const capture = async (path: string) => {
+        const started = Date.now();
         const image = await protectedScreenshot(page, evidence?.screenshots, {
           fullPage: false,
         });
+        timing?.screenshot(Date.now() - started);
         await writeFile(path, image, { mode: 0o600 });
         return image;
       };
+      // Set once the page exists (performance.web suites only).
+      let timing: PerformanceRecorder | null = null;
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)
@@ -141,6 +149,14 @@ export async function playwrightDriver(
           /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
             await page.evaluate(() => navigator.userAgent),
           )?.[1] ?? null;
+      // Before the first navigation: collector script and conditions.
+      timing = await preparePerformance(
+        context,
+        page,
+        suite,
+        browserName,
+        log,
+      );
       const browserErrors: string[] = [];
       // Screenshot path of each observation step, for audit evidence.
       const screenshots = new Map<number, string>();
@@ -292,7 +308,7 @@ export async function playwrightDriver(
           await capture(path);
         },
         runAudit(request) {
-          return runPlaywrightAudit(page, request, {
+          const run = () => runPlaywrightAudit(page, request, {
             journey,
             screenshotAt: (step) => screenshots.get(step) ?? null,
             build: {
@@ -308,7 +324,12 @@ export async function playwrightDriver(
             // pre-capture masks as every other screenshot, on top of the
             // audit's own dynamic-region masks.
             protection: evidence?.screenshots,
+            performance: timing,
           });
+          // Another audit's page work is harness time for performance.web.
+          return timing && request.config.id !== 'performance.web'
+            ? timing.during(run)
+            : run();
         },
         async finish(trace) {
           const recording = page.video();
