@@ -549,6 +549,7 @@ What was executed for this table: macOS 27.0.1 (arm64), Playwright 1.61.1, headl
 | `visual.baseline` (missing → approve → match) | verified | verified | `unsupported` |
 | `journey.state-checks` | verified | verified (all 7 state example journeys pass) | `unsupported` |
 | `keyboard.focus` | verified | `unsupported` (Tab model above) | `unsupported` |
+| [`design.tokens`](#design-tokens) | verified | verified (finds off-scale colours, measured completely; the `test/design-tokens.test.ts` page tests also passed in a one-off run on WebKit) | `unsupported` |
 | Screenshot masks (planted secret never in an image) | verified | verified | not verified |
 | Trace and video | verified | verified | not verified |
 | Dedicated persistent profile (`--profile`), same version in the identity | verified | verified | not verified |
@@ -557,7 +558,7 @@ What was executed for this table: macOS 27.0.1 (arm64), Playwright 1.61.1, headl
 | Environment `forcedColors: active` | applied: media query matches and author colours are replaced | `unsupported`: withheld, because only the media query matches; author colours are not replaced (`forcedColors: none` is applied) | `unsupported`: withheld, untested |
 | Environment `pseudoLocalization` (init script pads page text) | applied | applied | `unsupported`: withheld, untested |
 | Environment selection (`combinations`, capped `matrix`, at most 24) and per-environment results, baselines and finding ids | verified | verified (finding ids also carry the engine) | runs allowed; every setting `unsupported` |
-| CSS Typed OM (`computedStyleMap`) | lengths: padding, margin and radii are `CSSUnitValue` px | partial: the API exists and padding/margin are `CSSUnitValue`, but border-radius longhands are an untyped `CSSStyleValue` (`"8px"`; `CSSNumericValue.parse` reads it) | untested |
+| CSS Typed OM (`computedStyleMap`) | lengths: padding, margin and radii are `CSSUnitValue` px | partial: the API exists and padding/margin are `CSSUnitValue`, but border-radius longhands are an untyped `CSSStyleValue` (`"8px"`; `CSSNumericValue.parse` reads it); `design.tokens` reads radii from the computed style text, and parses any untyped margin, padding or gap with `CSSNumericValue.parse` | untested |
 
 Two things need care when reading a result. WebKit's forced-colours emulation would pass a `matchMedia` read-back without changing how the page renders, so the harness never applies it there and reports it `unsupported`. And the default WebKit tab model is that of macOS Safari; Linux WebKit was not executed. Running the existing low-level Chromium tests against WebKit (a one-off exploration, not part of `npm test`) found only these differences, plus timing-sensitive tests that passed when rerun alone.
 

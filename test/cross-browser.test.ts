@@ -118,6 +118,17 @@ const AUDITS = {
     { id: 'visual.baseline', at: ['ready'], mask: ['.wide'] },
     { id: 'journey.state-checks' },
     { id: 'keyboard.focus' },
+    // The fixture's #ccc block and red secret are off this scale.
+    {
+      id: 'design.tokens',
+      at: ['ready'],
+      include: ['main'],
+      tokens: {
+        version: 1,
+        color: { ink: '#000000', paper: '#ffffff' },
+        spacing: { s4: '24px' },
+      },
+    },
   ],
 };
 
@@ -365,6 +376,12 @@ for (const engine of ENGINES) {
         assert.ok(ruleIds('layout.responsive').length > 0);
       if (supported('journey.state-checks'))
         assert.deepEqual(ruleIds('journey.state-checks'), ['state-expectation']);
+      if (supported('design.tokens')) {
+        // Measured completely (Typed OM lengths read on this engine), and
+        // the off-scale colours found.
+        assert.deepEqual(auditStatus(first.result, 'design.tokens'), ['findings']);
+        assert.ok(ruleIds('design.tokens').includes('color'));
+      }
       // Engine-wide gaps are listed on the result.
       for (const gap of ENGINE_GAPS[engine])
         assert.ok(
