@@ -19,6 +19,13 @@ import { starterSuite } from './scaffold.js';
 import { exitCode, summarize } from './summary.js';
 import { pruneRuns } from './evidence/retention.js';
 import { Redactor, shortSecretLimitation } from './evidence/redact.js';
+import { buildFrom, modelIdentity } from './identity.js';
+import { comparisonExitCode, loadRun } from './compare.js';
+import {
+  comparisonSummary,
+  loadGate,
+  writeComparison,
+} from './compare-files.js';
 
 // Declared secrets too short to redact from text are shown when the suite is
 // loaded (and listed on every result), never silently left in evidence.
@@ -51,6 +58,9 @@ const options = {
   'prune-runs': { type: 'string' },
   'dry-run': { type: 'boolean' },
   baselines: { type: 'string' },
+  build: { type: 'string' },
+  compare: { type: 'string' },
+  gate: { type: 'string' },
 } as const;
 // Unknown flags (including the removed --from-browser, which read sessions out
 // of an installed browser's personal profile) are rejected with exit code 2.
@@ -82,13 +92,16 @@ if (values.help) {
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--build ID] [--compare BASE_RUN [--gate GATE.json]] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run compare -- BASE_RUN CANDIDATE_RUN [--gate GATE.json] [--out NEW_DIRECTORY]\n' +
       'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --checkpoint ID | --all) [--replace]\n' +
       '\n' +
       'npm run run -- --prune-runs runs [--dry-run]   (deletes run directories whose evidence.retentionDays have passed)\n' +
       '\n' +
       '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.\n' +
       '--baselines DIR is your local directory of approved visual baselines, outside Git; runs only read it, and --prune-runs never touches it.\n' +
+      '--build ID records the build or revision under test (else UIUX_BUILD; never guessed). --compare BASE_RUN compares this run with an earlier run of the same suite after it finishes and applies the --gate.\n' +
+      'Exit codes: 0 passed, 1 a journey did not pass, a data cleanup failed or the comparison gate failed, 2 configuration or input error, 3 the --compare runs are incompatible.\n' +
       'Runs are never overwritten, uploaded or deleted automatically.',
   );
 } else if (values['prune-runs']) {
@@ -230,7 +243,13 @@ if (values.help) {
           `Valid suite: ${suite.name} (${suite.journeys.length} journeys, ${suite.viewports.length} viewports)`,
         );
       } else {
+        if (values.gate && !values.compare)
+          throw new Error('--gate requires --compare BASE_RUN');
+        // Checked before the run: a bad gate or an unreadable base fails now.
+        const gate = values.compare ? await loadGate(values.gate) : null;
+        if (values.compare) await loadRun(values.compare, 'base');
         loadCredentials();
+        const build = buildFrom(values.build, process.env);
         // Credentials loaded from .env are redacted too.
         redactor = new Redactor({
           patterns: suite.evidence.redact,
@@ -277,6 +296,8 @@ if (values.help) {
             repeat: values.repeat ? Number(values.repeat) : 1,
             baselines: values.baselines,
             signal: cancel.signal,
+            build,
+            modelIdentity: modelIdentity(options),
           },
         );
         // The exit code follows the functional outcome only; the quality
@@ -300,6 +321,21 @@ if (values.help) {
         console.log(`Report: ${directory}/report.html`);
         // A failed data cleanup fails the command even when every run passed.
         process.exitCode = exitCode(results);
+        if (values.compare && gate) {
+          const files = await writeComparison({
+            base: values.compare,
+            candidate: directory,
+            gate,
+            out: resolve(directory, 'comparison'),
+          });
+          for (const line of comparisonSummary(files.comparison))
+            console.log(files.redactor.text(line));
+          console.log(`Comparison report: ${files.html}`);
+          const compared = comparisonExitCode(files.comparison);
+          // An invalid comparison (3) wins; otherwise any failure is 1.
+          process.exitCode =
+            compared === 3 ? 3 : Math.max(exitCode(results), compared);
+        }
       }
     }
   } catch (caught) {

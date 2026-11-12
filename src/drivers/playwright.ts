@@ -64,7 +64,26 @@ export async function playwrightDriver(
   // Only a dedicated test profile; a personal browser profile is refused.
   if (profile) profile = await dedicatedProfile(profile);
   const browser = profile ? null : await engine.launch(launchOptions);
+  const buildName = build.browserChannel
+    ? `channel:${build.browserChannel}`
+    : build.browserExecutable
+      ? 'executable'
+      : 'bundled';
+  // A persistent-profile context has no Browser object: its version is read
+  // from the first session's user agent.
+  let profileVersion: string | null = null;
   return {
+    environment() {
+      return {
+        driver: 'playwright',
+        browser: {
+          name: browserName,
+          version: browser?.version() ?? profileVersion,
+          build: buildName,
+          headless,
+        },
+      };
+    },
     async openSession({
       suite,
       journey,
@@ -117,6 +136,11 @@ export async function playwrightDriver(
       const page = browser
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
+      if (!browser && profileVersion === null)
+        profileVersion =
+          /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
+            await page.evaluate(() => navigator.userAgent),
+          )?.[1] ?? null;
       const browserErrors: string[] = [];
       // Screenshot path of each observation step, for audit evidence.
       const screenshots = new Map<number, string>();

@@ -8,6 +8,7 @@ import type {
 import type { AuditConfig } from '../audits/config.js';
 import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
 import type { EvidenceProtection } from '../evidence/protection.js';
+import type { DriverEnvironment } from '../identity.js';
 
 export type EventLogger = (event: string, data: unknown) => Promise<void>;
 export type SessionOptions = {
@@ -80,5 +81,9 @@ export interface UISession {
 
 export interface UIDriver {
   openSession(options: SessionOptions): Promise<UISession>;
+  // The driver and browser build, for the run identity. Called after a
+  // session opened. Drivers without it are recorded as `custom` (or the
+  // suite platform's own driver) with no browser.
+  environment?(): Promise<DriverEnvironment> | DriverEnvironment;
   close(): Promise<void>;
 }

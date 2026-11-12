@@ -501,6 +501,7 @@ Current macOS limits: accessibility quality varies by app (custom-drawn UI may e
 - `src/planning.ts`: semantic action signatures and bounded planner refresh rules.
 - `src/report.ts`: local evidence report.
 - `src/friction/`: task-friction summaries computed from a run's event stream, reference-path comparison and the review rubric.
+- `src/identity.ts`, `src/compare.ts`, `src/gate.ts`, `src/compare-files.ts`, `src/compare-report.ts`, `src/compare-cli.ts`: run identity, finding identity, compatible-run comparison, gates and `npm run compare`.
 
 `runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites, browser applications and macOS apps; other native platforms (Windows, mobile) are not implemented.
 
@@ -547,7 +548,7 @@ Once the suite, credentials and session are supplied, the CLI executes without i
 - `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median agent actions and agent duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, its [task friction](#task-friction) with links to the observed steps, and evidence links. Results are redacted text, so a recorded path can contain `[REDACTED:<label>]` when a secret is part of it; the report still links the file without printing the secret: a path whose secret is only in the run (or baseline) directory's own location is linked relative to the run directory, and a path redacted below it is matched to the one file it names and linked through `evidence-links/<content sha256, 16 hex>.<ext>` in the run directory (a hard link to a file inside the run, a private copy of one outside it, such as an approved baseline). A redacted path that names no file or several is not guessed: it links to the in-page anchor `#evidence-path-redacted`.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, the redacted environment names and setup value keys, and the protection's limitations for the run, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category, and the optional `friction` summary (see [Task friction](#task-friction); absent in results written before it).
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, the redacted environment names and setup value keys, and the protection's limitations for the run, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category, the optional `friction` summary (see [Task friction](#task-friction); absent in results written before it), and an optional `identity`: what the run measured, used to compare runs (see [Comparing runs](#comparing-runs)); results without it are still version 4 but cannot be compared.
 - Per journey/viewport: screenshots, Playwright trace and optional video, when the evidence policy allows them.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
@@ -578,7 +579,7 @@ Every result's `evidence` lists each format (`model_payloads`, `provider_screens
 
 **Redaction is not a guarantee.** It removes the patterns, values and elements it is given and well-known credential shapes; it cannot recognize arbitrary unknown sensitive content (names, addresses, free text, images). Declare what a suite's application shows, prefer test accounts and synthetic data, and keep run directories local.
 
-Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey or a failed data cleanup, **2** configuration/startup error. Exit codes follow the functional outcome (and data cleanup) only; the quality verdict is reported beside it and does not change the exit code.
+Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey or a failed data cleanup, **2** configuration/startup error. Exit codes follow the functional outcome (and data cleanup) only; the quality verdict is reported beside it and does not change the exit code. With `--compare BASE_RUN`, a failed comparison gate is also **1**, and **3** means the runs are incompatible (see [Comparing runs](#comparing-runs)).
 
 ### Outcome codes
 
@@ -616,6 +617,75 @@ Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoi
 The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Keyboard/focus checks are listed as unsupported unless the [`keyboard.focus`](#keyboard-only-journeys) audit is configured. `visual.baseline` is listed as unsupported unless the opt-in [visual baseline](#visual-baselines) audit is configured. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
+
+## Comparing runs
+
+A comparison answers what changed between a **base** run (for example the last release) and a **candidate** run (the build under review) of the same suite: which findings are new, which persist, which are resolved and which the candidate could not assess, and whether the candidate passes a configurable gate.
+
+```sh
+npm run run -- --suite suite.json --build 4f1c2e9 --out runs/base
+npm run run -- --suite suite.json --url https://preview.example --build 9a7b3d1 --out runs/candidate
+npm run compare -- runs/base runs/candidate [--gate gate.json] [--out NEW_DIRECTORY]
+# or in one step, comparing the new run with an earlier one:
+npm run run -- --suite suite.json --build 9a7b3d1 --compare runs/base [--gate gate.json]
+```
+
+`npm run compare` writes `comparison.json` (contract: [schemas/comparison.schema.json](schemas/comparison.schema.json)) and `comparison.html` into `--out` (a new directory; default `comparison-<time>` inside the candidate run, so `--prune-runs` removes it with the run), and prints the counts, warnings and gate failures. `--compare` writes the same files into the new run's `comparison/` directory. Nothing is uploaded; evidence links point into the local run directories.
+
+| Exit code | `npm run compare` | `npm run run -- --compare` |
+| --- | --- | --- |
+| 0 | compatible runs, gate passed | every journey passed and the gate passed |
+| 1 | compatible runs, gate failed | a journey did not pass, a data cleanup failed, or the gate failed |
+| 2 | usage or input error: missing or corrupt `results.json`, invalid gate file, the same run twice, an existing `--out` | configuration or input error (the gate file and the base run are checked before the run starts) |
+| 3 | the runs are incompatible: the comparison is invalid | the same |
+
+**Run identity.** Every result records `identity`: the build (`--build ID`, else the `UIUX_BUILD` variable, else `null`; it is never guessed from Git or the deployment), the suite (its name, a SHA-256 of the normalized suite configuration after redaction, without `baseURL` and `evidence.retentionDays`, so secret values never feed it and a new preview host is the same suite; the tested `target` origin; and the selected journeys, viewports and repeat count), the engine (`package.json` version, result and audit contract versions), the environment (platform, driver, browser name, version, build and headless mode, OS platform, architecture and major release, Node.js) and the model configuration (planner and selector protocol, endpoint origin and path, and model name; never keys, headers, user info or query strings; `null` for a custom `Models` implementation such as the scripted demos). The identity goes through the run's redaction like the rest of the result.
+
+**Compatibility.** Two runs are compared only when they measured the same thing: the same identity and contract versions, engine version, suite hash, platform, driver, browser (name, build, version, headless), OS platform and architecture, and model configuration. Otherwise the comparison is invalid (exit 3): `compatible` is false, `incompatibilities` lists each differing field with both values and why it matters, and no finding is classified. A run without `identity`, or with another `resultVersion`, is incompatible too. Unknown builds, the same build on both sides, a different OS release or Node.js version, another target origin and a different journey/viewport selection are `warnings`.
+
+**Finding identity.** Each finding gets a stable `id` that leaves out what changes between runs of the same UI: steps, timestamps, screenshots and evidence paths, the run's `{{marker}}`, URL origins, queries and fragments, candidate ids, and digits in descriptions (pixel sizes, counts, ports). An audit finding is identified by journey, viewport, audit, rule, its first checkpoint, the URL path it was measured on, its tags and **each sampled target** (the selector, or the description without digits when there is none), so one more element breaking a known rule is new while the known elements persist; `groupId` ties the targets of one finding together. A runner finding (detour, policy block, action error, browser error, loop, selector recovery, data cleanup, model hypothesis) is identified by journey, viewport, kind, category and its description without digits. Repeats of a journey/viewport are merged: a finding seen in any attempt counts.
+
+**Classification.**
+
+- `new`: only the candidate reports it.
+- `persisting`: both report it. `escalated` when it gates in the candidate but did not in the base (a higher severity, or `needs_review` that became a violation).
+- `resolved`: only the base reports it, **and** the candidate assessed the same audit at the same checkpoint (`clean` or `findings`), on the same page when the finding was measured at its checkpoint's page, and did not sample other elements of the same still-failing rule.
+- `unassessed`: only the base reports it and the candidate cannot show it is gone, with a `reason`: `run_missing` (the candidate did not run the journey/viewport), `not_run`, `not_reached` (checkpoint configured but never reached), `unsupported`, `error`, `incomplete` (for example a visual check with no approved baseline, `missing`), `path_not_assessed` (the checkpoint was reached on another page) or `sampled`. A missing check, baseline or errored audit is never an improvement.
+
+`checks` lists every audit checkpoint either run configured or recorded with its state on each side (`assessed`, `incomplete`, `error`, `unsupported`, `not_reached`, `not_run`); `coverageLost` marks the ones the base assessed and the candidate did not, so a check that stopped running cannot pass as "no new findings". `outcomes` compares the functional pass counts per journey/viewport.
+
+**Gates.** The gate is a JSON file ([schemas/gate.schema.json](schemas/gate.schema.json)), validated when it is loaded; every field is optional:
+
+```json
+{
+  "failOn": "serious",
+  "persisting": false,
+  "unassessed": "fail",
+  "outcomes": "regressions",
+  "needsReview": false,
+  "hypotheses": false,
+  "observed": false,
+  "rules": [
+    { "id": "accessibility.axe/color-contrast", "failOn": "moderate" },
+    { "id": "layout.responsive/*", "gate": "never" }
+  ]
+}
+```
+
+| Field | Default | Fails the gate on |
+| --- | --- | --- |
+| `failOn` | the suite's `audits.failOn` | new or escalated violations at or above this severity (`none`: no severity gates); a violation with no severity gates at every level except `none` |
+| `persisting` | `false` | also gating findings present in both runs |
+| `unassessed` | `fail` | gating base findings the candidate could not assess, checks that lost coverage and journeys/viewports the candidate did not run; `report` lists them without failing |
+| `outcomes` | `regressions` | a journey/viewport that passed in every base run and not in every candidate run; `any`: any non-passing candidate run; `ignore` |
+| `needsReview` | `false` | also `needs_review` items |
+| `hypotheses` | `false` | also model hypotheses (unreviewed model output) |
+| `observed` | `false` | also the runner's own findings (detours, policy blocks, action and browser errors …), which have no severity |
+| `rules` | none | per rule: `id` is `<audit id>/<rule id>`, `<audit id>/*`, `finding/<category>` or `finding/*` (an exact id wins); `gate: "never"`, `gate: "always"` or a `failOn` of its own. Unknown audit ids are rejected |
+
+Each failure in `gate.failures` has a `code` (`new_finding`, `escalated_finding`, `persisting_finding`, `unassessed_finding`, `coverage_lost`, `run_missing`, `outcome_regression`, `outcome_not_passed`), a message and the finding id. The gate is separate from each run's quality verdict and functional outcome, which it does not change: a candidate whose journeys all pass fails the gate on a new serious violation.
+
+Comparison output is redacted with the environment's credential values and both runs' declared `redact` patterns and `redactEnv` variables (read from their `suite.json`), on top of the redaction the runs already applied. Limits: identities rely on the analyzer's selectors, so generated ids or classes in selectors (for example framework-generated `:r1:` ids) make a finding look new; a finding whose page path contains a per-run value other than the `{{marker}}` (for example a `{{data.*}}` value) does too. Comparing two single runs of a model-driven journey compares one path each; use `--repeat` on both sides when paths vary.
 
 ## Development
 

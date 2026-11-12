@@ -9,12 +9,15 @@
 // it also adds `dataLifecycle` (the reset/setup/cleanup hooks of authorized
 // write flows, see src/lifecycle.ts), the data_setup_failed and run_cancelled
 // codes and the cancelled category. The optional `friction` summary was added
-// within version 4 (readers of earlier version-4 results see it absent).
+// within version 4 (readers of earlier version-4 results see it absent), as
+// was an optional `identity` (src/identity.ts), which records what the run
+// measured: readers of version 4 that ignore either are unaffected.
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
 import { evidenceReportSchema } from './evidence/policy.js';
 import { dataLifecycleResultSchema } from './lifecycle.js';
 import { frictionSchema } from './friction/contract.js';
+import { runIdentitySchema } from './identity.js';
 
 export const RESULT_VERSION = 4;
 
@@ -256,6 +259,10 @@ export const resultSchema = z
     // (src/friction). Optional: added within version 4, absent in results
     // written before it. Descriptive only; never changes outcome or quality.
     friction: frictionSchema.optional(),
+    // What the run measured (build, suite, engine, environment, models), for
+    // comparing runs (src/compare.ts). Optional: older runs lack it and
+    // cannot be compared.
+    identity: runIdentitySchema.optional(),
   })
   .strict()
   .superRefine((result, ctx) => {
