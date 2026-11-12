@@ -18,7 +18,14 @@ import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
 import { exitCode, summarize } from './summary.js';
 import { pruneRuns } from './evidence/retention.js';
-import { Redactor } from './evidence/redact.js';
+import { Redactor, shortSecretLimitation } from './evidence/redact.js';
+
+// Declared secrets too short to redact from text are shown when the suite is
+// loaded (and listed on every result), never silently left in evidence.
+function warnShortSecrets(redactor: Redactor): void {
+  for (const name of redactor.tooShort)
+    console.error(`Warning: ${shortSecretLimitation(name)}`);
+}
 
 const options = {
   suite: { type: 'string' },
@@ -212,6 +219,13 @@ if (values.help) {
           `Saved ${out}: ${report.keptCookies} cookies and ${report.keptOrigins.length} origins for ${suiteOrigins(suite).join(', ')}; dropped ${Object.values(report.droppedCookies).reduce((sum, count) => sum + count, 0)} cookies (${Object.keys(report.droppedCookies).join(', ') || 'none'}) and ${report.droppedOrigins.length} origins.`,
         );
       } else if (values.validate) {
+        warnShortSecrets(
+          new Redactor({
+            patterns: suite.evidence.redact,
+            envNames: suiteEvidencePolicy(suite).redactEnv,
+            env: process.env,
+          }),
+        );
         console.log(
           `Valid suite: ${suite.name} (${suite.journeys.length} journeys, ${suite.viewports.length} viewports)`,
         );
@@ -223,6 +237,7 @@ if (values.help) {
           envNames: suiteEvidencePolicy(suite).redactEnv,
           env: process.env,
         });
+        warnShortSecrets(redactor);
         const options = modelOptionsFromEnv(process.env);
         const directory = resolve(
           values.out ??

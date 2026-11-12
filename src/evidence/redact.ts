@@ -147,6 +147,41 @@ export function credentialEnvValues(
     .sort((a, b) => b.value.length - a.value.length);
 }
 
+// Declared secrets (suite-listed variables and model gateway header values)
+// that are set but shorter than MIN_DECLARED_LENGTH, by name. They are not
+// redacted from text: a 1–3 character value occurs throughout ordinary
+// evidence (counts, ports, timestamps, selectors), so replacing it would
+// corrupt the evidence and the pattern of replacements would point at the
+// value. They are reported instead (shortSecretLimitation).
+export function shortDeclaredSecrets(
+  env: Record<string, string | undefined>,
+  declared: string[] = [],
+): string[] {
+  const short = (value: string | undefined) =>
+    !!value && value.length < MIN_DECLARED_LENGTH;
+  const names = declared.filter((name) => short(env[name]));
+  for (const name of CREDENTIAL_HEADER_ENV) {
+    const raw = env[name];
+    if (!raw) continue;
+    try {
+      const headers: unknown = JSON.parse(raw);
+      if (headers && typeof headers === 'object')
+        for (const [header, value] of Object.entries(headers))
+          if (typeof value === 'string' && short(value))
+            names.push(`${name}.${header}`);
+    } catch {
+      // config.ts reports malformed header JSON.
+    }
+  }
+  return [...new Set(names)];
+}
+
+// What a short secret leaves unprotected, naming the secret, never its value
+// or length.
+export function shortSecretLimitation(name: string): string {
+  return `${name}: its value is shorter than ${MIN_DECLARED_LENGTH} characters and is not redacted from text evidence (event log, results, report, model payloads, text files) or masked where it appears as page text; masks of a field it is typed into still apply. Use a test value of at least ${MIN_DECLARED_LENGTH} characters.`;
+}
+
 export class Redactor {
   // Literal secret values (environment, then values a run learns), as
   // patterns, longest first.
@@ -155,8 +190,11 @@ export class Redactor {
   readonly declared: readonly TextPattern[];
   readonly builtIn: readonly TextPattern[] = BUILT_IN_PATTERNS;
   private compiled: { label: string; regex: RegExp }[] = [];
+  // Declared secrets too short to redact, by name (shortDeclaredSecrets).
+  readonly tooShort: readonly string[];
   constructor(options: RedactorOptions = {}) {
     const env = options.env ?? {};
+    this.tooShort = shortDeclaredSecrets(env, options.envNames ?? []);
     this.literalPatterns = credentialEnvValues(
       env,
       options.envNames ?? [],

@@ -11,7 +11,11 @@ import {
   type FormatContext,
   type FormatStatus,
 } from './policy.js';
-import { Redactor, type TextPattern } from './redact.js';
+import {
+  Redactor,
+  shortSecretLimitation,
+  type TextPattern,
+} from './redact.js';
 
 // What a driver needs to protect a screenshot before it is captured: elements
 // to cover, and text patterns whose visible matches (page text and input
@@ -37,6 +41,9 @@ export type EvidenceProtection = {
   // except the keys in publicValues, become secrets of the suite from now on.
   beginRun(data: Record<string, string>, publicValues: readonly string[]): void;
   report(sanitizedFiles: number): EvidenceReport;
+  // Warnings for the suite as loaded (declared secrets too short to redact),
+  // also listed in every result's evidence.limitations.
+  warnings: readonly string[];
 };
 
 export function evidenceProtection(
@@ -50,8 +57,11 @@ export function evidenceProtection(
     env,
   });
   const formats = evidenceFormats(policy, context);
-  // The current run's redacted setup value keys.
+  // Declared secrets too short to redact apply to every run.
+  const suiteLimitations = redactor.tooShort.map(shortSecretLimitation);
+  // The current run's redacted setup value keys, and those too short.
   let redactedData: string[] = [];
+  let runLimitations: string[] = [];
   return {
     redactor,
     screenshots: {
@@ -63,11 +73,17 @@ export function evidenceProtection(
     },
     formats,
     sensitive: sensitive(policy),
+    warnings: suiteLimitations,
     beginRun(data, publicValues) {
       redactedData = [];
+      runLimitations = [];
       for (const [key, value] of Object.entries(data)) {
-        if (publicValues.includes(key)) continue;
+        if (publicValues.includes(key) || !value) continue;
         if (redactor.addSecret(`data:${key}`, value)) redactedData.push(key);
+        else
+          runLimitations.push(
+            shortSecretLimitation(`dataLifecycle setup value data.${key}`),
+          );
       }
     },
     report: (sanitizedFiles) => ({
@@ -77,7 +93,7 @@ export function evidenceProtection(
         entry.label.startsWith('env:') ? [entry.label.slice('env:'.length)] : [],
       ),
       redactedData: [...redactedData],
-      limitations: [],
+      limitations: [...suiteLimitations, ...runLimitations],
       masks: policy.masks.length,
       formats,
       sanitizedFiles,

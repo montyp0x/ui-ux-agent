@@ -201,7 +201,13 @@ export function reportHTML(
           `<li><code>${escapeHTML(format.format)}</code> ${format.enabled ? 'enabled' : '<strong>disabled</strong>'} · ${escapeHTML(format.destination === 'provider' ? 'sent to the model provider' : 'local only')} · ${escapeHTML(format.protection.replace('_', ' '))}: ${escapeHTML(format.reason)}</li>`,
       )
       .join('');
-    return `<details><summary>Evidence: ${disabled.length ? `${disabled.length} format(s) disabled (${escapeHTML(disabled.map((format) => format.format).join(', '))})` : 'all formats enabled'} · ${evidence.declaredPatterns} suite pattern(s), ${evidence.redactedEnv.length} redacted environment value(s), ${evidence.redactedData.length} redacted setup value(s), ${evidence.masks} mask(s)</summary><ul>${items}</ul></details>`;
+    const limitations = evidence.limitations
+      .map(
+        (limitation) =>
+          `<li><strong>Limitation</strong>: ${escapeHTML(limitation)}</li>`,
+      )
+      .join('');
+    return `<details${evidence.limitations.length ? ' open' : ''}><summary>Evidence: ${disabled.length ? `${disabled.length} format(s) disabled (${escapeHTML(disabled.map((format) => format.format).join(', '))})` : 'all formats enabled'} · ${evidence.declaredPatterns} suite pattern(s), ${evidence.redactedEnv.length} redacted environment value(s), ${evidence.redactedData.length} redacted setup value(s), ${evidence.masks} mask(s)${evidence.limitations.length ? ` · <strong>${evidence.limitations.length} protection limitation(s)</strong>` : ''}</summary><ul>${limitations}${items}</ul></details>`;
   };
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(name)}</title>
 <style>table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}body{font:16px system-ui;margin:40px auto;max-width:1080px;padding:0 20px;color:#20252b;background:#f4f5f7}article{background:white;border:1px solid #ddd;border-radius:12px;padding:24px;margin:20px 0}img{width:100%;border:1px solid #ddd}h1,h2{line-height:1.2}a{color:#2255ac}code{overflow-wrap:anywhere}small{color:#596574}.passed,.quality-pass{color:#176339}.failed,.error,.quality-fail{color:#a12727}.blocked{color:#895700}.quality-not_evaluated{color:#596574}.audit-findings,.audit-error{color:#a12727}.audit-incomplete,.audit-unsupported{color:#895700}.audit-clean{color:#176339}.visual-match{color:#176339}.visual-mismatch{color:#a12727}.visual-missing,.visual-incompatible,.visual-unstable{color:#895700}.cleanup-failed,.hook-failed{color:#a12727}.cleanup-failed[role=alert]{border:2px solid #a12727;border-radius:8px;padding:12px;background:#fff5f5}.hook-ok{color:#176339}</style>
