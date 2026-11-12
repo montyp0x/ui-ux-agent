@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import {
   chromium,
   firefox,
@@ -76,11 +76,15 @@ export async function playwrightDriver(
       const traced = evidence ? formatEnabled(evidence.formats, 'trace') : true;
       const recorded =
         !!video && (evidence ? formatEnabled(evidence.formats, 'video') : true);
-      const capture = (path: string) =>
-        protectedScreenshot(page, evidence?.screenshots, {
-          path,
+      // Written by the runner, not by Playwright, so the file is private
+      // (0600) from the moment it exists.
+      const capture = async (path: string) => {
+        const image = await protectedScreenshot(page, evidence?.screenshots, {
           fullPage: false,
         });
+        await writeFile(path, image, { mode: 0o600 });
+        return image;
+      };
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)

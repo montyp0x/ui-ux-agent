@@ -5,7 +5,7 @@ import {
 } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -1030,6 +1030,8 @@ export async function macosDriver(): Promise<UIDriver> {
             ],
             { timeout: timeoutMs + 5000 },
           );
+          // screencapture writes with the default umask; evidence is private.
+          await chmod(path, 0o600);
         },
         async finish(trace) {
           if (evidence && !formatEnabled(evidence.formats, 'trace'))

@@ -3,7 +3,7 @@
 // adds) get the same redaction before the run is reported. Binary formats
 // (images, traces, videos) are not touched: screenshots are masked before
 // capture, and traces and videos are governed by the evidence policy.
-import { lstat, readdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { Redactor } from './redact.js';
 
@@ -71,4 +71,37 @@ export async function sanitizeTextFiles(
   };
   await walk(directory);
   return rewritten;
+}
+
+// Evidence is private to the user who ran it: every file under `directory`
+// becomes 0600 and every directory 0700. The runner writes its own files
+// with these modes; this covers what other writers create with the default
+// umask (Playwright traces and videos and their directories, the macOS
+// window capture, files an audit adds). Symlinks are never followed.
+// Returns the paths whose mode changed.
+export async function restrictPermissions(
+  directory: string,
+): Promise<string[]> {
+  const changed: string[] = [];
+  const restrict = async (path: string, mode: number, current: number) => {
+    if ((current & 0o777) === mode) return;
+    await chmod(path, mode);
+    changed.push(path);
+  };
+  const walk = async (dir: string): Promise<void> => {
+    for (const name of (await readdir(dir)).sort()) {
+      const path = join(dir, name);
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) continue;
+      if (info.isDirectory()) {
+        await restrict(path, 0o700, info.mode);
+        await walk(path);
+      } else if (info.isFile()) await restrict(path, 0o600, info.mode);
+    }
+  };
+  const root = await lstat(directory);
+  if (root.isSymbolicLink() || !root.isDirectory()) return changed;
+  await restrict(directory, 0o700, root.mode);
+  await walk(directory);
+  return changed;
 }

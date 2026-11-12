@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
@@ -370,6 +370,76 @@ test('an existing run directory is never reused or overwritten', async () => {
     );
     assert.equal(await readFile(manifest, 'utf8'), before);
     assert.equal(JSON.parse(before).uploaded, false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('an unauthenticated suite that declares nothing sensitive keeps its trace and video, and every run file is private (0600, directories 0700)', async () => {
+  const app = await fixture();
+  const directory = join(
+    await mkdtemp(join(tmpdir(), 'ui-ux-evidence-')),
+    'run',
+  );
+  const decide = {
+    async plan() {
+      return { objective: 'Continue', concerns: [] };
+    },
+    async choose() {
+      return {
+        type: 'choice' as const,
+        choice: 'no_match',
+        confidence: 1,
+        probabilities: { no_match: 1 },
+      };
+    },
+  };
+  try {
+    const parsed = suite(app.url);
+    const plain = suiteSchema.parse({
+      name: 'LOCAL evidence fixture',
+      baseURL: app.url,
+      viewports: parsed.viewports,
+      journeys: [parsed.journeys[0]],
+    });
+    const [result] = await runSuite(plain, decide, {
+      directory,
+      video: true,
+      env: {},
+    });
+    assert.ok(result);
+    // Default (auto) policy: nothing declared sensitive and no session, so
+    // the trace and the requested video are captured, locally.
+    const formats = Object.fromEntries(
+      result.evidence.formats.map((entry) => [entry.format, entry]),
+    );
+    assert.equal(formats.trace?.enabled, true, formats.trace?.reason);
+    assert.equal(formats.video?.enabled, true, formats.video?.reason);
+    assert.ok(result.trace && result.video);
+    const all = await files(directory);
+    const extensions = new Set(all.map((path) => extname(path)));
+    for (const extension of ['.png', '.zip', '.webm', '.json', '.html'])
+      assert.ok(extensions.has(extension), `no ${extension} evidence`);
+    for (const path of all)
+      assert.equal(
+        (await stat(path)).mode & 0o777,
+        0o600,
+        `${path} is not private`,
+      );
+    const directories = [directory];
+    for (const path of all)
+      for (
+        let dir = dirname(path);
+        dir.startsWith(directory) && dir !== directory;
+        dir = dirname(dir)
+      )
+        directories.push(dir);
+    for (const dir of new Set(directories))
+      assert.equal(
+        (await stat(dir)).mode & 0o777,
+        0o700,
+        `${dir} is not private`,
+      );
   } finally {
     await app.close();
   }

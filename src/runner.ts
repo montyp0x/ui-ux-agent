@@ -31,7 +31,7 @@ import {
   type EvidenceProtection,
 } from './evidence/protection.js';
 import { providerModels } from './evidence/provider.js';
-import { sanitizeTextFiles } from './evidence/sweep.js';
+import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
 
 export type RunOptions = {
@@ -984,6 +984,7 @@ async function runJourney(
     await writeFile(resultFile, JSON.stringify(result, null, 2), {
       mode: 0o600,
     });
+    await restrictPermissions(directory);
     await log('journey_finished', result);
   }
   return result;
@@ -1141,6 +1142,7 @@ export async function runSuite(
     await driver.close();
     // Last pass over the whole run directory, failed runs included.
     await sanitizeTextFiles(options.directory, redactor);
+    await restrictPermissions(options.directory);
   }
   return results;
 }
