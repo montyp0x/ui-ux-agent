@@ -14,6 +14,8 @@ import type {
 } from './contracts.js';
 import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
+import { emptyAudits } from './audits/contract.js';
+import { JourneyAudits } from './audits/run.js';
 import { evaluateQuality } from './quality.js';
 import {
   OUTCOME_CODES,
@@ -204,6 +206,19 @@ async function runJourney(
   // in-flight planner and selector requests stop there. The reason is a
   // TimeoutError, like AbortSignal.timeout's.
   const deadlineAbort = new AbortController();
+  // Audits run at their configured checkpoints only, never after every action.
+  const audits = new JourneyAudits({
+    suite,
+    journey,
+    viewport: suite.viewports.find((entry) => entry.name === viewport) ?? {
+      name: viewport,
+      width: 0,
+      height: 0,
+    },
+    directory,
+    session,
+    log,
+  });
   const deadlineTimer = setTimeout(
     () =>
       deadlineAbort.abort(
@@ -240,6 +255,7 @@ async function runJourney(
     durationMs: 0,
     checks: [],
     findings: [],
+    audits: emptyAudits(suite.audits.failOn),
     trace: join(directory, 'trace.zip'),
     video: null,
   };
@@ -262,6 +278,8 @@ async function runJourney(
   let actionErrors = 0;
   // Observed states measured by the built-in quality checks.
   let measured = 0;
+  // final.png once captured, for the completion checkpoint.
+  let finalScreenshot: string | null = null;
   // Sets the functional outcome; the code fixes status, category and source.
   const decide = (
     code: OutcomeCode,
@@ -291,20 +309,12 @@ async function runJourney(
       signals: result.outcome.signals,
     };
   };
-  // Built-in layout measurement, run on every observed state.
-  const measure = (state: Observation) => {
+  // Records an observed journey state for the quality checks, then runs the
+  // audits whose checkpoint (ready, a declared state) it reaches.
+  const measure = async (state: Observation) => {
     measured++;
-    if (
-      state.horizontalOverflow > 1 &&
-      !result.findings.some((finding) => finding.category === 'overflow')
-    )
-      result.findings.push({
-        kind: 'observed',
-        category: 'overflow',
-        description: `Document is ${state.horizontalOverflow}px wider than the viewport; review whether the horizontal overflow is intentional`,
-        step: state.step,
-        screenshot: state.screenshot,
-      });
+    audits.record(state);
+    await audits.afterObservation(state);
   };
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const inScope = async () =>
@@ -404,7 +414,7 @@ async function runJourney(
           viewport,
           ...observation,
         });
-        measure(observation);
+        await measure(observation);
         const pathname = new URL(observation.url).pathname;
         for (const [index, detour] of (journey.detours ?? []).entries()) {
           if (!new RegExp(detour.pattern).test(pathname)) continue;
@@ -458,7 +468,7 @@ async function runJourney(
               viewport,
               ...observation,
             });
-            measure(observation);
+            await measure(observation);
             result.checks = await Promise.all(
               journey.success.map((condition) => session.check(condition)),
             );
@@ -866,6 +876,7 @@ async function runJourney(
       session.setTimeout(5000);
       const screenshot = join(directory, 'final.png');
       await session.screenshot(screenshot);
+      finalScreenshot = screenshot;
       for (const [index, steps] of detourSteps) {
         const finding = result.findings.find(
           (entry) =>
@@ -909,6 +920,9 @@ async function runJourney(
         { detail: `${firstLine(caught)} (after ${result.outcome.code})` },
       );
     }
+    // The completion checkpoint: the final state, before the session closes.
+    await audits.completion(result.steps, finalScreenshot);
+    result.audits = audits.finish();
     try {
       const finished = await session.finish(result.trace);
       result.video = finished.video;
@@ -934,6 +948,7 @@ async function runJourney(
       findings: result.findings,
       policyBlocks,
       evidenceComplete,
+      audits: result.audits,
     });
     result.durationMs = Date.now() - started;
     await writeFile(

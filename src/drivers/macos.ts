@@ -435,6 +435,7 @@ export async function macosDriver(): Promise<UIDriver> {
         return { all, visible: all.filter((node) => visible.has(node.ref)) };
       };
       const session: UISession = {
+        driver: 'macos' as const,
         browserErrors: [],
         unauthorized: false,
         policyBlocks: [],

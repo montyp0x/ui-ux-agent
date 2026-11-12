@@ -1,0 +1,47 @@
+{
+  "name": "Documentation discovery with an accessibility scan",
+  "baseURL": "https://your-app.example",
+  "requiresAuth": false,
+  "viewports": [
+    { "name": "desktop", "width": 1440, "height": 1000 },
+    { "name": "narrow", "width": 390, "height": 844 }
+  ],
+  "journeys": [
+    {
+      "id": "find-installation",
+      "goal": "Find the installation instructions through visible navigation.",
+      "persona": "A first-time visitor trying to set up the product.",
+      "startPath": "/",
+      "allowedPaths": ["/", "/docs"],
+      "ready": {
+        "kind": "visible",
+        "target": { "by": "css", "value": "main" }
+      },
+      "success": [
+        { "kind": "path", "pattern": "^/docs/install/?$" },
+        {
+          "kind": "visible",
+          "target": { "by": "role", "role": "heading", "name": "Installation" }
+        }
+      ],
+      "states": [
+        {
+          "name": "docs-index",
+          "when": { "kind": "path", "pattern": "^/docs/?$" }
+        }
+      ],
+      "discoverRoles": ["button", "tab"]
+    }
+  ],
+  "audits": {
+    "checks": [
+      { "id": "layout.horizontal-overflow" },
+      {
+        "id": "accessibility.axe",
+        "at": ["ready", "states", "completion"],
+        "exclude": ["#support-chat"]
+      }
+    ],
+    "failOn": "serious"
+  }
+}

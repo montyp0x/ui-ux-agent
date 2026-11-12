@@ -1,0 +1,64 @@
+{
+  "name": "Checkout responsive layout",
+  "baseURL": "https://your-app.example",
+  "requiresAuth": false,
+  "viewports": [
+    { "name": "desktop", "width": 1440, "height": 1000 },
+    { "name": "narrow", "width": 390, "height": 844 }
+  ],
+  "audits": {
+    "failOn": "serious",
+    "checks": [
+      { "id": "layout.horizontal-overflow", "at": ["completion"] },
+      {
+        "id": "layout.responsive",
+        "at": ["ready", "states"],
+        "timeoutMs": 30000,
+        "requiredControls": [
+          { "by": "role", "role": "button", "name": "Place order" }
+        ],
+        "targetSize": { "minimum": 24 },
+        "matrix": {
+          "breakpoints": [{ "name": "tablet", "width": 768, "height": 1024 }],
+          "reflow": { "baseWidth": 1280, "baseHeight": 1024, "zoom": 4 }
+        },
+        "exceptions": [
+          {
+            "rule": "clipping",
+            "selector": ".product-carousel",
+            "reason": "Shows one product at a time; the others are reached by swiping"
+          },
+          {
+            "rule": "occlusion",
+            "selector": ".hero-art",
+            "reason": "Decorative art overlaps the call to action by design",
+            "breakpoints": ["desktop"]
+          }
+        ]
+      }
+    ]
+  },
+  "journeys": [
+    {
+      "id": "checkout",
+      "goal": "Reach the order summary and review the order.",
+      "persona": "A returning shopper on any screen size.",
+      "startPath": "/cart",
+      "allowedPaths": ["/cart", "/checkout"],
+      "ready": {
+        "kind": "visible",
+        "target": { "by": "role", "role": "heading", "name": "Your cart" }
+      },
+      "states": [
+        {
+          "name": "order-summary",
+          "when": {
+            "kind": "visible",
+            "target": { "by": "role", "role": "heading", "name": "Order summary" }
+          }
+        }
+      ],
+      "success": [{ "kind": "path", "pattern": "^/checkout/?$" }]
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import type {
   Observation,
   Suite,
 } from '../contracts.js';
+import type { AuditConfig } from '../audits/config.js';
+import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
 
 export type EventLogger = (event: string, data: unknown) => Promise<void>;
 export type SessionOptions = {
@@ -17,7 +19,22 @@ export type SessionOptions = {
   log: EventLogger;
 };
 
+// A driver audit to run against the session's current state.
+export type DriverAuditRequest = {
+  config: AuditConfig;
+  checkpoint: AuditCheckpoint;
+  // The session's configured viewport (suite viewport name and size).
+  viewport: { name: string; width: number; height: number };
+  // The run directory: evidence files the audit writes go here.
+  directory: string;
+  // The audit must finish within this; the runner also enforces it.
+  timeoutMs: number;
+};
+
 export interface UISession {
+  // Which driver implements the session, for audit support. When omitted the
+  // runner assumes the suite platform's driver (web: playwright).
+  readonly driver?: DriverKind;
   readonly browserErrors: string[];
   // Non-navigation requests to the suite's own origins that the request policy
   // blocked, as "METHOD origin/path".
@@ -39,6 +56,10 @@ export interface UISession {
   // Whether the session is still inside the journey's scope. Web sessions use
   // URL scope; native drivers check that the target app is frontmost.
   inScope?(): Promise<boolean>;
+  // Runs a driver audit (one without a core `evaluate`, see
+  // src/audits/registry.ts) and returns its raw output, which the runner
+  // parses with auditOutputSchema. Throw for an audit the driver lacks.
+  runAudit?(request: DriverAuditRequest): Promise<unknown>;
   // trace: the evidence file actually written, when not the suggested path.
   finish(trace: string): Promise<{ video: string | null; trace?: string }>;
 }

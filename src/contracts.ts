@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
+import { targetSchema, type Target } from './target.js';
+
+export { targetSchema, type Target };
 
 const relativePath = z
   .string()
@@ -15,34 +19,6 @@ const originSchema = z.url().refine((value) => {
     !url.hash
   );
 }, 'Origins must be HTTP(S) origins without credentials, paths, queries or fragments');
-export const targetSchema = z.discriminatedUnion('by', [
-  z
-    .object({
-      by: z.literal('role'),
-      role: z.enum([
-        'button',
-        'link',
-        'textbox',
-        'searchbox',
-        'tab',
-        'combobox',
-        'heading',
-        'dialog',
-        'region',
-        'checkbox',
-        'radio',
-        'menuitem',
-        'option',
-      ]),
-      name: z.string().min(1),
-    })
-    .strict(),
-  z.object({ by: z.literal('testId'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('label'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('placeholder'), value: z.string().min(1) }).strict(),
-  z.object({ by: z.literal('css'), value: z.string().min(1) }).strict(),
-]);
-export type Target = z.infer<typeof targetSchema>;
 export const checkSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('path'), pattern: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('visible'), target: targetSchema }).strict(),
@@ -134,6 +110,9 @@ export const journeySchema = z
     // known starting state (e.g. clear a calculator). Each must match the
     // target of an offered action: a discovered control or an interaction.
     setup: z.array(interactionSchema).max(10).optional(),
+    // Declared states where audits configured with at: 'states' run, once,
+    // at the first observed state where `when` holds.
+    states: z.array(journeyStateSchema(checkSchema)).max(10).optional(),
     discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
     maxSteps: z.number().int().min(1).max(100).default(20),
     maxDurationMs: z.number().int().min(1000).max(900000).default(180000),
@@ -259,6 +238,9 @@ const suiteObject = z
       .array(z.object({ origin: originSchema, path: relativePath }).strict())
       .default([]),
     journeys: z.array(journeySchema).min(1),
+    // Objective audits run at configured checkpoints (see src/audits/).
+    // Default: the horizontal overflow audit at completion, fail on serious.
+    audits: auditsConfigSchema.prefault({}),
   })
   .strict()
   .superRefine((suite, ctx) => {
@@ -302,6 +284,7 @@ const suiteObject = z
           journey.ready,
           ...journey.success,
           ...(journey.contentReady?.checks ?? []),
+          ...(journey.states ?? []).map((state) => state.when),
         ].flatMap((check) => ('target' in check ? [check.target] : [])),
       ]);
       if (targets.some((target) => target.by === 'css'))
@@ -354,11 +337,26 @@ const suiteObject = z
         code: 'custom',
         message: 'Use browserChannel or browserExecutable, not both',
       });
+    const auditsAtStates = suite.audits.checks.some((check) =>
+      (check.at as string[]).includes('states'),
+    );
     for (const journey of suite.journeys) {
+      const states = (journey.states ?? []).map((state) => state.name);
+      if (new Set(states).size !== states.length)
+        ctx.addIssue({
+          code: 'custom',
+          message: `State names must be unique in ${journey.id}`,
+        });
+      if (states.length && !auditsAtStates)
+        ctx.addIssue({
+          code: 'custom',
+          message: `${journey.id} declares states but no audit runs at 'states'`,
+        });
       for (const check of [
         journey.ready,
         ...journey.success,
         ...(journey.contentReady?.checks ?? []),
+        ...(journey.states ?? []).map((state) => state.when),
         ...(journey.detours ?? []).map((detour) => ({
           kind: 'path' as const,
           pattern: detour.pattern,

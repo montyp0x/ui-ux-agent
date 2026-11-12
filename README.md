@@ -153,6 +153,79 @@ After every `success` assertion passes, the runner polls content checks every 20
 
 GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless configured explicitly. A blocked non-navigation request to one of the suite's own origins becomes an observed `policy-block` finding. The page under test may show errors caused by the harness rather than the application, so add genuine reads such as search POSTs to `readOnlyPosts`. Use reviewed endpoints and disposable test data for flows that write. GET endpoints can have application-specific side effects; request filtering is not a universal application sandbox. Request routing also does not intercept WebSocket traffic, so keep live journeys limited to reviewed flows.
 
+### Audits and checkpoints
+
+Audits are objective checks of the UI, run only at checkpoints the suite configures, never after every action:
+
+```json
+{
+  "audits": {
+    "checks": [{ "id": "layout.horizontal-overflow", "at": ["ready", "states", "completion"] }],
+    "failOn": "serious",
+    "timeoutMs": 15000
+  },
+  "journeys": [
+    {
+      "states": [{ "name": "results-shown", "when": { "kind": "visible", "target": { "by": "testId", "value": "results" } } }]
+    }
+  ]
+}
+```
+
+- `ready`: the first observed state after the `ready` assertion and `setup`.
+- `states`: each of the journey's declared `states` (up to ten), once, at the first observed state where its `when` check holds. A journey that declares states needs an audit at `states`.
+- `completion`: the final state when the journey ends, whatever its outcome, after `final.png` is captured. Skipped when no state was ever observed.
+
+Without an `audits` block a suite runs `layout.horizontal-overflow` at `completion`; `"checks": []` turns audits off. Each audit runs once per reached checkpoint and records a run with status `clean` (no violations), `findings` (at least one violation), `incomplete` (the audit could not cover the whole state), `unsupported` (the driver does not support it; not run) or `error` (the audit itself failed: an analyzer exception, a configured scope that matched nothing, a timeout past `timeoutMs`, or output that fails the contract). An error or unsupported run says nothing about the UI and is never counted as clean. An audit never stops the journey: one that fails at a checkpoint, including a declared state whose `when` check itself throws, is recorded as an `error` run and the journey continues to its outcome (the quality verdict is then not `pass`). Configured checkpoints that were not reached are listed in `audits.notReached`. Each run is logged as an `audit_run` event.
+
+Each audit finding carries its audit id, source and analyzer (name and version), rule id, severity (`minor`, `moderate`, `serious`, `critical`, or null when the analyzer gives none), certainty (`violation`, or `needs_review` for items the analyzer could not decide), description, guidance URL, standards tags, the affected-element count with a sample of targets (description, selector with frames joined by ` >>> ` and shadow roots by ` >> `, the analyzer's `reason`, snippet), evidence (screenshot and files) and reproduction context (journey, viewport size, checkpoint, step, URL). A finding reported again at a later checkpoint in the same page state (same audit, rule, certainty, severity, description and sampled targets, at the same URL and observed-state fingerprint; typically the last declared state and then `completion` when the journey ends there) is kept once: its `checkpoints` lists every checkpoint that saw it, the later run lists its index, and the `audit_run` event counts it as `repeated`. Runs list the analyzer's `limitations` and the `exemptions` it skipped under a configured exception (rule, target, reason); exemptions are never findings. Each audit entry can set its own `timeoutMs`, overriding `audits.timeoutMs`. `failOn` is one threshold for the whole suite and every audit in it; an audit entry cannot set its own (a per-audit `failOn` is rejected at load). Violations at or above `failOn` (default `serious`; `none` never fails) fail the quality verdict; a violation whose analyzer gave no severity cannot be shown to be below the threshold, so it fails at every `failOn` except `none`; `needs_review` findings are shown separately and never do. Each run records its `durationMs`, shown in the report next to its status with the total audit time; audit time counts against the journey deadline (`maxDurationMs`), and a run that exhausted its budget says how much of it the audits took.
+
+Built-in audits:
+
+- `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
+- `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
+- `layout.responsive` (opt-in; default checkpoints `ready` and `completion`): deterministic layout measurement at the session's viewport, then at each extra `matrix.breakpoints` entry and a reflow case, resized in place and restored (viewport and scroll position) before the journey continues. Rules (`rules`, default all three):
+  - `clipping`: text or a control cut off by an `overflow: hidden`/`clip` ancestor, by more than `clipping.tolerancePx` (default 1). Severity `serious` when a control is cut, `moderate` for text. Visually hidden (1px) and collapsed containers are skipped. Declared truncation (`text-overflow: ellipsis`, `-webkit-line-clamp`) is a `needs_review` item, never a violation.
+  - `occlusion`: a control scrolled into view (block and inline centre) is hit-tested at a 3x3 grid; another element covering its centre or at least `occlusion.minCoveredFraction` (default 0.3) of the points is a violation, smaller overlaps are `needs_review`. Its own labels and descendants do not count; controls behind an open modal are skipped. Checks the `requiredControls` targets (severity `serious`; a target that matches nothing makes the run `incomplete`), or every rendered interactive control when none are configured (`moderate`). Elements with `pointer-events: none` are transparent to hit testing and are not reported.
+  - `target-size`: pointer targets smaller than `targetSize.minimum` CSS px (default 24, WCAG 2.2 SC 2.5.8, `moderate`; 44 for SC 2.5.5, `minor`). The 2.5.8 inline (a link in a sentence), spacing (a `minimum`-diameter circle touches no other target; on by default up to 24px, `targetSize.spacingExemption`) and labelled checkbox/radio exceptions are applied and noted in the run's limitations.
+  - The matrix: `matrix.breakpoints` (`name`, `width`, `height`, optional `deviceScaleFactor`) plus `matrix.reflow` (default `{ "baseWidth": 1280, "baseHeight": 1024, "zoom": 4 }`: the 320x256 CSS viewport that 400% zoom produces, WCAG 2.2 SC 1.4.10; `false` turns it off). Reflow is emulated through the viewport, not browser UI zoom. A live page cannot change its device pixel ratio, so a breakpoint asking for another ratio is skipped and the run is `incomplete`. A breakpoint named like the session's viewport is that viewport, measured once. Extra breakpoints also report `document-wider-than-viewport` (`serious`); the session's own viewport is left to `layout.horizontal-overflow`, so the same overflow is not reported twice. Breakpoints are skipped (`incomplete`) once 60% of the audit's `timeoutMs` is spent, leaving time to restore the viewport.
+  - `exceptions`: intentional layouts, each one `rule`, one CSS `selector` matched against the reported element or an ancestor (for occlusion also the covering element, e.g. decorative art), a `reason`, and optionally `breakpoints` (suite viewport or matrix names). Exempted items are listed in the run's `exemptions` with the measurement they suppressed; an exception that matched nothing is noted in `limitations`; an invalid selector is an `error` run.
+  - Each finding's description starts with `[breakpoint WIDTHxHEIGHT]` and its tags include `breakpoint:<name>` (and `reflow`); the reproduction viewport is the session's. Boxes and measured values for every breakpoint, the exemptions and the exception ledger are written to `layout-<checkpoint>-step<N>.json` in the run directory and listed in the findings' evidence files. See `examples/responsive-layout.json`. Playwright only; unsupported on macOS.
+
+Audits are registered in `src/audits/registry.ts` and declare the drivers that support them. Core audits read the states the runner already observed; driver audits run through the session's `runAudit` (for Playwright, `src/drivers/playwright-audits.ts`), which receives the audit config, checkpoint, the session's viewport, the run directory and the timeout, and only runs fixed engine code in the page. The report says which automated audits ran; an automated scan does not establish accessibility or standards conformance.
+
+### Accessibility scan (axe-core)
+
+`accessibility.axe` is an opt-in driver audit that runs [axe-core](https://github.com/dequelabs/axe-core) (through `@axe-core/playwright`) on the page at its checkpoints. It is web-only: on macOS it is reported as `unsupported`, never as clean. [examples/website-accessibility.json](examples/website-accessibility.json) shows it in a suite:
+
+```json
+"audits": {
+  "checks": [
+    { "id": "layout.horizontal-overflow" },
+    { "id": "accessibility.axe", "at": ["ready", "completion"], "exclude": ["#support-chat"] }
+  ],
+  "failOn": "serious"
+}
+```
+
+| Option      | Purpose                                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| `at`        | Checkpoints: `ready`, `states` and `completion`; default ready and completion                              |
+| `include`   | CSS selectors of the regions to scan; empty scans the page. A selector that matches nothing is an audit `error`, not a clean region |
+| `exclude`   | CSS selectors of regions to leave out, such as a third-party widget                                        |
+| `tags`      | axe rule tags to run; default `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, `best-practice`       |
+| `timeoutMs` | Bound on one scan, overriding `audits.timeoutMs`                                                           |
+
+An axe violation becomes a `violation` finding with axe's impact as its severity; an axe *incomplete* result, a check axe could not decide (for example text contrast over a background image), becomes a `needs_review` finding. Each finding keeps the rule's help text, guidance link and tags (including WCAG criteria such as `wcag412`), the affected-element count and a sample of up to 25 elements: the element as `description`, its selector, axe's explanation as `reason` and an HTML snippet of at most 300 characters. An analyzer exception, a scope that matched nothing, a timeout or unreadable analyzer output is an `error` run whose detail names the kind (`scope_not_found`, `analyzer_exception`, `timeout`, `invalid_output`).
+
+What a scan does not establish (each run's `limitations` repeats the coverage limits):
+
+- An automated scan detects only a subset of accessibility issues. A run without violations does not establish WCAG conformance or any accessibility certification, and is not a substitute for a manual accessibility audit.
+- `needs_review` findings are undecided, not passes.
+- Keyboard operation and focus order are not tested by the scan; keyboard and focus checks are planned separately.
+- Cross-origin frames are not scanned. The scan runs in the page itself, so it opens no second page in the browser context.
+- HTML snippets are excerpts of the page under test and can contain its data; treat results like other run evidence.
+
 ## Authentication and browser selection
 
 For applications behind a login, capture a session once:
@@ -293,10 +366,10 @@ Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N
 
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, and evidence links.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, and evidence links.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts and findings. The contract is `resultVersion: 2`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 keeps every version-1 field (`status`, `reason`, `checks`, `findings`, …) unchanged and adds `resultVersion`, `outcome` and `quality`.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 3`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`.
 - Per journey/viewport: screenshots, Playwright trace and optional video.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
@@ -328,14 +401,13 @@ Only `source: "assertion"` is evidence about the application: an independent out
 
 ### Quality verdict
 
-`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed and every executed check passed; any failed check is `fail`; no executed check, or an `inconclusive`/`errored` check without a failure, is `not_evaluated`, which is not a pass. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
+`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed, every executed check passed, and every configured audit ran and is supported; any failed check is `fail`; no executed check, an `inconclusive`/`errored` check without a failure, or a configured audit that was unsupported or never ran, is `not_evaluated`, which is not a pass. Each configured audit is one check (`source: "audit"`): `failed` with a violation at or above `failOn`, else `errored` with an error run, else `inconclusive` with an incomplete run, else `passed`. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
 
-Built-in checks, measured on every observed state on the web:
+Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoints)), a built-in check covers the whole web run:
 
-- `layout.horizontal-overflow`: the document is wider than the viewport.
 - `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
 
-The macOS driver measures neither, so native results are `not_evaluated`. Accessibility audits, visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 
@@ -350,6 +422,6 @@ npm run demo
 
 Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
 
-Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit, price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: no Windows or mobile drivers, screenshot baseline comparison, complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

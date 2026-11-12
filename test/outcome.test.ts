@@ -352,7 +352,16 @@ test('the functional outcome is kept when a quality check fails', async () => {
     (check) => check.id === 'layout.horizontal-overflow',
   )!;
   assert.equal(overflow.status, 'failed');
-  assert.equal(result.findings[overflow.findings[0]!]!.category, 'overflow');
+  assert.equal(overflow.source, 'audit');
+  // The overflow check is an audit at completion now, not a run finding.
+  const finding = result.audits.findings[overflow.audit!.findings[0]!]!;
+  assert.equal(finding.ruleId, 'document-wider-than-viewport');
+  assert.equal(finding.certainty, 'violation');
+  assert.equal(finding.gating, true);
+  assert.equal(finding.reproduction.checkpoint, 'completion');
+  assert.equal(finding.reproduction.step, 0);
+  assert.match(finding.description, /40px wider than the viewport/);
+  assert.ok(!result.findings.some((entry) => entry.category === 'overflow'));
   // The final, passing state is measured too.
   assert.equal(overflow.observations, 2);
   assert.match(report, /<strong>PASSED<\/strong>/);
