@@ -15,6 +15,7 @@ import {
   type Suite,
 } from '../src/contracts.js';
 import { protectedScreenshot } from '../src/drivers/playwright-evidence.js';
+import type { UIDriver } from '../src/drivers/types.js';
 import { evidenceFormats, sensitive } from '../src/evidence/policy.js';
 import { evidenceProtection } from '../src/evidence/protection.js';
 import { parseResults } from '../src/results.js';
@@ -228,6 +229,39 @@ test('public setup values are kept, and the trace is captured', async () => {
     assert.ok(events.includes(owner));
     assert.deepEqual(result!.evidence.redactedData, []);
     assert.ok(result!.trace?.endsWith('trace.zip'));
+  } finally {
+    await app.close();
+  }
+});
+
+test('an error thrown out of runSuite does not carry a secret setup value', async () => {
+  const app = await notesFixture();
+  try {
+    const directory = await runDirectory();
+    // A driver that fails while opening the session, quoting the journey it
+    // was given: its start path holds the filled {{data.owner}} value.
+    const driver: UIDriver = {
+      openSession: async ({ journey }) => {
+        throw new Error(`Could not open ${journey.startPath}`);
+      },
+      close: async () => undefined,
+    };
+    const caught = await runSuite(
+      await notesSuite(app.url),
+      scriptedDecisions(STATE_SCRIPTS),
+      { directory, driver },
+    ).then(
+      () => assert.fail('the run should fail'),
+      (error: unknown) => error,
+    );
+    assert.ok(caught instanceof Error);
+    assert.match(caught.message, /^Could not open \/notes\?owner=/);
+    assert.ok(
+      caught.message.includes('[REDACTED:data:owner]'),
+      caught.message,
+    );
+    assert.doesNotMatch(caught.message, /owner=owner-uiux-/i);
+    assert.doesNotMatch(caught.stack ?? '', /owner=owner-uiux-/i);
   } finally {
     await app.close();
   }

@@ -302,3 +302,27 @@ export class Redactor {
     return value;
   }
 }
+
+// The error a run rethrows: its message and stack redacted in place, so the
+// caller sees the same error class, never a secret the run learned (setup
+// values are known only to the run's redactor, not to the CLI's). Its cause,
+// which is not redacted, is dropped.
+export function redactError(caught: unknown, redactor: Redactor): Error {
+  if (!(caught instanceof Error))
+    return new Error(redactor.text(String(caught)));
+  const message = redactor.text(caught.message);
+  const stack =
+    caught.stack === undefined ? undefined : redactor.text(caught.stack);
+  for (const [field, value] of [
+    ['message', message],
+    ['stack', stack],
+  ] as const)
+    Object.defineProperty(caught, field, {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  delete (caught as { cause?: unknown }).cause;
+  return caught;
+}

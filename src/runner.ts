@@ -33,6 +33,7 @@ import {
   type EvidenceProtection,
 } from './evidence/protection.js';
 import { providerModels } from './evidence/provider.js';
+import { redactError } from './evidence/redact.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
 import { FrictionRecorder, computeFriction } from './friction/index.js';
@@ -1356,6 +1357,10 @@ export async function runSuite(
         }
       }
     }
+  } catch (caught) {
+    // Errors can quote the journey, the page or a hook's reply, which can
+    // hold a setup value only this run's redactor knows.
+    throw redactError(caught, redactor);
   } finally {
     try {
       await driver.close();
