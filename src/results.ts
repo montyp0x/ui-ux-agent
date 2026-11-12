@@ -8,11 +8,14 @@
 // src/evidence/policy.ts) and makes `trace` null when no trace was captured;
 // it also adds `dataLifecycle` (the reset/setup/cleanup hooks of authorized
 // write flows, see src/lifecycle.ts), the data_setup_failed and run_cancelled
-// codes and the cancelled category.
+// codes and the cancelled category. An optional `identity` (src/identity.ts)
+// records what the run measured, without changing the version: readers of
+// version 4 that ignore it are unaffected.
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
 import { evidenceReportSchema } from './evidence/policy.js';
 import { dataLifecycleResultSchema } from './lifecycle.js';
+import { runIdentitySchema } from './identity.js';
 
 export const RESULT_VERSION = 4;
 
@@ -250,6 +253,10 @@ export const resultSchema = z
     video: z.string().nullable(),
     // Evidence formats captured or disabled for this run, and their protection.
     evidence: evidenceReportSchema,
+    // What the run measured (build, suite, engine, environment, models), for
+    // comparing runs (src/compare.ts). Optional: older runs lack it and
+    // cannot be compared.
+    identity: runIdentitySchema.optional(),
   })
   .strict()
   .superRefine((result, ctx) => {

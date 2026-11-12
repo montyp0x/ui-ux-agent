@@ -34,6 +34,17 @@ import {
 import { providerModels } from './evidence/provider.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
+import { AUDIT_CONTRACT_VERSION } from './audits/contract.js';
+import {
+  ENGINE_VERSION,
+  IDENTITY_VERSION,
+  osIdentity,
+  suiteHash,
+  suiteTarget,
+  type Build,
+  type ModelIdentity,
+  type RunIdentity,
+} from './identity.js';
 import {
   DataLifecycleHooks,
   withData,
@@ -64,6 +75,12 @@ export type RunOptions = {
   // Cancels the suite: the current run stops at its next stage, its data
   // cleanup still runs, and no further run starts.
   signal?: AbortSignal;
+  // The build or revision under test, recorded in each result's identity
+  // as given (--build / UIUX_BUILD); null or omitted records it as unknown.
+  build?: Build | null;
+  // The model endpoints and names in use (never keys), for the identity;
+  // omitted for custom Models implementations.
+  modelIdentity?: ModelIdentity | null;
 };
 export type Logger = EventLogger;
 
@@ -232,6 +249,7 @@ async function runJourney(
   baselines: string | null,
   lifecycle: LifecycleRun | null = null,
   cancel?: AbortSignal,
+  identity?: RunIdentity,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -298,6 +316,7 @@ async function runJourney(
     trace: join(directory, 'trace.zip'),
     video: null,
     evidence: protection.report(0),
+    ...(identity ? { identity } : {}),
   };
   let observation: Observation | null = null;
   let plan: Plan | null = null;
@@ -1153,6 +1172,41 @@ export async function runSuite(
           suite,
           options.profile,
         ));
+  // What every run of this suite measures, for comparisons (src/compare.ts).
+  // The driver's environment is read once a session has opened.
+  const identityFor = async (): Promise<RunIdentity> => ({
+    identityVersion: IDENTITY_VERSION,
+    build: options.build ?? null,
+    suite: {
+      name: suite.name,
+      hash: suiteHash(suite, redactor),
+      target: suiteTarget(suite.baseURL),
+      selection: {
+        journeys: journeys.map((journey) => journey.id),
+        viewports: viewports.map((viewport) => viewport.name),
+        repeat,
+      },
+    },
+    engine: {
+      version: ENGINE_VERSION,
+      resultVersion: RESULT_VERSION,
+      auditContractVersion: AUDIT_CONTRACT_VERSION,
+    },
+    environment: {
+      platform: suite.platform,
+      ...((await driver.environment?.()) ?? {
+        driver: options.driver
+          ? 'custom'
+          : suite.platform === 'macos'
+            ? 'macos'
+            : 'playwright',
+        browser: null,
+      }),
+      os: osIdentity(),
+      node: process.versions.node,
+    },
+    models: options.modelIdentity ?? null,
+  });
   const results: Result[] = [];
   const lifecycle = suite.dataLifecycle
     ? new DataLifecycleHooks(suite.dataLifecycle, log)
@@ -1222,6 +1276,7 @@ export async function runSuite(
                 baselines,
                 data,
                 options.signal,
+                await identityFor(),
               );
               if (runJourneyConfig !== journey || data) result.marker = marker;
               results.push(result);
