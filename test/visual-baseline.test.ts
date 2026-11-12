@@ -5,6 +5,7 @@
 // generated into temporary directories; no image is committed. No model calls.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -545,6 +546,7 @@ async function journeyRun(
   url: string,
   baselines: string | undefined,
   width = 1280,
+  evidence?: unknown,
 ): Promise<{ result: Result; directory: string }> {
   const parent = await mkdtemp(join(tmpdir(), 'ui-ux-visual-run-'));
   const directory = join(parent, 'run');
@@ -553,6 +555,7 @@ async function journeyRun(
     baseURL: url,
     requiresAuth: false,
     viewports: [{ name: 'desktop', width, height: 800 }],
+    ...(evidence === undefined ? {} : { evidence }),
     journeys: [journey],
     audits: {
       checks: [
@@ -567,6 +570,7 @@ async function journeyRun(
   const [result] = await runSuite(suite, deterministic, {
     directory,
     baselines,
+    env: {},
   });
   assert.ok(result);
   assert.equal(result.status, 'passed', result.reason);
@@ -733,6 +737,109 @@ test('a journey captures, never approves on its own, then matches, mismatches an
     });
     assert.equal(decisions[0]!.action, 'skipped');
     assert.match(decisions[0]!.reason, /changed after the run/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a journey's visual captures go through the suite's evidence protection: a planted secret and a configured mask are magenta in the capture and the baseline", async () => {
+  const app = await site();
+  const baselines = await mkdtemp(join(tmpdir(), 'ui-ux-visual-baselines-'));
+  const secret = 'sk-live-PLANTED4242';
+  const evidence = {
+    redact: [{ pattern: 'sk-live-[A-Za-z0-9]+', label: 'token' }],
+    masks: [{ by: 'css', value: 'h1' }],
+  };
+  try {
+    app.state.start = () => article({ token: secret });
+    // Where the token and the heading render at the run's viewport.
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+    });
+    let boxes: { x: number; y: number; width: number; height: number }[];
+    try {
+      const page = await context.newPage();
+      await page.setContent(article({ token: secret }));
+      boxes = [
+        (await page.locator('#token').boundingBox())!,
+        (await page.locator('h1').boundingBox())!,
+      ];
+    } finally {
+      await context.close();
+    }
+    const painted = (png: Buffer) =>
+      boxes.map((box) => {
+        const image = PNG.sync.read(png);
+        let magenta = 0;
+        let total = 0;
+        for (let y = Math.ceil(box.y); y < Math.floor(box.y + box.height); y++)
+          for (
+            let x = Math.ceil(box.x);
+            x < Math.floor(box.x + box.width);
+            x++
+          ) {
+            const index = (y * image.width + x) * 4;
+            total++;
+            if (
+              image.data[index] === 255 &&
+              image.data[index + 1] === 0 &&
+              image.data[index + 2] === 255
+            )
+              magenta++;
+          }
+        assert.ok(total > 50);
+        return magenta / total;
+      });
+
+    const first = await journeyRun(app.url, baselines, 1280, evidence);
+    const ready = visualRuns(first.result)[0]!.visual!;
+    assert.equal(ready.key.checkpoint, 'ready');
+    assert.equal(ready.status, 'missing');
+    assert.equal(ready.environment.capture.protected, true);
+    const current = await readFile(ready.current!.file);
+    assert.deepEqual(painted(current), [1, 1], 'token and heading are masked');
+    // The sweep leaves the capture byte-for-byte as recorded.
+    assert.equal(
+      createHash('sha256').update(current).digest('hex'),
+      ready.current!.sha256,
+    );
+    // No text evidence of the run (results, comparison records, the report,
+    // the event log) holds the secret.
+    const texts: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else if (!path.endsWith('.png')) texts.push(path);
+      }
+    };
+    await walk(first.directory);
+    assert.ok(texts.some((path) => path.endsWith('results.json')));
+    for (const path of texts)
+      assert.ok(
+        !(await readFile(path, 'utf8')).includes(secret),
+        `${path} holds the planted secret`,
+      );
+
+    // Approval copies the masked capture; the baseline and its metadata never
+    // hold the secret either.
+    await approveBaselines({ run: first.directory, baselines, all: true });
+    const [baseline] = (await listBaselines(baselines)).filter(
+      (entry) => entry.key.checkpoint === 'ready',
+    );
+    assert.ok(baseline);
+    assert.equal(baseline.environment.capture.protected, true);
+    assert.deepEqual(painted(await readFile(baseline.file)), [1, 1]);
+    const metadata = await readFile(
+      baseline.file.replace(/\.png$/, '.json'),
+      'utf8',
+    );
+    assert.ok(!metadata.includes(secret));
+
+    // Another secret under the mask is not a visual change.
+    app.state.start = () => article({ token: 'sk-live-ROTATED9999' });
+    const second = await journeyRun(app.url, baselines, 1280, evidence);
+    assert.deepEqual(statuses(second.result)[0], ['ready', 'match']);
   } finally {
     await app.close();
   }
