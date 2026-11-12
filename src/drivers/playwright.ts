@@ -6,6 +6,7 @@ import {
   type BrowserContextOptions,
 } from 'playwright';
 import {
+  dedicatedProfile,
   scopeStorageState,
   storageStateSchema,
   suiteOrigins,
@@ -23,12 +24,30 @@ import {
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
 
+// Which build to launch: Playwright's bundled browser, an installed channel,
+// or another Chromium-based browser by path (e.g. Dia). Used by runs and by
+// --login, so a session is captured in the same browser the runs use.
+export function browserLaunchOptions(
+  suite: Pick<Suite, 'browserChannel' | 'browserExecutable'>,
+): { channel?: string; executablePath?: string } {
+  if (suite.browserChannel) return { channel: suite.browserChannel };
+  if (suite.browserExecutable)
+    return { executablePath: suite.browserExecutable };
+  return {};
+}
+
 export async function playwrightDriver(
   browserName: Suite['browser'],
   headless: boolean,
+  build: Pick<Suite, 'browserChannel' | 'browserExecutable'> = {},
+  // A persistent profile directory: each session opens it, so a sign-in done
+  // once with --sign-in carries over (cookies, storage, device identity).
+  profile?: string,
 ): Promise<UIDriver> {
-  const browser = await { chromium, firefox, webkit }[browserName].launch({
+  const engine = { chromium, firefox, webkit }[browserName];
+  const launchOptions = {
     headless,
+    ...browserLaunchOptions(build),
     // On HiDPI displays a headed Chromium window renders at the display's
     // pixel ratio while the page is emulated at 1, so every screenshot briefly
     // re-renders the window at a different scale (a visible flicker per step).
@@ -36,7 +55,10 @@ export async function playwrightDriver(
     ...(browserName === 'chromium' && !headless
       ? { args: ['--force-device-scale-factor=1'] }
       : {}),
-  });
+  };
+  // Only a dedicated test profile; a personal browser profile is refused.
+  if (profile) profile = await dedicatedProfile(profile);
+  const browser = profile ? null : await engine.launch(launchOptions);
   return {
     async openSession({
       suite,
@@ -49,6 +71,8 @@ export async function playwrightDriver(
     }) {
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
+      if (storageState && profile)
+        throw new Error('Use a profile or a storage state, not both');
       if (storageState) {
         const { state, report } = scopeStorageState(
           storageStateSchema.parse(
@@ -59,23 +83,37 @@ export async function playwrightDriver(
         await log('storage_state_scoped', report);
         scoped = state as BrowserContextOptions['storageState'];
       }
-      const context = await browser.newContext({
+      const contextOptions = {
         viewport,
-        storageState: scoped,
-        serviceWorkers: 'block',
+        serviceWorkers: 'block' as const,
         acceptDownloads: false,
         ...(video ? { recordVideo: { dir: directory } } : {}),
-      });
-      const page = await context.newPage();
+      };
+      // Sessions run one at a time, so each can open the profile in turn.
+      const context = browser
+        ? await browser.newContext({ ...contextOptions, storageState: scoped })
+        : await engine.launchPersistentContext(profile!, {
+            ...launchOptions,
+            ...contextOptions,
+          });
+      const page = browser
+        ? await context.newPage()
+        : (context.pages()[0] ?? (await context.newPage()));
       const browserErrors: string[] = [];
       const policyBlocks: string[] = [];
       const suiteHosts = new Set(suiteOrigins(suite));
       let unauthorized = false;
       await context.route('**/*', async (route) => {
         const request = route.request();
+        // Journey scope governs where the page goes; iframes (consent,
+        // anti-bot, embeds) load like other resources and only face the
+        // write policy.
+        const topLevel =
+          request.isNavigationRequest() &&
+          request.frame().parentFrame() === null;
         const blocked =
           !allowedRequest(request, suite) ||
-          (request.isNavigationRequest() &&
+          (topLevel &&
             !allowedURL(
               request.url(),
               suite.baseURL,
@@ -91,7 +129,7 @@ export async function playwrightDriver(
           });
           // Blocked requests to the suite's own origins can degrade the page
           // under test; surface them so failures are not blamed on the app.
-          if (!request.isNavigationRequest() && suiteHosts.has(url.origin))
+          if (!topLevel && suiteHosts.has(url.origin))
             policyBlocks.push(
               `${request.method()} ${url.origin}${url.pathname}`,
             );
@@ -209,8 +247,8 @@ export async function playwrightDriver(
         },
       };
     },
-    close() {
-      return browser.close();
+    async close() {
+      await browser?.close();
     },
   };
 }

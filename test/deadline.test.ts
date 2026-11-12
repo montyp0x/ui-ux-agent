@@ -106,6 +106,9 @@ test('a planner that answers after the deadline fails the budget without calling
     result.reason,
     'Task budget exhausted before the outcome was observed (deadline reached before choose)',
   );
+  assert.equal(result.outcome.code, 'budget_deadline_before_stage');
+  assert.equal(result.outcome.stage, 'choose');
+  assert.deepEqual(result.outcome.evidence.events, ['budget_exhausted']);
   assert.ok(
     !result.findings.some((finding) => finding.category === 'action-error'),
   );
@@ -132,12 +135,75 @@ test('a selector HTTP call aborted by the journey deadline is a budget failure, 
   assert.equal(result.status, 'failed');
   assert.equal(
     result.reason,
-    'Task budget exhausted before the outcome was observed (choose timed out at the deadline)',
+    'Task budget exhausted before the outcome was observed (choose was cancelled at the deadline)',
   );
+  assert.equal(result.outcome.code, 'budget_deadline_abort');
+  assert.equal(result.outcome.category, 'budget_exhausted');
+  // The journey signal and the request's own timeout both fire at the
+  // deadline; either one yields the same code.
+  const cut = /Journey deadline reached|aborted due to timeout/;
+  assert.match(result.outcome.detail ?? '', cut);
   const [exhausted] = budgetEvents(events);
   assert.equal(exhausted!.data.stage, 'choose');
-  assert.equal(exhausted!.data.cause, 'timeout');
-  assert.match(String(exhausted!.data.detail), /aborted due to timeout/);
+  assert.equal(exhausted!.data.cause, 'deadline_abort');
+  assert.match(String(exhausted!.data.detail), cut);
+});
+
+test('every model call gets one journey signal that aborts at the deadline', async () => {
+  const signals: (AbortSignal | undefined)[] = [];
+  let chooseCalls = 0;
+  let hungAt = 0;
+  let abortedAt = 0;
+  const { result, events } = await run(() => ({
+    async plan(_j, _o, _h, _t, _a, _c, signal) {
+      signals.push(signal);
+      return plan();
+    },
+    async choose(_j, _o, _p, actions, _h, _t, signal) {
+      signals.push(signal);
+      if (++chooseCalls < 2) return selected(actions[0]!.id, actions);
+      // A model that never answers: only the journey signal ends the call.
+      hungAt = Date.now();
+      return new Promise<Choice>((_resolve, reject) =>
+        signal!.addEventListener('abort', () => {
+          abortedAt = Date.now();
+          reject(signal!.reason);
+        }),
+      );
+    },
+  }));
+  // At least one plan and both selector calls.
+  assert.ok(signals.length >= 3);
+  assert.equal(chooseCalls, 2);
+  assert.ok(signals.every((signal) => signal && signal === signals[0]));
+  assert.ok(signals[0]!.aborted);
+  assert.equal((signals[0]!.reason as Error).name, 'TimeoutError');
+  // Ended by the signal at the deadline, not by the call returning.
+  assert.ok(hungAt > 0 && abortedAt >= hungAt);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.outcome.code, 'budget_deadline_abort');
+  assert.equal(result.outcome.stage, 'choose');
+  assert.equal(result.outcome.detail, 'Journey deadline reached');
+  const [exhausted, ...extra] = budgetEvents(events);
+  assert.equal(extra.length, 0);
+  assert.equal(exhausted!.data.cause, 'deadline_abort');
+  assert.ok(Number(exhausted!.data.overrunMs) >= 0);
+  assert.ok(
+    Number(exhausted!.data.overrunMs) < 1000,
+    'stopped at the deadline',
+  );
+});
+
+test('an abort before the deadline remains an error', async () => {
+  const { result, events } = await run(() => ({
+    plan,
+    async choose() {
+      throw new DOMException('The operation was aborted', 'AbortError');
+    },
+  }));
+  assert.equal(result.status, 'error');
+  assert.equal(result.outcome.code, 'model_call_failed');
+  assert.equal(budgetEvents(events).length, 0);
 });
 
 test('a timeout before the deadline remains an error', async () => {
@@ -149,6 +215,7 @@ test('a timeout before the deadline remains an error', async () => {
   }));
   assert.equal(result.status, 'error');
   assert.equal(result.reason, 'Selector gave up early');
+  assert.equal(result.outcome.code, 'model_call_failed');
   assert.equal(budgetEvents(events).length, 0);
 });
 
@@ -162,6 +229,7 @@ test('a non-timeout failure at the deadline remains an error', async () => {
   }));
   assert.equal(result.status, 'error');
   assert.equal(result.reason, 'Selector response was malformed');
+  assert.equal(result.outcome.code, 'model_call_failed');
   assert.equal(budgetEvents(events).length, 0);
 });
 

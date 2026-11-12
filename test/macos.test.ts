@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import {
   DEFAULT_BLOCKED_CONTROLS,
@@ -15,6 +16,7 @@ import {
   FIXTURE_BUNDLE_ID,
 } from '../src/drivers/macos-fixture.js';
 import type { Models } from '../src/models.js';
+import { parseResults } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
 
 // Native tests need macOS plus Accessibility and Screen Recording permission
@@ -106,6 +108,21 @@ test(
     const [result] = await runSuite(suite(app), models, { directory });
     assert.equal(result!.status, 'passed', result!.reason);
     assert.deepEqual(result!.checks, [true, true]);
+    // The real native driver produces a valid version-2 result: the outcome
+    // is decided by the assertions, and the quality verdict stays
+    // not_evaluated because no built-in quality check runs on macOS.
+    const [stored] = parseResults(
+      await readFile(join(directory, 'results.json'), 'utf8'),
+    );
+    assert.equal(stored!.outcome.code, 'assertions_passed');
+    assert.equal(stored!.outcome.source, 'assertion');
+    assert.equal(stored!.quality.verdict, 'not_evaluated');
+    assert.deepEqual(stored!.quality.executed, []);
+    assert.ok(
+      stored!.quality.unsupported.some(
+        (gap) => gap.id === 'layout.horizontal-overflow',
+      ),
+    );
     const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
       .trim()
       .split('\n')
@@ -536,5 +553,221 @@ test(
     );
     assert.equal(result!.status, 'passed', result!.reason);
     assert.equal(result!.steps, 0);
+  },
+);
+
+// Picks the first offered action matching `want`, in order; no_match otherwise.
+const scripted = (want: ((action: Action) => boolean)[]): Models => ({
+  async plan() {
+    return { objective: 'Follow the scripted steps', concerns: [] };
+  },
+  async choose(_j, _o, _p, actions) {
+    const choice =
+      want.map((match) => actions.find(match)).find(Boolean)?.id ?? 'no_match';
+    return {
+      type: 'choice',
+      choice,
+      confidence: 1,
+      probabilities: Object.fromEntries([
+        ...actions.map((action) => [action.id, action.id === choice ? 1 : 0]),
+        ['no_match', choice === 'no_match' ? 1 : 0],
+      ]),
+    };
+  },
+});
+
+const inboxSuite = (app: string, journey: Record<string, unknown>) =>
+  suiteSchema.parse({
+    name: 'Native fixture, inbox',
+    platform: 'macos',
+    app: { bundleId: FIXTURE_BUNDLE_ID, path: app, relaunch: true },
+    viewports: [{ name: 'window', width: 900, height: 600 }],
+    journeys: [
+      {
+        persona: 'A reader',
+        ready: {
+          kind: 'visible',
+          target: { by: 'testId', value: 'inbox-empty' },
+        },
+        maxSteps: 4,
+        maxDurationMs: 60000,
+        ...journey,
+      },
+    ],
+  });
+
+test(
+  'a control without AXPress is never offered, even as a configured click',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const offered: Action[] = [];
+    const models = scripted([
+      (action) =>
+        'target' in action &&
+        action.target.by === 'testId' &&
+        action.target.value === 'click-only',
+    ]);
+    const choose = models.choose.bind(models);
+    models.choose = async (...args) => {
+      offered.push(...args[3]);
+      return choose(...args);
+    };
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-macos-')),
+      'run',
+    );
+    const [result] = await runSuite(
+      inboxSuite(app, {
+        id: 'mark-read',
+        goal: 'Mark all messages read',
+        // The suite even configures the click: it still has no accessibility
+        // action, so it would need a synthesized mouse event.
+        interactions: [
+          {
+            kind: 'click',
+            target: { by: 'testId', value: 'click-only' },
+            description: 'Mark all read',
+          },
+        ],
+        success: [
+          { kind: 'visible', target: { by: 'testId', value: 'marked-read' } },
+        ],
+        maxSteps: 1,
+      }),
+      models,
+      { directory },
+    );
+    assert.notEqual(result!.status, 'passed', result!.reason);
+    // Not offering a control is a driver policy, not a product defect or a
+    // harness failure: the selector ran out of steps without the outcome.
+    assert.equal(result!.outcome.code, 'budget_max_steps');
+    assert.notEqual(result!.outcome.source, 'assertion');
+    assert.ok(offered.length > 0, 'the selector saw the offered actions');
+    assert.ok(
+      !offered.some(
+        (action) =>
+          action.description.includes('Mark all read') ||
+          ('target' in action &&
+            action.target.by === 'testId' &&
+            action.target.value === 'click-only'),
+      ),
+      offered.map((action) => action.description).join(', '),
+    );
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.ok(
+      events.some(
+        (event) =>
+          event.event === 'candidate_skipped' &&
+          event.data.reason === 'no_accessibility_action' &&
+          event.data.name === 'Mark all read',
+      ),
+      'the skipped click is logged with its reason',
+    );
+    // Accessibility-offered controls are still there: the inbox navigation.
+    assert.ok(
+      offered.some((action) => action.description === 'Press button Projects'),
+    );
+  },
+);
+
+test('press interactions and syntheticInput are rejected for macOS suites', () => {
+  const press = {
+    id: 'p',
+    goal: 'g',
+    persona: 'p',
+    ready: { kind: 'path', pattern: '.' },
+    success: [{ kind: 'path', pattern: '.' }],
+    interactions: [
+      {
+        kind: 'press',
+        target: { by: 'testId', value: 'x' },
+        key: 'Enter',
+        description: 'Submit',
+      },
+    ],
+  };
+  const macos = {
+    name: 'n',
+    platform: 'macos',
+    app: { bundleId: 'com.example.app' },
+    viewports: [{ name: 'w', width: 800, height: 600 }],
+  };
+  assert.throws(
+    () => suiteSchema.parse({ ...macos, journeys: [press] }),
+    /press interactions are not supported on macOS: the driver never synthesizes keyboard input/,
+  );
+  assert.throws(
+    () =>
+      suiteSchema.parse({
+        ...macos,
+        journeys: [{ ...press, interactions: [], setup: press.interactions }],
+      }),
+    /press interactions are not supported on macOS/,
+  );
+  // There is no switch to allow synthesized input.
+  assert.throws(
+    () =>
+      suiteSchema.parse({
+        ...macos,
+        syntheticInput: true,
+        journeys: [{ ...press, interactions: [] }],
+      }),
+    /syntheticInput/,
+  );
+  // Web suites keep press: Playwright sends keys inside the browser page.
+  assert.doesNotThrow(() =>
+    suiteSchema.parse({
+      name: 'n',
+      baseURL: 'https://example.com',
+      viewports: [{ name: 'd', width: 800, height: 600 }],
+      journeys: [{ ...press, startPath: '/', allowedPaths: ['/'] }],
+    }),
+  );
+});
+
+test(
+  'the scope probe follows the app process and its on-screen window',
+  { skip },
+  async () => {
+    const app = await buildFixtureApp();
+    const helper = spawn(await ensureHelper(), [], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    const replies: ((reply: Record<string, unknown>) => void)[] = [];
+    createInterface({ input: helper.stdout! }).on('line', (line) =>
+      replies.shift()!(JSON.parse(line)),
+    );
+    const call = (request: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        replies.push(resolve);
+        helper.stdin!.write(JSON.stringify(request) + '\n');
+      });
+    try {
+      await call({ cmd: 'terminate', bundleId: FIXTURE_BUNDLE_ID });
+      const { pid } = await call({ cmd: 'launch', path: app });
+      let probe: Record<string, unknown> = {};
+      for (let i = 0; i < 50 && probe.alive !== true; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        probe = await call({ cmd: 'alive', pid });
+      }
+      assert.equal(probe.alive, true, JSON.stringify(probe));
+      assert.equal(probe.running, true);
+      await call({ cmd: 'terminate', bundleId: FIXTURE_BUNDLE_ID });
+      probe = await call({ cmd: 'alive', pid });
+      assert.deepEqual(
+        [probe.alive, probe.running],
+        [false, false],
+        JSON.stringify(probe),
+      );
+      // A pid with no process is never in scope.
+      probe = await call({ cmd: 'alive', pid: 99999 });
+      assert.equal(probe.running, false);
+    } finally {
+      helper.stdin!.end();
+    }
   },
 );

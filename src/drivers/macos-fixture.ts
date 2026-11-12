@@ -14,7 +14,10 @@ export const fixtureAppPath = join(root, '.build', 'UIFixture.app');
 // Builds the deterministic SwiftUI fixture into a minimal, ad-hoc signed .app.
 export async function buildFixtureApp(): Promise<string> {
   const executable = join(fixtureAppPath, 'Contents', 'MacOS', 'UIFixture');
-  if (existsSync(executable) && statSync(executable).mtimeMs >= statSync(source).mtimeMs)
+  if (
+    existsSync(executable) &&
+    statSync(executable).mtimeMs >= statSync(source).mtimeMs
+  )
     return fixtureAppPath;
   await mkdir(dirname(executable), { recursive: true });
   await run('swiftc', ['-O', '-parse-as-library', source, '-o', executable]);

@@ -1,4 +1,3 @@
-import type { Usage } from './summary.js';
 import { z } from 'zod';
 
 const relativePath = z
@@ -217,18 +216,32 @@ const suiteObject = z
     menus: z.boolean().default(false),
     baseURL: z.url(),
     browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
+    // An installed browser build for chromium (e.g. 'chrome'): uses the
+    // system's proxy settings and certificate trust like a user's browser.
+    browserChannel: z.enum(['chrome', 'chrome-beta', 'msedge']).optional(),
+    // Absolute path to another Chromium-based browser's executable (e.g.
+    // /Applications/Dia.app/Contents/MacOS/Dia). Launched with a fresh or a
+    // dedicated --profile test profile, never the user's own.
+    browserExecutable: z.string().regex(/^\//).optional(),
     requiresAuth: z.boolean().default(false),
     allowedOrigins: z.array(originSchema).default([]),
     applicationOrigins: z.array(originSchema).default([]),
+    // Reviewed write requests. Use an exact path, or a pathPattern (regex on
+    // the URL path) for endpoints with ids, such as chat message routes.
     allowedRequests: z
       .array(
         z
           .object({
             origin: originSchema,
-            path: relativePath,
+            path: relativePath.optional(),
+            pathPattern: z.string().min(2).optional(),
             method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
           })
-          .strict(),
+          .strict()
+          .refine(
+            (rule) => !!rule.path !== !!rule.pathPattern,
+            'allowedRequests entries need exactly one of path or pathPattern',
+          ),
       )
       .default([]),
     viewports: z
@@ -297,6 +310,20 @@ const suiteObject = z
           message:
             'CSS targets do not apply to macOS; use role, testId (accessibility identifier), label or placeholder',
         });
+      // A key press would have to be synthesized: the driver only performs
+      // actions that accessibility elements offer.
+      if (
+        suite.journeys.some((journey) =>
+          [...journey.interactions, ...(journey.setup ?? [])].some(
+            (interaction) => interaction.kind === 'press',
+          ),
+        )
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'press interactions are not supported on macOS: the driver never synthesizes keyboard input',
+        });
     } else if (suite.menus)
       ctx.addIssue({
         code: 'custom',
@@ -304,6 +331,29 @@ const suiteObject = z
       });
     else if (!['http:', 'https:'].includes(new URL(suite.baseURL).protocol))
       ctx.addIssue({ code: 'custom', message: 'baseURL must be HTTP(S)' });
+    for (const rule of suite.allowedRequests)
+      if (rule.pathPattern)
+        try {
+          new RegExp(rule.pathPattern);
+        } catch {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Invalid pathPattern ${rule.pathPattern}`,
+          });
+        }
+    if (
+      (suite.browserChannel || suite.browserExecutable) &&
+      suite.browser !== 'chromium'
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'browserChannel and browserExecutable apply to chromium only',
+      });
+    if (suite.browserChannel && suite.browserExecutable)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Use browserChannel or browserExecutable, not both',
+      });
     for (const journey of suite.journeys) {
       for (const check of [
         journey.ready,
@@ -410,26 +460,5 @@ export const choiceSchema = z.object({
   probabilities: z.record(z.string(), z.number().min(0).max(1)),
 });
 export type Choice = z.infer<typeof choiceSchema>;
-export type Finding = {
-  kind: 'observed' | 'hypothesis';
-  category: string;
-  description: string;
-  step: number;
-  screenshot: string;
-};
-export type Result = {
-  journey: string;
-  viewport: string;
-  // 1-based repetition number when a journey/viewport is run several times.
-  attempt: number;
-  // Model calls, latency and tokens for this run, from model_call events.
-  usage: Usage;
-  status: 'passed' | 'failed' | 'blocked' | 'error';
-  reason: string;
-  steps: number;
-  durationMs: number;
-  checks: boolean[];
-  findings: Finding[];
-  trace: string;
-  video: string | null;
-};
+// The run result contract lives in results.ts; re-exported for existing imports.
+export type { Finding, Result } from './results.js';

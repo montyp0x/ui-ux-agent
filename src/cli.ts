@@ -3,37 +3,55 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { chromium, firefox, webkit } from 'playwright';
-import { scopeStorageState, storageStateSchema, suiteOrigins } from './auth.js';
+import {
+  dedicatedProfile,
+  scopeStorageState,
+  storageStateSchema,
+  suiteOrigins,
+} from './auth.js';
 import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
+import { browserLaunchOptions } from './drivers/playwright.js';
 import { suiteSchema } from './contracts.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
 import { summarize } from './summary.js';
 
-const { values } = parseArgs({
-  options: {
-    suite: { type: 'string' },
-    url: { type: 'string' },
-    'storage-state': { type: 'string' },
-    out: { type: 'string' },
-    journey: { type: 'string' },
-    viewport: { type: 'string' },
-    headed: { type: 'boolean' },
-    video: { type: 'boolean' },
-    validate: { type: 'boolean' },
-    help: { type: 'boolean' },
-    init: { type: 'string' },
-    'success-path': { type: 'string' },
-    goal: { type: 'string' },
-    browser: { type: 'string' },
-    'env-file': { type: 'string' },
-    login: { type: 'string' },
-    repeat: { type: 'string' },
-    from: { type: 'string' },
-  },
-});
+const options = {
+  suite: { type: 'string' },
+  url: { type: 'string' },
+  'storage-state': { type: 'string' },
+  out: { type: 'string' },
+  journey: { type: 'string' },
+  viewport: { type: 'string' },
+  headed: { type: 'boolean' },
+  video: { type: 'boolean' },
+  validate: { type: 'boolean' },
+  help: { type: 'boolean' },
+  init: { type: 'string' },
+  'success-path': { type: 'string' },
+  goal: { type: 'string' },
+  browser: { type: 'string' },
+  'env-file': { type: 'string' },
+  login: { type: 'string' },
+  repeat: { type: 'string' },
+  from: { type: 'string' },
+  profile: { type: 'string' },
+  'sign-in': { type: 'boolean' },
+} as const;
+// Unknown flags (including the removed --from-browser, which read sessions out
+// of an installed browser's personal profile) are rejected with exit code 2.
+const { values } = (() => {
+  try {
+    return parseArgs({ options });
+  } catch (caught) {
+    console.error(
+      `${caught instanceof Error ? caught.message : String(caught)}. Run with --help for the supported options.`,
+    );
+    process.exit(2);
+  }
+})();
 
 // Credentials come from the environment. An explicit --env-file, or ./.env when
 // present, is loaded first; variables already set in the shell take precedence.
@@ -50,11 +68,16 @@ function loadCredentials(): void {
 if (values.help) {
   console.log(
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
+      'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]',
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      '\n' +
+      '--profile DIR is a dedicated test profile the runner creates; a personal browser profile is refused, and no session is read from an installed browser.',
   );
 } else {
   try {
+    if (values.profile && (values['storage-state'] || values.login))
+      throw new Error('Use --profile or --storage-state/--login, not both');
     if (values.init) {
       if (!values.url || !values['success-path'])
         throw new Error('--init requires --url and --success-path');
@@ -87,7 +110,37 @@ if (values.help) {
           ...suite,
           browser: values.browser,
         }).browser;
-      if (values.login) {
+      if (values['sign-in']) {
+        // One-time sign-in into a persistent profile; runs with the same
+        // --profile reuse it, with no further login or Keychain access.
+        if (!values.profile)
+          throw new Error('--sign-in requires --profile DIR');
+        const profile = await dedicatedProfile(values.profile);
+        const context = await { chromium, firefox, webkit }[
+          suite.browser
+        ].launchPersistentContext(profile, {
+          headless: false,
+          ...browserLaunchOptions(suite),
+        });
+        try {
+          const page = context.pages()[0] ?? (await context.newPage());
+          await page.goto(suite.baseURL);
+          const prompt = createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          await prompt.question(
+            `Sign in to ${suite.baseURL} in the opened browser, then press Enter here to keep the profile. `,
+          );
+          prompt.close();
+        } finally {
+          await context.close();
+        }
+        await chmod(profile, 0o700);
+        console.log(
+          `Saved profile ${profile}. Run with --profile ${values.profile} to reuse this sign-in.`,
+        );
+      } else if (values.login) {
         // Capture (or import with --from) a session, scoped to the suite's origins.
         let raw: unknown;
         if (values.from)
@@ -97,6 +150,8 @@ if (values.help) {
             suite.browser
           ].launch({
             headless: false,
+            // Sign in with the same browser build the runs use.
+            ...browserLaunchOptions(suite),
           });
           try {
             const context = await browser.newContext();
@@ -141,11 +196,18 @@ if (values.help) {
         const results = await runSuite(
           suite,
           (log) =>
-            models({ ...options, onCall: (data) => log('model_call', data) }),
+            models({
+              ...options,
+              onCall: (data) => log('model_call', data),
+              onWait: (data) => log('model_wait', data),
+            }),
           {
             directory,
             storageState: values['storage-state']
               ? resolve(values['storage-state'])
+              : undefined,
+            profile: values.profile
+              ? await dedicatedProfile(values.profile)
               : undefined,
             headless: !values.headed,
             video: values.video,
@@ -154,9 +216,11 @@ if (values.help) {
             repeat: values.repeat ? Number(values.repeat) : 1,
           },
         );
+        // The exit code follows the functional outcome only; the quality
+        // verdict is reported beside it and does not gate yet.
         for (const result of results)
           console.log(
-            `${result.status}: ${result.journey}/${result.viewport}: ${result.reason}`,
+            `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport}: ${result.reason} · quality ${result.quality.verdict}`,
           );
         for (const row of summarize(results))
           if (row.runs > 1)

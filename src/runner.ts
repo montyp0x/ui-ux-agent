@@ -12,14 +12,24 @@ import type {
   Result,
   Suite,
 } from './contracts.js';
-import type { History, Models } from './models.js';
+import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
+import { evaluateQuality } from './quality.js';
+import {
+  OUTCOME_CODES,
+  RESULT_VERSION,
+  emptySignals,
+  type OutcomeCode,
+} from './results.js';
 import { addModelCall, emptyUsage, summarize, type Usage } from './summary.js';
 import { actionSignature, refreshReasons, type PlanState } from './planning.js';
 
 export type RunOptions = {
   directory: string;
   storageState?: string;
+  // Dedicated persistent test profile directory, signed in once with
+  // --sign-in (see dedicatedProfile); never a personal browser profile.
+  profile?: string;
   headless?: boolean;
   video?: boolean;
   journey?: string;
@@ -32,13 +42,79 @@ export type Logger = EventLogger;
 
 const STALL_STEPS = 5;
 
+// Replaces {{marker}} anywhere in the journey; returns the same object when the
+// journey has no placeholder.
+export function withMarker(journey: Journey, marker: string): Journey {
+  const text = JSON.stringify(journey);
+  if (!text.includes('{{marker}}')) return journey;
+  return JSON.parse(text.replaceAll('{{marker}}', marker)) as Journey;
+}
+
 // A stage that would start after the journey deadline; reported as budget exhaustion.
 class BudgetExpired extends Error {}
+// A planner/selector call that failed, or returned output the runner cannot use.
+class ModelFailure extends Error {
+  constructor(
+    message: string,
+    readonly invalidOutput: boolean,
+    readonly original: unknown = null,
+  ) {
+    super(message);
+  }
+}
+// The driver lacks a capability the journey configuration needs.
+class DriverCapabilityMissing extends Error {}
+// A runner invariant broke; attribution is unknown.
+class RunnerInvariant extends Error {}
+// Stages whose failures come from the UI driver (or the application behind it).
+const DRIVER_STAGES = new Set([
+  'start',
+  'ready',
+  'setup',
+  'observe',
+  'checks',
+  'content',
+  'candidates',
+  'loop_check',
+  'execute',
+]);
+
+async function callModel<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (caught) {
+    throw new ModelFailure(
+      caught instanceof Error ? caught.message : String(caught),
+      false,
+      caught,
+    );
+  }
+}
 
 // Playwright and AbortSignal.timeout both name their timeout errors TimeoutError.
 function isTimeout(caught: unknown): boolean {
-  return (caught as { name?: unknown } | null)?.name === 'TimeoutError';
+  const error = caught instanceof ModelFailure ? caught.original : caught;
+  return (error as { name?: unknown } | null)?.name === 'TimeoutError';
 }
+
+function isAbort(caught: unknown): boolean {
+  const error = caught instanceof ModelFailure ? caught.original : caught;
+  return (error as { name?: unknown } | null)?.name === 'AbortError';
+}
+
+// The model limiter's refusal to start a request whose rate-limit cooldown
+// ends past the deadline (RateLimitBudgetError in models.ts). Matched by name
+// so this module does not depend on the limiter's class.
+function isRateLimitBudget(caught: unknown): boolean {
+  const error = caught instanceof ModelFailure ? caught.original : caught;
+  return (
+    error instanceof Error &&
+    (error.name === 'RateLimitBudgetError' ||
+      error.constructor.name === 'RateLimitBudgetError')
+  );
+}
+
+const isStale = (error: string) => error.startsWith('Stale observation');
 
 function firstLine(caught: unknown): string {
   const message = caught instanceof Error ? caught.message : String(caught);
@@ -64,7 +140,7 @@ async function waitForContent(
   deadline: number,
   viewport: string,
   log: Logger,
-): Promise<{ checks: boolean[]; passed: boolean }> {
+): Promise<{ checks: boolean[]; passed: boolean; journeyBudget: boolean }> {
   const started = Date.now();
   const expires = Math.min(deadline, started + journey.contentReady!.timeoutMs);
   const conditions = journey.contentReady!.checks;
@@ -103,7 +179,8 @@ async function waitForContent(
       durationMs: Date.now() - started,
       budget: expires === deadline ? 'journey' : 'content',
     });
-    if (finished) return { checks, passed };
+    if (finished)
+      return { checks, passed, journeyBudget: expires === deadline };
     await new Promise((resolve) =>
       setTimeout(resolve, Math.max(0, Math.min(200, expires - Date.now()))),
     );
@@ -123,13 +200,42 @@ async function runJourney(
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
+  // Aborted at the deadline and passed to every model call, so queued or
+  // in-flight planner and selector requests stop there. The reason is a
+  // TimeoutError, like AbortSignal.timeout's.
+  const deadlineAbort = new AbortController();
+  const deadlineTimer = setTimeout(
+    () =>
+      deadlineAbort.abort(
+        new DOMException('Journey deadline reached', 'TimeoutError'),
+      ),
+    journey.maxDurationMs,
+  );
   const result: Result = {
+    resultVersion: RESULT_VERSION,
     journey: journey.id,
     viewport,
     attempt,
     usage,
     status: 'error',
     reason: 'Journey did not finish',
+    outcome: {
+      code: 'journey_not_finished',
+      category: 'unknown',
+      source: 'unknown',
+      stage: 'start',
+      step: 0,
+      detail: null,
+      evidence: { screenshot: null, events: [], failedChecks: [] },
+      signals: emptySignals(),
+    },
+    quality: {
+      verdict: 'not_evaluated',
+      reason: 'Journey did not finish',
+      executed: [],
+      skipped: [],
+      unsupported: [],
+    },
     steps: 0,
     durationMs: 0,
     checks: [],
@@ -152,6 +258,54 @@ async function runJourney(
   let dwellSteps = 0;
   const stalledPages = new Set<string>();
   let stage = 'start';
+  let staleActions = 0;
+  let actionErrors = 0;
+  // Observed states measured by the built-in quality checks.
+  let measured = 0;
+  // Sets the functional outcome; the code fixes status, category and source.
+  const decide = (
+    code: OutcomeCode,
+    reason: string,
+    evidence: {
+      step?: number;
+      screenshot?: string | null;
+      events?: string[];
+      detail?: string | null;
+    } = {},
+  ) => {
+    const [status, category, source] = OUTCOME_CODES[code];
+    result.status = status;
+    result.reason = reason;
+    result.outcome = {
+      code,
+      category,
+      source,
+      stage,
+      step: evidence.step ?? observation?.step ?? result.steps,
+      detail: evidence.detail ?? null,
+      evidence: {
+        screenshot: evidence.screenshot ?? observation?.screenshot ?? null,
+        events: evidence.events ?? [],
+        failedChecks: result.checks.flatMap((ok, index) => (ok ? [] : [index])),
+      },
+      signals: result.outcome.signals,
+    };
+  };
+  // Built-in layout measurement, run on every observed state.
+  const measure = (state: Observation) => {
+    measured++;
+    if (
+      state.horizontalOverflow > 1 &&
+      !result.findings.some((finding) => finding.category === 'overflow')
+    )
+      result.findings.push({
+        kind: 'observed',
+        category: 'overflow',
+        description: `Document is ${state.horizontalOverflow}px wider than the viewport; review whether the horizontal overflow is intentional`,
+        step: state.step,
+        screenshot: state.screenshot,
+      });
+  };
   // Names the stage for budget reporting and refuses to start it after the deadline.
   const inScope = async () =>
     session.inScope
@@ -169,12 +323,15 @@ async function runJourney(
   };
   try {
     if (journey.loopProgressTargets?.length && !session.repeatState)
-      throw new Error(
+      throw new DriverCapabilityMissing(
         'Driver must implement repeatState to support loopProgressTargets',
       );
     await session.start(Math.min(15000, journey.maxDurationMs));
     stage = 'ready';
     let setupProblem: string | null = null;
+    let setupCode: OutcomeCode = 'ready_not_reached';
+    let setupScreenshot: string | null = null;
+    let setupError: string | null = null;
     if (await ready(session, journey, deadline))
       for (const [index, setup] of (journey.setup ?? []).entries()) {
         stage = 'setup';
@@ -208,16 +365,32 @@ async function runJourney(
         });
         if (error) {
           setupProblem = `Setup step ${index + 1} (${setup.description}) failed: ${error}`;
+          setupCode = !offered
+            ? 'setup_not_offered'
+            : isStale(error)
+              ? 'setup_stale_action'
+              : 'setup_action_failed';
+          if (setupCode === 'setup_stale_action') staleActions++;
+          setupScreenshot = before.screenshot;
+          setupError = error;
           break;
         }
       }
     else setupProblem = 'ready';
     if (setupProblem) {
-      result.status = 'blocked';
-      result.reason =
-        setupProblem === 'ready'
-          ? 'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector'
-          : setupProblem;
+      if (setupProblem === 'ready')
+        decide(
+          'ready_not_reached',
+          'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector',
+          { step: -1 },
+        );
+      else
+        decide(setupCode, setupProblem, {
+          step: -1,
+          screenshot: setupScreenshot,
+          events: ['setup'],
+          detail: setupError,
+        });
     } else {
       for (let step = 0; step <= journey.maxSteps; step++) {
         session.setTimeout(Math.max(1, Math.min(5000, deadline - Date.now())));
@@ -231,6 +404,7 @@ async function runJourney(
           viewport,
           ...observation,
         });
+        measure(observation);
         const pathname = new URL(observation.url).pathname;
         for (const [index, detour] of (journey.detours ?? []).entries()) {
           if (!new RegExp(detour.pattern).test(pathname)) continue;
@@ -254,8 +428,13 @@ async function runJourney(
             });
         }
         if (session.unauthorized) {
-          result.status = 'blocked';
-          result.reason = 'An authenticated request returned 401';
+          decide(
+            'unauthorized_response',
+            'An authenticated request returned 401',
+            {
+              events: ['observation'],
+            },
+          );
           break;
         }
         stage = 'checks';
@@ -266,7 +445,11 @@ async function runJourney(
           stage = 'content';
           const completion = journey.contentReady
             ? await waitForContent(session, journey, deadline, viewport, log)
-            : { checks: [], passed: Date.now() < deadline };
+            : {
+                checks: [],
+                passed: Date.now() < deadline,
+                journeyBudget: true,
+              };
           if (completion.passed && journey.contentReady) {
             // Loading can move arrival controls below the viewport. Refresh before planning.
             observation = await session.observe(step, observation.screenshot);
@@ -275,6 +458,7 @@ async function runJourney(
               viewport,
               ...observation,
             });
+            measure(observation);
             result.checks = await Promise.all(
               journey.success.map((condition) => session.check(condition)),
             );
@@ -285,43 +469,54 @@ async function runJourney(
             !completion.passed ||
             (result.checks.every(Boolean) && Date.now() < deadline)
           ) {
-            result.status = session.unauthorized
-              ? 'blocked'
-              : completion.passed
-                ? 'passed'
-                : 'failed';
-            result.reason = session.unauthorized
-              ? 'An authenticated request returned 401'
-              : completion.passed
-                ? 'All independent outcome assertions passed'
-                : journey.contentReady
-                  ? 'Content readiness timed out before the configured content assertions passed'
-                  : 'Task budget exhausted before the outcome was observed';
+            const events = journey.contentReady
+              ? ['observation', 'content_readiness']
+              : ['observation'];
+            if (session.unauthorized)
+              decide(
+                'unauthorized_response',
+                'An authenticated request returned 401',
+                { events },
+              );
+            else if (completion.passed)
+              decide(
+                'assertions_passed',
+                'All independent outcome assertions passed',
+                { events },
+              );
+            else if (journey.contentReady)
+              // A content wait cut short by the journey deadline is a budget
+              // outcome, not evidence that the content never appears.
+              decide(
+                completion.journeyBudget
+                  ? 'budget_deadline'
+                  : 'content_readiness_timeout',
+                'Content readiness timed out before the configured content assertions passed',
+                { events },
+              );
+            else
+              decide(
+                'budget_deadline',
+                'Task budget exhausted before the outcome was observed',
+                { events },
+              );
             break;
           }
         }
         if (!(await inScope())) {
-          result.status = 'blocked';
-          result.reason = 'Navigation left the allowed journey scope';
+          decide('scope_exit', 'Navigation left the allowed journey scope', {
+            events: ['observation'],
+          });
           break;
         }
         if (Date.now() >= deadline || step === journey.maxSteps) {
-          result.status = 'failed';
-          result.reason =
-            'Task budget exhausted before the outcome was observed';
+          decide(
+            step === journey.maxSteps ? 'budget_max_steps' : 'budget_deadline',
+            'Task budget exhausted before the outcome was observed',
+            { events: ['observation'] },
+          );
           break;
         }
-        if (
-          observation.horizontalOverflow > 1 &&
-          !result.findings.some((finding) => finding.category === 'overflow')
-        )
-          result.findings.push({
-            kind: 'observed',
-            category: 'overflow',
-            description: `Document is ${observation.horizontalOverflow}px wider than the viewport; review whether the horizontal overflow is intentional`,
-            step,
-            screenshot: observation.screenshot,
-          });
         stage = 'candidates';
         const actions = await session.candidates();
         const currentPlanState = {
@@ -335,34 +530,40 @@ async function runJourney(
           currentPlanState,
           history,
         );
-        const revisitedAction = plan ? revisitPending : null;
+        const revisitedAction: string | null = plan ? revisitPending : null;
         if (revisitedAction) reasons.push('revisited-state');
         revisitPending = null;
         // Every STALL_STEPS actions that stayed on one page, ask the planner to
         // reconsider whether this page can satisfy the goal. Only the count is
         // shared: being asked again already implies the goal is not reached.
-        const stalled =
+        const stalled: boolean =
           !!plan && dwellSteps > 0 && dwellSteps % STALL_STEPS === 0;
         if (stalled) {
           reasons.push('stalled');
           stalledPages.add(new URL(observation.url).pathname);
         }
         if (reasons.length) {
-          plan = await models.plan(
-            journey,
-            observation,
-            history,
-            remaining('plan'),
-            actions,
-            {
-              reasons,
-              ...(revisitedAction ? { revisitedAction } : {}),
-              ...(stalled ? { stalledSteps: dwellSteps } : {}),
-              ...(stalledPages.size ? { stalledPages: [...stalledPages] } : {}),
-              ...(session.offeredControls
-                ? { offeredControls: session.offeredControls() }
-                : {}),
-            },
+          const planBudget = remaining('plan');
+          const planned = observation;
+          const context: PlanContext = {
+            reasons,
+            ...(revisitedAction ? { revisitedAction } : {}),
+            ...(stalled ? { stalledSteps: dwellSteps } : {}),
+            ...(stalledPages.size ? { stalledPages: [...stalledPages] } : {}),
+            ...(session.offeredControls
+              ? { offeredControls: session.offeredControls() }
+              : {}),
+          };
+          plan = await callModel<Plan>(() =>
+            models.plan(
+              journey,
+              planned,
+              history,
+              planBudget,
+              actions,
+              context,
+              deadlineAbort.signal,
+            ),
           );
           planState = currentPlanState;
           await log('plan', {
@@ -381,14 +582,20 @@ async function runJourney(
               screenshot: observation.screenshot,
             });
         }
-        if (!plan) throw new Error('Planner did not produce an objective');
-        const decision = await models.choose(
-          journey,
-          observation,
-          plan,
-          actions,
-          history,
-          remaining('choose'),
+        if (!plan)
+          throw new RunnerInvariant('Planner did not produce an objective');
+        const chooseBudget = remaining('choose');
+        const [observed, current] = [observation, plan];
+        const decision = await callModel(() =>
+          models.choose(
+            journey,
+            observed,
+            current,
+            actions,
+            history,
+            chooseBudget,
+            deadlineAbort.signal,
+          ),
         );
         await log('decision', {
           journey: journey.id,
@@ -407,9 +614,11 @@ async function runJourney(
               candidate.kind === 'scroll' && candidate.direction === 'down',
           );
           if (!action || recoveryScrolls >= 2) {
-            result.status = 'failed';
-            result.reason =
-              'Selector could not find a path after bounded scroll recovery';
+            decide(
+              'selector_no_path',
+              'Selector could not find a path after bounded scroll recovery',
+              { events: ['decision', 'recovery'] },
+            );
             break;
           }
           recoveryScrolls++;
@@ -435,7 +644,8 @@ async function runJourney(
           );
         }
         noMatch = 0;
-        if (!action) throw new Error('Selected action was not offered');
+        if (!action)
+          throw new ModelFailure('Selected action was not offered', true);
         stage = 'loop_check';
         const state =
           action.kind === 'wait'
@@ -481,10 +691,13 @@ async function runJourney(
             outcome: repeated >= 3 ? 'rejected' : 'dispatch',
           });
           if (repeated >= 3) {
-            result.status = 'failed';
-            result.reason = session.repeatState
-              ? 'Repeated the same action in the same recipient/progress state three times'
-              : 'Repeated the same action in the same page state three times';
+            decide(
+              'repeated_action',
+              session.repeatState
+                ? 'Repeated the same action in the same recipient/progress state three times'
+                : 'Repeated the same action in the same page state three times',
+              { events: ['loop_check'], detail: action.description },
+            );
             result.findings.push({
               kind: 'observed',
               category: 'loop',
@@ -527,18 +740,26 @@ async function runJourney(
           error,
           durationMs: Date.now() - actionStarted,
         });
+        if (error && isStale(error)) staleActions++;
         if (
           source === 'recovery' &&
           !error &&
           JSON.stringify(after.scroll) === JSON.stringify(observation.scroll)
         ) {
-          result.status = 'failed';
-          result.reason =
-            'Selector recovery scroll did not advance the viewport';
+          decide(
+            'recovery_scroll_stalled',
+            'Selector recovery scroll did not advance the viewport',
+            {
+              step: after.step,
+              screenshot: after.screenshot,
+              events: ['action_result'],
+            },
+          );
           break;
         }
         // A timeout cut short by the journey deadline is not a UI defect.
-        if (error && !error.startsWith('Stale observation') && !budgetCut)
+        if (error && !isStale(error) && !budgetCut) {
+          actionErrors++;
           result.findings.push({
             kind: 'observed',
             category: 'action-error',
@@ -546,35 +767,100 @@ async function runJourney(
             step: step + 1,
             screenshot: after.screenshot,
           });
+        }
         if (!(await inScope())) {
-          result.status = 'blocked';
-          result.reason = 'Navigation left the allowed journey scope';
+          decide('scope_exit', 'Navigation left the allowed journey scope', {
+            step: after.step,
+            screenshot: after.screenshot,
+            events: ['action_result'],
+          });
           break;
         }
       }
     }
   } catch (caught) {
     const notStarted = caught instanceof BudgetExpired;
+    // A model call that ended at the deadline is one outcome whichever fired
+    // first: the journey signal, the call's own timeout, or the limiter's
+    // slot wait expiring (RateLimitBudgetError).
+    const deadlineCut =
+      caught instanceof ModelFailure &&
+      (deadlineAbort.signal.aborted || Date.now() >= deadline) &&
+      (isTimeout(caught) || isAbort(caught) || isRateLimitBudget(caught));
+    const rateLimited = !deadlineCut && isRateLimitBudget(caught);
     if (
       !session.unauthorized &&
-      (notStarted || (isTimeout(caught) && Date.now() >= deadline))
+      (notStarted ||
+        deadlineCut ||
+        rateLimited ||
+        (isTimeout(caught) && Date.now() >= deadline))
     ) {
-      result.status = 'failed';
-      result.reason = `Task budget exhausted before the outcome was observed (${notStarted ? `deadline reached before ${stage}` : `${stage} timed out at the deadline`})`;
+      const [code, cause, why]: [OutcomeCode, string, string] = notStarted
+        ? [
+            'budget_deadline_before_stage',
+            'deadline_before_stage',
+            `deadline reached before ${stage}`,
+          ]
+        : deadlineCut
+          ? [
+              'budget_deadline_abort',
+              'deadline_abort',
+              `${stage} was cancelled at the deadline`,
+            ]
+          : rateLimited
+            ? [
+                'budget_model_rate_limit',
+                'rate_limit',
+                `${stage} would wait for the model rate limit past the deadline`,
+              ]
+            : [
+                'budget_stage_timeout',
+                'timeout',
+                `${stage} timed out at the deadline`,
+              ];
+      const detail = notStarted ? null : firstLine(caught);
+      decide(
+        code,
+        `Task budget exhausted before the outcome was observed (${why})`,
+        { events: ['budget_exhausted'], detail },
+      );
       await log('budget_exhausted', {
         journey: journey.id,
         viewport,
         step: result.steps,
         stage,
-        cause: notStarted ? 'deadline_before_stage' : 'timeout',
-        detail: notStarted ? null : firstLine(caught),
+        cause,
+        detail,
         overrunMs: Date.now() - deadline,
       });
     } else {
-      result.reason = caught instanceof Error ? caught.message : String(caught);
-      result.status = session.unauthorized ? 'blocked' : 'error';
+      const message = caught instanceof Error ? caught.message : String(caught);
+      decide(
+        session.unauthorized
+          ? 'unauthorized_response'
+          : caught instanceof ModelFailure
+            ? caught.invalidOutput
+              ? 'model_invalid_output'
+              : 'model_call_failed'
+            : caught instanceof DriverCapabilityMissing
+              ? 'driver_capability_missing'
+              : caught instanceof RunnerInvariant || !DRIVER_STAGES.has(stage)
+                ? 'unclassified_error'
+                : 'driver_error',
+        message,
+        {
+          detail: firstLine(caught),
+          // The decision event holds the selector's unusable choice.
+          events:
+            caught instanceof ModelFailure && caught.invalidOutput
+              ? ['decision']
+              : [],
+        },
+      );
     }
   } finally {
+    clearTimeout(deadlineTimer);
+    let evidenceComplete = false;
     try {
       // Evidence capture has its own bounded timeout, not the expired task timeout.
       session.setTimeout(5000);
@@ -613,18 +899,42 @@ async function runJourney(
           step: result.steps,
           screenshot,
         });
+      result.outcome.evidence.screenshot ??= screenshot;
+      evidenceComplete = true;
     } catch (caught) {
-      result.status = 'error';
-      result.reason += `; evidence capture failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+      stage = 'finish';
+      decide(
+        'evidence_capture_failed',
+        `${result.reason}; evidence capture failed: ${caught instanceof Error ? caught.message : String(caught)}`,
+        { detail: `${firstLine(caught)} (after ${result.outcome.code})` },
+      );
     }
     try {
       const finished = await session.finish(result.trace);
       result.video = finished.video;
       if (finished.trace) result.trace = finished.trace;
     } catch (caught) {
-      result.status = 'error';
-      result.reason += `; session cleanup failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+      stage = 'finish';
+      decide(
+        'session_cleanup_failed',
+        `${result.reason}; session cleanup failed: ${caught instanceof Error ? caught.message : String(caught)}`,
+        { detail: `${firstLine(caught)} (after ${result.outcome.code})` },
+      );
     }
+    const policyBlocks = new Set(session.policyBlocks ?? []).size;
+    result.outcome.signals = {
+      staleActions,
+      actionErrors,
+      policyBlocks,
+      browserErrors: new Set(session.browserErrors).size,
+    };
+    result.quality = evaluateQuality({
+      platform: suite.platform,
+      observations: measured,
+      findings: result.findings,
+      policyBlocks,
+      evidenceComplete,
+    });
     result.durationMs = Date.now() - started;
     await writeFile(
       join(directory, 'result.json'),
@@ -641,9 +951,9 @@ export async function runSuite(
   models: Models | ((log: Logger) => Models),
   options: RunOptions,
 ): Promise<Result[]> {
-  if (suite.requiresAuth && !options.storageState)
+  if (suite.requiresAuth && !options.storageState && !options.profile)
     throw new Error(
-      'This suite requires an approved Playwright storage-state path',
+      'This suite requires a signed-in --profile or an approved storage-state path',
     );
   const journeys = suite.journeys.filter(
     (journey) => !options.journey || journey.id === options.journey,
@@ -679,7 +989,12 @@ export async function runSuite(
     options.driver ??
     (suite.platform === 'macos'
       ? await (await import('./drivers/macos.js')).macosDriver()
-      : await playwrightDriver(suite.browser, options.headless ?? true));
+      : await playwrightDriver(
+          suite.browser,
+          options.headless ?? true,
+          suite,
+          options.profile,
+        ));
   const results: Result[] = [];
   try {
     for (const journey of journeys) {
@@ -692,9 +1007,20 @@ export async function runSuite(
               : `${journey.id}-${viewport.name}`,
           );
           await mkdir(directory, { mode: 0o700 });
+          // A unique marker per run, substituted for {{marker}} in the journey
+          // (typed values, checks), so a run's own effects can be traced.
+          const marker =
+            `UIUX-${journey.id}-${attempt}-${Date.now().toString(36)}`.toUpperCase();
+          const runJourneyConfig = withMarker(journey, marker);
+          await log('journey_start', {
+            journey: journey.id,
+            viewport: viewport.name,
+            attempt,
+            ...(runJourneyConfig !== journey ? { marker } : {}),
+          });
           const session = await driver.openSession({
             suite,
-            journey,
+            journey: runJourneyConfig,
             viewport,
             directory,
             storageState: options.storageState,
@@ -704,19 +1030,19 @@ export async function runSuite(
           const usage = emptyUsage();
           currentUsage = usage;
           try {
-            results.push(
-              await runJourney(
-                session,
-                suite,
-                journey,
-                viewport.name,
-                directory,
-                engine,
-                log,
-                attempt,
-                usage,
-              ),
+            const result = await runJourney(
+              session,
+              suite,
+              runJourneyConfig,
+              viewport.name,
+              directory,
+              engine,
+              log,
+              attempt,
+              usage,
             );
+            if (runJourneyConfig !== journey) result.marker = marker;
+            results.push(result);
           } finally {
             currentUsage = null;
           }

@@ -48,8 +48,12 @@ Credentials are read from environment variables, never from suite files. The CLI
 | `PLANNER_MODEL` | Planner model | `openai/gpt-6-astra` |
 | `PLANNER_API_HEADERS` | Optional JSON object of extra headers for gateways | none |
 | `SELECTOR_PROTOCOL` | `typesafe` (TypeSafe Jev choice API) or `chat` (any Chat Completions endpoint) | `typesafe` |
+| `PLANNER_MAX_RPM`, `PLANNER_MAX_CONCURRENCY` | Client-side cap on planner requests per minute and in flight, shared by the whole process | `60`, `2` |
+| `SELECTOR_MAX_RPM`, `SELECTOR_MAX_CONCURRENCY` | The same for the selector endpoint (one limiter per endpoint URL, so a shared `chat` endpoint has one budget) | `300`, `4` |
 | `JEV_API_KEY` (or `TYPESAFE_API_KEY`) | Jev selector key, for `typesafe` | required for `typesafe` |
 | `SELECTOR_API_URL`, `SELECTOR_API_KEY`, `SELECTOR_MODEL`, `SELECTOR_API_HEADERS` | Selector overrides; with `chat` each defaults to the planner's value | see left |
+
+A model endpoint that answers 429 (or 503) is retried after its `Retry-After`, or an exponential backoff with jitter, as long as the step's time budget allows (up to 5 attempts). The endpoint pauses for that cooldown, its rate is halved after each 429 or 503 and recovers by one request per minute per success. The pause applies to every request on the endpoint, including ones already queued: each request rechecks the latest cooldown and pacing immediately before it is sent, and a later or longer cooldown always wins. A request whose start would fall past its step budget fails at once instead of sleeping, and an expired or cancelled request is never sent. A request holds its concurrency slot until its response is read or it fails, and gives it back on every exit path. When planner and selector share one URL, the first limits configured for it (the planner's) apply. Every wait is logged as a `model_wait` event with its reason, status, attempt and the endpoint's current rate, never the key or headers.
 
 With `SELECTOR_PROTOCOL=chat`, one provider key runs everything. Point `SELECTOR_MODEL` at a smaller, faster model than the planner's. The chat selector constrains its output to the offered action ids plus `no_match` through `json_schema`. It asks for a probability per option and normalizes the distribution before the same validation the Jev selector gets.
 
@@ -78,17 +82,19 @@ Use [examples/website.json](examples/website.json) as a template. [schemas/suite
 | -------------------- | ----------------------------------------------------------------------------- |
 | `baseURL`            | Target website or browser application                                         |
 | `browser`            | `chromium` (default), `firefox` or `webkit`                                   |
-| `requiresAuth`       | Require an existing storage-state file; defaults to false                     |
+| `browserChannel`     | Chromium only: an installed build (`chrome`, `chrome-beta`, `msedge`)         |
+| `browserExecutable`  | Chromium only: absolute path to another Chromium-based browser's executable   |
+| `requiresAuth`       | Require a storage-state file or a dedicated `--profile`; defaults to false    |
 | `viewports`          | Named widths/heights to run independently                                     |
 | `allowedOrigins`     | Explicit additional origins the agent may navigate to                         |
 | `applicationOrigins` | Backend origins whose 401 responses block the journey                         |
-| `allowedRequests`    | Explicit method/origin/path rules for write requests in authorized test flows |
+| `allowedRequests`    | Explicit method/origin rules for write requests in authorized test flows, each with an exact `path` or a `pathPattern` (regex on the URL path) |
 | `readOnlyPosts`      | Exact origin/path rules for POST-based read/search endpoints                  |
 | `journeys`           | Goals, personas, starting paths, allowed paths, actions, checks and budgets   |
 
 A journey offers visible links within its configured paths and origins. `"/"` permits the homepage only; `/docs` permits `/docs` and its descendants. Paths apply to all permitted navigation origins. Auth/logout routes, new tabs and popups are excluded. `discoverRoles` optionally enables discovery of visible, uniquely named buttons, tabs or menu items. It defaults to an empty list.
 
-Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code.
+Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code. `{{marker}}` anywhere in a journey (typed values, check patterns) is replaced by a value unique to each run, recorded as the result's `marker`, so a run can find its own effects.
 
 ```json
 {
@@ -161,7 +167,18 @@ This opens a visible browser at the suite's `baseURL`. Sign in, then press Enter
 npm run run -- --suite suite.json --storage-state .auth/app.json --video
 ```
 
-Every run applies the same scoping when it loads a session, and logs a `storage_state_scoped` event with the kept and dropped counts. Foreign session material therefore never reaches the test browser or its traces, even from an unscoped file. The runner creates isolated contexts and never extracts a personal browser profile. A session expires on the application's schedule; capture it again when runs report `blocked`.
+Every run applies the same scoping when it loads a session, and logs a `storage_state_scoped` event with the kept and dropped counts. Foreign session material therefore never reaches the test browser or its traces, even from an unscoped file. A session expires on the application's schedule; capture it again when runs report `blocked`.
+
+For applications whose sign-in does not survive a storage-state file (device binding, IndexedDB, service checks), use a dedicated persistent test profile instead. Sign in once, then pass the same `--profile` to every run:
+
+```sh
+npm run run -- --suite suite.json --profile .auth/profiles/app --sign-in
+npm run run -- --suite suite.json --profile .auth/profiles/app
+```
+
+The runner creates the directory (mode 0700) and marks it as its own. It refuses a directory inside a browser's data location (`~/Library/Application Support`, `~/Library/Containers`, `~/.config`, `~/.mozilla`, …) and any existing non-empty directory it did not create, so a personal or copied browser profile is never opened. A profile holds the whole browser state, not only the suite's origins, so sign in only to the application under test. `--profile` cannot be combined with `--storage-state` or `--login`.
+
+The runner never extracts a personal browser profile: there is no option to read cookies or sessions from an installed browser, and unknown options are rejected. Runs use isolated contexts, or the dedicated profile above.
 
 Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. Browser integration tests and the bundled demo currently verify Chromium only; Firefox/WebKit are configurable but unverified in this checkout.
 
@@ -169,7 +186,7 @@ Override the target URL with `--url`, the engine with `--browser`, or use `--hea
 
 The same engine tests native macOS apps through the accessibility API. Planner, selector, loop and stall handling, `--repeat`, usage accounting and reports work unchanged.
 
-**Requirements:** macOS 14 or newer, and the Xcode Command Line Tools (`swiftc`); a small helper (`native/macos/ax-helper.swift`) is compiled into `.build/` on first use. The app that runs the CLI (Terminal, iTerm, …) needs **Accessibility** and **Screen Recording** permission (System Settings → Privacy & Security). The runner checks both and stops with a clear error if either is missing.
+**Requirements:** macOS 14 or newer, and the Xcode Command Line Tools (`swiftc`; full Xcode is not needed); a small helper (`native/macos/ax-helper.swift`) is compiled into `.build/` on first use. The app that runs the CLI (Terminal, iTerm, …) needs **Accessibility** and **Screen Recording** permission (System Settings → Privacy & Security). The runner checks both and stops with a clear error if either is missing.
 
 ```json
 {
@@ -194,7 +211,9 @@ The same engine tests native macOS apps through the accessibility API. Planner, 
 - **`viewports`** are window sizes. Fixed-size windows log the refused resize and keep their size.
 - **Targets:** `testId` matches the accessibility identifier (SwiftUI `.accessibilityIdentifier`, AppKit `identifier`). `role` with `name` uses the same role names as the web (`button`, `checkbox`, `tab`, `textbox`, …). `label` matches the accessibility description or title, and `placeholder` the placeholder. CSS targets are rejected.
 - **Checks:** `path` matches `/` plus the window title. A `label` target also matches visible static text. `text` matches an element's text content (its value, else its descendants' text, like `innerText`). Visibility means the element lies inside the window and every enclosing scroll area.
-- **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups); rows of lists, tables and outlines (`Select row <text>`, role `option`, named by their text), which are selected rather than pressed, and are offered only when not already selected; configured `click`/`fill`/`check` interactions; page scrolling of scroll areas; and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead. No synthesized mouse or keyboard events are sent, and `press`/`select` interactions are not supported yet.
+- **Actions offered:** visible, enabled, named controls that support pressing (buttons, links, checkboxes, radios, tabs, menu items, pop-ups); rows of lists, tables and outlines (`Select row <text>`, role `option`, named by their text), which are selected rather than pressed, and are offered only when not already selected; configured `click`/`fill`/`check` interactions; page scrolling of scroll areas; and wait. The native page-scroll action is verified against the scroll bar; when a toolkit reports success without scrolling (SwiftUI does), the scroll bar is moved by about one page instead.
+- **No synthesized input:** every action is an accessibility action on an element the driver offered (press, select, set value, scroll bar value). No mouse or keyboard events are sent. A control that offers no `AXPress`, such as a view that reacts only to the mouse, is not offered, even as a configured `click` or `check`; it is logged as `candidate_skipped` with reason `no_accessibility_action`. `press` interactions are rejected when the suite is parsed, and `select` interactions are not supported yet.
+- **Electron and Chromium apps** build their accessibility tree only when an assistive client asks. When a window shows fewer than 30 elements, the driver sets `AXManualAccessibility` once; only if the app accepts it does the driver wait for the tree (and then also try `AXEnhancedUserInterface`). Apps that reject the attribute are not asked again or waited on. Both steps are logged (`accessibility_enabled`, `accessibility_tree`).
 
 **Menu-bar commands** are opt-in per suite with `"menus": true`. The driver reads the menu bar through the accessibility API without opening any menu. Each enabled command becomes `Choose menu File › New`, up to 80 per step, and is pressed directly, so no menu is opened visibly; an open menu would block the app's accessibility while it tracks. Never offered:
 
@@ -209,7 +228,7 @@ Parent menu names are checked only against the menu-only list, so a menu called 
 - Controls whose names match `blockedControls` are never offered: delete, remove, trash, send, post, buy, pay, subscribe, quit, log/sign out, empty, reset, uninstall, discard, install, upgrade, stop, pause, disable, deactivate, disconnect, unlink, and file side effects (save, export, overwrite, replace, rename, duplicate, move to) by default; suites can add patterns. Blocked controls are logged as `candidate_skipped` with reason `blocked`. Interactions a suite configures explicitly are allowed.
 - Title-bar buttons (close, minimize, zoom, full screen) are never offered.
 - Before every press, the driver re-reads the exact accessibility element it offered, and rejects the action as stale if the element is gone or its role, name, identifier or enabled state changed.
-- A journey leaves its scope (`blocked`) when an action brings a different app to the front (for example, a link that opens the browser), or when the target app quits or loses its window. Runs work in the background: accessibility actions target the app's elements directly and window captures do not need the window in front or on the current Space, so you can keep using the Mac while a suite runs.
+- A journey leaves its scope (`blocked`) when an action brings a different app to the front (for example, a link that opens the browser), or when the target app quits or loses its window. A window counts as present when accessibility lists it, or when the window server shows an on-screen window of the app while accessibility briefly lists none (during a title change or under load). Each probe that waited, fell back or failed is logged as `scope_probe`. Runs work in the background: accessibility actions target the app's elements directly and window captures do not need the window in front or on the current Space, so you can keep using the Mac while a suite runs.
 - Use test data and accounts in apps that hold real data: the agent acts on the real app.
 
 **Evidence:** screenshots of the app window (downscaled to point size) per step, and the final accessibility tree as `trace.json`, linked from the report. There is no video or Playwright trace.
@@ -236,7 +255,7 @@ Current macOS limits: accessibility quality varies by app (custom-drawn UI may e
 
 The planner refreshes when executable action opportunities change, on full-URL navigation (including query/hash), after action errors or no progress, after `no_match`, before revisiting an already-tried action state (see Loop detection), and at most five decision steps after its last refresh. Candidate IDs, ordering and wheel hit-point movement do not count as new opportunities; unrelated background text updates alone do not force a refresh. Newly revealed menu links therefore replace an obsolete expand-menu objective before another selection. The HTTP planner receives only candidate IDs/kinds/descriptions alongside the screenshot and viewport, not executable selectors or configured values. It also receives `refresh`: the refresh reasons and, for `revisited-state`, the action the selector was about to repeat. Custom `Models.plan` implementations get this context as an optional sixth argument. Drivers that implement `UISession.offeredControls()` (Playwright does) report the observed-control name of each offered action. Discovery computes that name with the same function the viewport projection uses, so the match is exact. The planner's visible controls are then marked `offered: true/false`, next to a constraint that controls with `offered: false` cannot be used. Without this, screenshot-aware planners tend to aim at visible links outside `allowedPaths`. The marking reduces this but does not eliminate it.
 
-Custom `Models.plan` implementations can consume the optional fifth `actions` argument; existing implementations can ignore it. `plan` events include `refreshReasons`. More frequent actionable changes can increase planner calls; this is a relevance policy, not a measured cost or model-quality improvement. The selector chooses from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
+Custom `Models.plan` implementations can consume the optional fifth `actions` argument; existing implementations can ignore it. `plan` and `choose` also receive an optional seventh `signal` argument, the journey's deadline signal; an implementation should stop waiting when it aborts. `plan` events include `refreshReasons`. More frequent actionable changes can increase planner calls; this is a relevance policy, not a measured cost or model-quality improvement. The selector chooses from offered actions and records its probability distribution. Model UX concerns are hypotheses for human review. These are synthetic task probes, not calibrated human personas or measured human usability scores.
 
 Two consecutive `no_match` decisions trigger a downward scroll from the offered actions, with at most two recovery attempts per journey. Recovery stops if the viewport does not advance and never selects a click or form action. Normal task and time budgets still apply. Recovery attempts appear as `selector-recovery` findings in the report and as `recovery` events in the log; their action results have `source: "recovery"`. A recovered pass still requires every independent success check and does not imply the selector succeeded unaided.
 
@@ -274,17 +293,51 @@ Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N
 
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: a summary table per journey/viewport (pass rate, other outcomes, median actions and duration, model calls and tokens), then each run's outcome and evidence links.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, and evidence links.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json`: checks, statuses and findings.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts and findings. The contract is `resultVersion: 2`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 keeps every version-1 field (`status`, `reason`, `checks`, `findings`, …) unchanged and adds `resultVersion`, `outcome` and `quality`.
 - Per journey/viewport: screenshots, Playwright trace and optional video.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
 
-Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error.
+Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey, **2** configuration/startup error. Exit codes follow the functional outcome only; the quality verdict is reported beside it and does not change the exit code.
 
-The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage` or `timeout`), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
+### Outcome codes
+
+Every result's `outcome` names why the journey ended with a stable `code`, its `category` and its `source`. Each code fixes its status, category and source, so the same failure always classifies the same way:
+
+| Status | Code | Category | Source |
+| --- | --- | --- | --- |
+| passed | `assertions_passed` | passed | assertion |
+| failed | `content_readiness_timeout` | assertion_failure | assertion |
+| failed | `repeated_action` | agent_loop | agent |
+| failed | `selector_no_path`, `recovery_scroll_stalled` | agent_no_path | agent |
+| failed | `budget_max_steps`, `budget_deadline`, `budget_deadline_before_stage`, `budget_stage_timeout`, `budget_deadline_abort` | budget_exhausted | unknown |
+| failed | `budget_model_rate_limit` | budget_exhausted | model |
+| blocked | `ready_not_reached`, `setup_not_offered`, `setup_action_failed` | precondition_failure | unknown |
+| blocked | `setup_stale_action` | stale_action | harness |
+| blocked | `scope_exit` | policy_block | harness |
+| blocked | `unauthorized_response` | auth_failure | environment |
+| error | `model_call_failed`, `model_invalid_output` | model_error | model |
+| error | `driver_capability_missing` | infrastructure_error | harness |
+| error | `driver_error`, `evidence_capture_failed`, `session_cleanup_failed` | infrastructure_error | unknown |
+| error | `journey_not_finished`, `unclassified_error` | unknown | unknown |
+
+Only `source: "assertion"` is evidence about the application: an independent outcome assertion was evaluated. A loop, a missing path or an exhausted budget describes the agent's run, not a product defect, and causes the tests cannot tell apart stay `unknown`. A content wait cut short by the journey deadline is `budget_deadline`, not `content_readiness_timeout`. The outcome also records the deciding `stage` and `step`, a `detail` (first error line), and `evidence`: the deciding screenshot, the `events.jsonl` event names that record the decision, and the indices of `checks` that were false. `signals` counts stale actions, action errors, request-policy blocks and browser errors during the run; they may explain an outcome without being its cause.
+
+### Quality verdict
+
+`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed and every executed check passed; any failed check is `fail`; no executed check, or an `inconclusive`/`errored` check without a failure, is `not_evaluated`, which is not a pass. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
+
+Built-in checks, measured on every observed state on the web:
+
+- `layout.horizontal-overflow`: the document is wider than the viewport.
+- `runtime.browser-errors`: uncaught page errors or HTTP 5xx responses. `inconclusive` when the test's request policy blocked requests to the suite's own origins, which can cause such errors; `errored` when evidence capture failed before they were recorded.
+
+The macOS driver measures neither, so native results are `not_evaluated`. Accessibility audits, visual baselines and keyboard/focus checks are listed as unsupported on every result: this engine version does not perform them. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
+
+The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
 
 ## Development
 
