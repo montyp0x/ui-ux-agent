@@ -256,10 +256,7 @@ test('an error thrown out of runSuite does not carry a secret setup value', asyn
     );
     assert.ok(caught instanceof Error);
     assert.match(caught.message, /^Could not open \/notes\?owner=/);
-    assert.ok(
-      caught.message.includes('[REDACTED:data:owner]'),
-      caught.message,
-    );
+    assert.ok(caught.message.includes('[REDACTED:data:owner]'), caught.message);
     assert.doesNotMatch(caught.message, /owner=owner-uiux-/i);
     assert.doesNotMatch(caught.stack ?? '', /owner=owner-uiux-/i);
   } finally {
