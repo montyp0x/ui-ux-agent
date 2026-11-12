@@ -28,6 +28,8 @@ import {
 import { PLAYWRIGHT_AUDITS } from '../src/drivers/playwright-audits.js';
 import type { DriverAuditRequest } from '../src/drivers/types.js';
 import type { Models } from '../src/models.js';
+import { compareRuns, loadRun } from '../src/compare.js';
+import { gateSchema } from '../src/gate.js';
 import { runSuite } from '../src/runner.js';
 import {
   DTCG_TOKENS,
@@ -54,6 +56,8 @@ async function audit(
   check: AuditConfig = config(),
   // Runs in the page before the audit (test stubs of browser behaviour).
   prepare?: (page: Page) => Promise<void>,
+  // The run's suite environment, as the runner passes it.
+  environment?: string,
 ): Promise<{ output: ParsedAuditOutput; directory: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'ui-ux-design-'));
   const page = await browser.newPage({
@@ -73,6 +77,7 @@ async function audit(
         screenshot: null,
       },
       viewport: { name: 'desktop', width: 1024, height: 768 },
+      ...(environment ? { environment } : {}),
       directory,
       scope: { suite: 'design fixture', journey: 'trip' },
       baselines: null,
@@ -648,5 +653,144 @@ test('untyped Typed OM lengths are parsed as px, anything else leaves the run in
     const unreadable = await audit(onToken, config(), untypedLengths(text));
     assert.equal(unreadable.output.complete, false, text);
     assert.match(unreadable.output.detail ?? '', /1 untyped value/, text);
+  }
+});
+
+// The fixture set without the brand colour, as a dark theme's set might be:
+// the on-token page's brand button is off this scale.
+const { brand: _brand, ...darkColors } = TOKENS.color;
+const DARK_TOKENS = { ...TOKENS, name: 'dark tokens', color: darkColors };
+
+const tokenSuite = (extra: Record<string, unknown>) => ({
+  name: 'Tokens per environment',
+  baseURL: 'http://127.0.0.1:1',
+  viewports: [{ name: 'desktop', width: 1024, height: 768 }],
+  journeys: [journey],
+  ...extra,
+});
+
+test('a token set is selected per suite environment, the default set elsewhere', async () => {
+  const check = config({ environments: { dark: DARK_TOKENS } });
+  // The dark run measures against the dark set...
+  const dark = await audit(onToken, check, undefined, 'dark');
+  assert.deepEqual(
+    [...new Set(dark.output.findings.map((finding) => finding.ruleId))],
+    ['color'],
+  );
+  assert.ok(
+    dark.output.limitations.some((line) =>
+      /Token set "dark tokens", selected for environment dark/.test(line),
+    ),
+    dark.output.limitations.join('\n'),
+  );
+  // ...an environment without its own set, and a suite without
+  // environments, against the default one.
+  for (const environment of ['light', undefined]) {
+    const other = await audit(onToken, check, undefined, environment);
+    assert.deepEqual(other.output.findings, [], String(environment));
+    assert.ok(
+      other.output.limitations.some((line) =>
+        /Token set "fixture tokens"/.test(line),
+      ),
+    );
+  }
+  const light = await audit(onToken, check, undefined, 'light');
+  assert.ok(
+    light.output.limitations.some((line) =>
+      /the default set: environment light has no set of its own/.test(line),
+    ),
+  );
+  // Every name must be one of the suite's environments.
+  const refused = (extra: Record<string, unknown>) => {
+    const parsed = suiteSchema.safeParse(tokenSuite(extra));
+    return parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+  };
+  const audits = {
+    checks: [{ id: 'design.tokens', tokens: TOKENS, environments: { dark: DARK_TOKENS } }],
+  };
+  assert.deepEqual(
+    refused({
+      audits,
+      environments: [{ name: 'light' }, { name: 'dark', colorScheme: 'dark' }],
+      combinations: [{ environment: 'dark', viewport: 'desktop' }],
+    }),
+    [],
+  );
+  assert.ok(
+    refused({
+      audits,
+      environments: [{ name: 'light' }],
+      combinations: [{ environment: 'light', viewport: 'desktop' }],
+    }).some((message) => /design\.tokens.*unknown environment dark/.test(message)),
+  );
+  assert.ok(
+    refused({ audits }).some((message) =>
+      /design\.tokens.*unknown environment dark/.test(message),
+    ),
+  );
+  // Per-environment token files load relative to the suite file too.
+  const root = await mkdtemp(join(tmpdir(), 'ui-ux-design-envs-'));
+  await writeFile(join(root, 'dark.json'), JSON.stringify(DARK_TOKENS));
+  const loaded = await loadDesignTokens(
+    suiteSchema.parse(
+      tokenSuite({
+        audits: {
+          checks: [
+            { id: 'design.tokens', tokens: TOKENS, environments: { dark: 'dark.json' } },
+          ],
+        },
+        environments: [{ name: 'dark', colorScheme: 'dark' }],
+        combinations: [{ environment: 'dark', viewport: 'desktop' }],
+      }),
+    ),
+    join(root, 'suite.json'),
+  );
+  const loadedCheck = loaded.audits.checks[0]!;
+  assert.ok(loadedCheck.id === 'design.tokens');
+  assert.equal(
+    loadedCheck.id === 'design.tokens' &&
+      typeof loadedCheck.environments?.dark === 'object' &&
+      loadedCheck.environments.dark.name,
+    'dark tokens',
+  );
+});
+
+test('a changed token file changes the suite hash, so its runs are incompatible', async () => {
+  const app = await site({ start: onToken, done: onToken });
+  const root = await mkdtemp(join(tmpdir(), 'ui-ux-design-pin-'));
+  try {
+    const raw = {
+      ...tokenSuite({
+        audits: { checks: [{ id: 'design.tokens', tokens: 'tokens.json', at: ['ready'] }] },
+      }),
+      name: 'LOCAL fixture — token pin',
+      baseURL: app.url,
+      requiresAuth: false,
+    };
+    const runWith = async (tokens: unknown, name: string) => {
+      await writeFile(join(root, 'tokens.json'), JSON.stringify(tokens));
+      const suite = await loadDesignTokens(
+        suiteSchema.parse(raw),
+        join(root, 'suite.json'),
+      );
+      const directory = join(root, name);
+      await runSuite(suite, deterministic, { directory });
+      return loadRun(directory, name === 'base' ? 'base' : 'candidate');
+    };
+    const base = await runWith(TOKENS, 'base');
+    const same = await runWith(TOKENS, 'same');
+    const changed = await runWith(DARK_TOKENS, 'changed');
+    const gate = gateSchema.parse({});
+    // The same file content is the same suite...
+    assert.equal(compareRuns(base, same, gate).compatible, true);
+    // ...a different one is not: the token set is part of the suite hash.
+    const comparison = compareRuns(base, changed, gate);
+    assert.equal(comparison.compatible, false);
+    assert.ok(
+      comparison.incompatibilities.some((entry) => entry.field === 'suite.hash'),
+      JSON.stringify(comparison.incompatibilities),
+    );
+  } finally {
+    await app.close();
   }
 });

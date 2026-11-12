@@ -423,20 +423,46 @@ export async function loadDesignTokens(
   suite: Suite,
   suitePath: string,
 ): Promise<Suite> {
+  const load = (tokens: string | DesignTokenSet) =>
+    typeof tokens === 'string'
+      ? readTokenFile(resolve(dirname(resolve(suitePath)), tokens), tokens)
+      : tokens;
   const checks = await Promise.all(
     suite.audits.checks.map(async (check) =>
-      check.id === 'design.tokens' && typeof check.tokens === 'string'
+      check.id === 'design.tokens'
         ? {
             ...check,
-            tokens: await readTokenFile(
-              resolve(dirname(resolve(suitePath)), check.tokens),
-              check.tokens,
-            ),
+            tokens: await load(check.tokens),
+            ...(check.environments
+              ? {
+                  environments: Object.fromEntries(
+                    await Promise.all(
+                      Object.entries(check.environments).map(
+                        async ([name, tokens]) =>
+                          [name, await load(tokens)] as const,
+                      ),
+                    ),
+                  ),
+                }
+              : {}),
           }
         : check,
     ),
   );
   return { ...suite, audits: { ...suite.audits, checks } };
+}
+
+// The token files a suite's design.tokens entries reference (default and
+// per-environment sets), as paths relative to the suite file's directory,
+// sorted and unique. Inline sets reference no file.
+export function referencedTokenFiles(suite: Suite): string[] {
+  const files = new Set<string>();
+  for (const check of suite.audits.checks) {
+    if (check.id !== 'design.tokens') continue;
+    for (const tokens of [check.tokens, ...Object.values(check.environments ?? {})])
+      if (typeof tokens === 'string') files.add(tokens);
+  }
+  return [...files].sort();
 }
 
 // ---- Configuration ----
@@ -464,6 +490,20 @@ export const DEFAULT_DESIGN_TOLERANCE = {
 export const designTokensConfigShape = {
   // A token file path, relative to the suite file, or an inline native set.
   tokens: z.union([z.string().min(1).max(500), designTokenSetSchema]),
+  // Token sets for some of the suite's environments (src/environments.ts),
+  // by environment name, each a file path or an inline set like `tokens`: a
+  // run in a listed environment measures against its set, every other run
+  // against `tokens`. Each name must be a suite environment.
+  environments: z
+    .record(
+      z.string().regex(/^[a-z0-9-]+$/),
+      z.union([z.string().min(1).max(500), designTokenSetSchema]),
+    )
+    .refine(
+      (sets) => Object.keys(sets).length >= 1 && Object.keys(sets).length <= 12,
+      'design.tokens environments lists 1 to 12 environments',
+    )
+    .optional(),
   // CSS selectors of the regions to measure; empty measures the body. A
   // selector that matches nothing is an audit error, never a clean region.
   include: cssSelectors,
@@ -518,11 +558,46 @@ export const designTokensAudit: AuditDefinition<DesignTokensConfig> = {
 
 // The parsed set, or an error saying how a file path is loaded.
 export function resolvedTokens(config: DesignTokensConfig): DesignTokenSet {
-  if (typeof config.tokens === 'string')
+  return loadedSet(config.tokens);
+}
+
+function loadedSet(tokens: string | DesignTokenSet): DesignTokenSet {
+  if (typeof tokens === 'string')
     throw new Error(
-      `design.tokens: the token file "${config.tokens}" was not loaded. The CLI resolves it relative to the suite file; programmatic runs call loadDesignTokens(suite, suitePath) first or give the tokens inline`,
+      `design.tokens: the token file "${tokens}" was not loaded. The CLI resolves it relative to the suite file; programmatic runs call loadDesignTokens(suite, suitePath) first or give the tokens inline`,
     );
-  return config.tokens;
+  return tokens;
+}
+
+// Which set a run measures against: its environment's own set when the
+// entry lists one, else the default `tokens`.
+export type TokenSelection = {
+  tokens: DesignTokenSet;
+  // The run's suite environment, or null without one.
+  environment: string | null;
+  // Whether `tokens` is the environment's own set.
+  own: boolean;
+};
+export function selectTokens(
+  config: DesignTokensConfig,
+  environment: string | null | undefined,
+): TokenSelection {
+  const own = environment ? config.environments?.[environment] : undefined;
+  return {
+    tokens: loadedSet(own ?? config.tokens),
+    environment: environment ?? null,
+    own: own !== undefined,
+  };
+}
+
+// Names in design.tokens environments that are not suite environments.
+export function unknownTokenEnvironments(
+  config: DesignTokensConfig,
+  environments: readonly string[],
+): string[] {
+  return Object.keys(config.environments ?? {}).filter(
+    (name) => !environments.includes(name),
+  );
 }
 
 // The rules a run checks: the configured ones (each needs its category), or
@@ -843,7 +918,11 @@ function nearestWording(
 export function designAuditOutput(
   evaluation: DesignEvaluation,
   config: DesignTokensConfig,
-  options: { files: string[] },
+  options: {
+    files: string[];
+    // How the set was selected; omitted: the default set, no environment.
+    selection?: Omit<TokenSelection, 'tokens'>;
+  },
 ): AuditOutput {
   const { measurement, tokens, rules } = evaluation;
   const elements = (count: number) =>
@@ -900,7 +979,13 @@ export function designAuditOutput(
   const limitations: string[] = [...DESIGN_TOKEN_LIMITATIONS];
   const t = config.tolerance;
   limitations.push(
-    `Token set "${tokens.name ?? 'inline'}"; tolerance: CIEDE2000 ≤ ${t.colorDeltaE} and alpha ≤ ${t.alpha} for colours, ≤ ${t.lengthPx}px for lengths. Zero margins, paddings, gaps and radii are always on token; rem tokens use the page's root font size (${measurement.rootFontSizePx}px).`,
+    `Token set "${tokens.name ?? 'inline'}"${
+      options.selection?.own
+        ? `, selected for environment ${options.selection.environment}`
+        : options.selection?.environment && config.environments
+          ? ` (the default set: environment ${options.selection.environment} has no set of its own)`
+          : ''
+    }; tolerance: CIEDE2000 ≤ ${t.colorDeltaE} and alpha ≤ ${t.alpha} for colours, ≤ ${t.lengthPx}px for lengths. Zero margins, paddings, gaps and radii are always on token; rem tokens use the page's root font size (${measurement.rootFontSizePx}px).`,
   );
   const unchecked = DESIGN_RULES.filter((rule) => !rules.includes(rule));
   if (unchecked.length)

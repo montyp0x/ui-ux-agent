@@ -9,6 +9,7 @@ import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
 import { referencePathsSchema } from './friction/contract.js';
 import { environmentSuiteShape, selectCombinations } from './environments.js';
 import { KEYBOARD_JOURNEY_UNSUPPORTED } from './browser-support.js';
+import { unknownTokenEnvironments } from './audits/design-tokens.js';
 
 export { targetSchema, type Target };
 
@@ -369,6 +370,19 @@ const suiteObject = z
   .superRefine((suite, ctx) => {
     for (const message of selectCombinations(suite).issues)
       ctx.addIssue({ code: 'custom', message });
+    // design.tokens sets per environment name suite environments.
+    const environmentNames = (suite.environments ?? []).map(
+      (environment) => environment.name,
+    );
+    suite.audits.checks.forEach((check, index) => {
+      if (check.id !== 'design.tokens') return;
+      for (const name of unknownTokenEnvironments(check, environmentNames))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['audits', 'checks', index, 'environments', name],
+          message: `design.tokens environments: unknown environment ${name}; each name must be one of the suite's environments`,
+        });
+    });
     // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
     // trace or video would record it.
     if (fillSecrets(suite).length)

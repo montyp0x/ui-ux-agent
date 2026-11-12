@@ -14,7 +14,7 @@ import {
   designAuditOutput,
   designMeasurementSchema,
   evaluateDesign,
-  resolvedTokens,
+  selectTokens,
   type DesignMeasurement,
 } from '../audits/design-tokens.js';
 import { settleLayout } from './playwright-layout.js';
@@ -27,7 +27,8 @@ export async function designTokensPlaywrightAudit(
   const { config, checkpoint, directory } = request;
   if (config.id !== 'design.tokens')
     throw new Error(`Not a design.tokens audit: ${config.id}`);
-  const tokens = resolvedTokens(config);
+  // The run's environment's own set, when the entry lists one.
+  const { tokens, ...selection } = selectTokens(config, request.environment);
   const rules = activeRules(config, tokens);
   await settleLayout(page);
   const input: DesignDetectInput = {
@@ -59,6 +60,8 @@ export async function designTokensPlaywrightAudit(
         url: measurement.url,
         tokens: {
           name: tokens.name ?? 'inline',
+          environment: selection.environment,
+          ownSet: selection.own,
           rootFontSizePx: measurement.rootFontSizePx,
           rules,
           tolerance: config.tolerance,
@@ -81,5 +84,5 @@ export async function designTokensPlaywrightAudit(
     ) + '\n',
     { mode: 0o600 },
   );
-  return designAuditOutput(evaluation, config, { files: [file] });
+  return designAuditOutput(evaluation, config, { files: [file], selection });
 }
