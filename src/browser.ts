@@ -860,6 +860,42 @@ export async function candidates(
         out.push(action);
       }
     }
+    // <details> disclosures (FAQ accordions, "more options"): the summary
+    // toggles them like a button but has no button role to discover. Each
+    // is targeted by its text, and offered only when that text is unique.
+    if (journey.discoverRoles.includes('button')) {
+      const summaries = (await page
+        .locator('details > summary')
+        .elementHandles()) as Element[];
+      discovered.push(...summaries);
+      for (const summary of summaries) {
+        const controlName = await visibleName(summary);
+        if (controlName === null) continue;
+        const read = await summary.evaluate((element) => ({
+          name: (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          open: (element.parentElement as HTMLDetailsElement).open,
+          first: element.parentElement!.querySelector(':scope > summary') === element,
+        }));
+        // Only a details element's first summary toggles it.
+        if (!read.name || !read.first) continue;
+        // An anchored pattern: :text-is() misses text split across child
+        // elements (Returns <em>policy</em>).
+        const exact = `^${read.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+        const target: Target = {
+          by: 'css',
+          value: `details > summary:text-matches(${JSON.stringify(exact)})`,
+        };
+        if ((await locate(page, target).count()) !== 1) continue;
+        const action: Action = {
+          kind: 'click',
+          id: `a${out.length}`,
+          target,
+          description: `${read.open ? 'Collapse' : 'Expand'} ${read.name}`,
+        };
+        names.set(action, controlName);
+        out.push(action);
+      }
+    }
   } finally {
     await Promise.allSettled(discovered.map((element) => element.dispose()));
   }
