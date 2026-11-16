@@ -189,7 +189,7 @@ async function run(
 async function pngs(directory: string): Promise<string[]> {
   const files = await readdir(directory, { recursive: true });
   return files
-    .filter((file) => /(^|\/)(step-\d+|final)\.png$/.test(file))
+    .filter((file) => /(^|[\\/])(step-\d+|final)\.png$/.test(file))
     .map((file) => join(directory, file));
 }
 

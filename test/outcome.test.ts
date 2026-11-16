@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import {
   suiteSchema,
@@ -303,7 +303,7 @@ test('a repeated failure reproduces the same reason code and evidence references
     ...result.outcome,
     evidence: {
       ...result.outcome.evidence,
-      screenshot: result.outcome.evidence.screenshot?.split('/').pop(),
+      screenshot: basename(result.outcome.evidence.screenshot ?? ''),
     },
   });
   assert.deepEqual(stable(first), stable(second));

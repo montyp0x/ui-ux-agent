@@ -225,7 +225,7 @@ test('a token file is resolved relative to the suite file', async () => {
   // A missing or invalid file names the file it read.
   await assert.rejects(
     loadDesignTokens(suite, join(root, 'elsewhere', 'suite.json')),
-    /elsewhere\/design\/tokens\.json/,
+    /elsewhere[\\/]design[\\/]tokens\.json/,
   );
   await writeFile(
     join(root, 'design', 'tokens.json'),
@@ -233,7 +233,7 @@ test('a token file is resolved relative to the suite file', async () => {
   );
   await assert.rejects(
     loadDesignTokens(suite, suitePath),
-    /design\/tokens\.json/,
+    /design[\\/]tokens\.json/,
   );
 });
 
