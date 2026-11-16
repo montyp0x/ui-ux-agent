@@ -341,6 +341,9 @@ async function linkLocator(
 ): Promise<Locator | null> {
   const named = locate(page, action.target);
   const count = await named.count();
+  // The only link with its name: execute still checks its destination and
+  // that it is in the viewport.
+  if (count === 1) return named;
   for (let index = 0; index < count; index++) {
     const link = named.nth(index);
     if (
@@ -681,34 +684,87 @@ export async function candidates(
     for (const link of links) {
       const control = await visibleName(link);
       if (control === null) continue;
-      // One evaluation reads every field from the same element; the label
-      // only names a link that was removed meanwhile in the skip log.
-      const read = await link.evaluate((element) => ({
-        label:
-          element.getAttribute('aria-label') ??
-          (element.textContent?.trim() || undefined),
-        target: element.getAttribute('target'),
-        connected: element.isConnected,
-      }));
+      // One evaluation reads every field from the same element: a page with
+      // many links pays for each round trip per link, on every step.
+      const read = await link.evaluate((element) => {
+        const raw = element.getAttribute('href');
+        let href: string | null = null;
+        try {
+          // As resolvedHref: against the document's base URL.
+          if (raw !== null) href = new URL(raw, element.baseURI).href;
+        } catch {
+          // An unparseable href leads nowhere.
+        }
+        // The accessible name as getByRole matches it, computed here for
+        // the common case: a label, else the text with image alt text and
+        // collapsed whitespace. Null where that could differ from the
+        // browser's (hidden parts, nested roles and labels, SVG), which
+        // the accessibility snapshot names instead.
+        const labelledBy = element.getAttribute('aria-labelledby');
+        let name: string | null =
+          labelledBy !== null
+            ? labelledBy
+                .split(/\s+/)
+                .map((id) => document.getElementById(id)?.textContent ?? '')
+                .join(' ')
+            : element.getAttribute('aria-label');
+        const parts = [element, ...Array.from(element.querySelectorAll('*'))];
+        if (
+          name === null &&
+          !element.querySelector(
+            'svg, [aria-hidden], [role], [aria-label], [aria-labelledby]',
+          ) &&
+          // No named helpers in page code: the transpiler wraps them in a
+          // __name() call the page does not define.
+          parts.every((part) => {
+            const style = getComputedStyle(part);
+            return (
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              ['::before', '::after'].every((pseudo) =>
+                ['none', 'normal'].includes(
+                  getComputedStyle(part, pseudo).content,
+                ),
+              )
+            );
+          })
+        ) {
+          const clone = element.cloneNode(true) as globalThis.Element;
+          for (const image of Array.from(clone.querySelectorAll('img')))
+            image.replaceWith(` ${image.getAttribute('alt') ?? ''} `);
+          name = clone.textContent || element.getAttribute('title') || '';
+        }
+        return {
+          href,
+          name: name === null ? null : name.replace(/\s+/g, ' ').trim(),
+          // Names a link that was removed meanwhile in the skip log.
+          label:
+            element.getAttribute('aria-label') ??
+            (element.textContent?.trim() || undefined),
+          target: element.getAttribute('target'),
+          connected: element.isConnected,
+        };
+      });
       if (!read.connected) {
         await skip({ role: 'link', name: read.label, reason: 'detached' });
         continue;
       }
-      const href = await link.evaluate(resolvedHref);
+      const href = read.href;
       if (
         !href ||
         read.target === '_blank' ||
         !allowedURL(href, baseURL, journey.allowedPaths, origins)
       )
         continue;
-      // The accessible name, as getByRole matches it: an image link's alt
-      // text, whitespace collapsed.
-      const snapshot = await snapshotOf(all, link);
-      if (!('snapshot' in snapshot)) {
-        await skip({ role: 'link', ...snapshot });
-        continue;
+      let name = read.name;
+      if (name === null) {
+        const snapshot = await snapshotOf(all, link);
+        if (!('snapshot' in snapshot)) {
+          await skip({ role: 'link', ...snapshot });
+          continue;
+        }
+        name = snapshotName(snapshot.snapshot);
       }
-      const name = snapshotName(snapshot.snapshot);
       if (!name) continue;
       const key = JSON.stringify([name, href]);
       if (!observed.has(key)) observed.set(key, { name, href, control });

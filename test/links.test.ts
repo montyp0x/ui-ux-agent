@@ -30,6 +30,10 @@ const PAGES: Record<string, string> = {
       Pricing
       <span>plans</span>
     </a></main>`,
+  // Names the page cannot read from text alone: a part hidden by a class
+  // and an icon drawn with ::before.
+  styled:
+    '<style>.hide{display:none}.icon::before{content:"\\2192 "}</style><main><h1>Page</h1><a href="/docs">Docs<span class="hide"> (beta)</span></a> <a href="/pricing"><span class="icon"></span>Plans</a></main>',
 };
 
 async function fixture(run: (page: Page, directory: string) => Promise<void>) {
@@ -121,5 +125,23 @@ test('a link is named by its accessible name and resolved against the document b
       await open(page, directory, 'multiline', 'Open Pricing plans'),
       '/pricing',
     );
+  });
+});
+
+test('a link whose name its text does not give is named by the browser', async () => {
+  await fixture(async (page, directory) => {
+    await page.goto(`${baseURL}/fixture?page=styled`);
+    const offered = links(await candidates(page, journey, baseURL));
+    // Both are offered, under the names getByRole matches.
+    assert.deepEqual(
+      offered.map(([, href]) => href),
+      [`${baseURL}/docs`, `${baseURL}/pricing`],
+    );
+    assert.equal(offered[0]![0], 'Open Docs');
+    for (const [description, href] of offered)
+      assert.equal(
+        await open(page, directory, 'styled', description!),
+        new URL(href!).pathname,
+      );
   });
 });
