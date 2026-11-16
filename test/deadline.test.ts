@@ -236,11 +236,13 @@ test('a non-timeout failure at the deadline remains an error', async () => {
 test('an action cut off by the deadline is not reported as a UI action error', async () => {
   const driver = await playwrightDriver('chromium', true);
   const open = driver.openSession.bind(driver);
-  const started = Date.now();
   driver.openSession = async (options) => {
     const session = await open(options);
+    // The journey's deadline counts from its start, right after its session
+    // opened; run setup before that (slow on CI runners) does not count.
+    const opened = Date.now();
     session.execute = async () => {
-      await sleep(started + budgetMs + 300 - Date.now());
+      await sleep(opened + budgetMs + 300 - Date.now());
       throw Object.assign(new Error('locator.click: Timeout exceeded'), {
         name: 'TimeoutError',
       });
