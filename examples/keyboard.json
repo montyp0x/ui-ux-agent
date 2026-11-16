@@ -47,6 +47,16 @@
           },
           "value": "Grace",
           "description": "Change the display name"
+        },
+        {
+          "kind": "press",
+          "key": "Enter",
+          "target": {
+            "by": "role",
+            "role": "button",
+            "name": "Save profile"
+          },
+          "description": "Save the profile"
         }
       ],
       "keyboard": {

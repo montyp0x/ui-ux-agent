@@ -16,7 +16,7 @@ import type {
   Suite,
   Target,
 } from './contracts.js';
-import { fillValue } from './contracts.js';
+import { fillValue, webBlocked } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
 import {
@@ -56,7 +56,7 @@ type Guard =
     };
 // Evidence that an offered candidate changed while its guard was being bound.
 type Skip = {
-  reason: 'detached' | 'ambiguous' | 'replaced' | 'no_recipient';
+  reason: 'detached' | 'ambiguous' | 'replaced' | 'no_recipient' | 'blocked';
   matches?: number;
   detail?: string;
 };
@@ -534,6 +534,8 @@ const AUTH_QUERY = new RegExp(
   String.raw`^(?:[\w.-]*[:/])?(?:${AUTH_STEP}|createaccount)$`,
   'i',
 );
+// A link named for signing in or out, whatever its route (/session/destroy).
+export const AUTH_LINK_NAME = /\b(?:log|sign)[\s_-]*(?:in|out|off)\b/i;
 
 export function allowedURL(
   value: string,
@@ -692,11 +694,19 @@ export async function candidates(
   baseURL: string,
   origins: string[] = [],
   log?: EventLogger,
+  // The suite's own blockedControls, added to WEB_BLOCKED_CONTROLS.
+  blockedControls: readonly string[] = [],
 ): Promise<Action[]> {
   await releaseActions(page);
   // Keyboard-only journeys are offered key presses only.
   if (journey.input === 'keyboard') {
-    const offered = await keyboardCandidates(page, journey);
+    const offered = await keyboardCandidates(
+      page,
+      journey,
+      baseURL,
+      origins,
+      blockedControls,
+    );
     offeredNames.set(page, []);
     return offered;
   }
@@ -821,7 +831,7 @@ export async function candidates(
       if (!name) continue;
       // Sign-in and sign-out links whose route does not say so
       // (/session/destroy): the same exclusion as AUTH_PATH, by name.
-      if (/\b(?:log|sign)[\s_-]*(?:in|out|off)\b/i.test(name)) continue;
+      if (AUTH_LINK_NAME.test(name)) continue;
       const key = JSON.stringify([name, href]);
       if (!observed.has(key)) observed.set(key, { name, href, control });
     }
@@ -897,8 +907,8 @@ export async function candidates(
         const name = snapshotName(read.snapshot);
         if (name === null) continue;
         const target: Target = { by: 'role', role, name };
+        // Already offered as a configured interaction, which may be blocked.
         if (
-          (await locate(page, target).count()) !== 1 ||
           out.some(
             (action) =>
               'target' in action &&
@@ -906,6 +916,11 @@ export async function candidates(
           )
         )
           continue;
+        if (webBlocked(name, blockedControls)) {
+          await skip({ role, name, reason: 'blocked' });
+          continue;
+        }
+        if ((await locate(page, target).count()) !== 1) continue;
         const action: Action = {
           kind: 'click',
           id: `a${out.length}`,
@@ -934,6 +949,10 @@ export async function candidates(
         }));
         // Only a details element's first summary toggles it.
         if (!read.name || !read.first) continue;
+        if (webBlocked(read.name, blockedControls)) {
+          await skip({ role: 'summary', name: read.name, reason: 'blocked' });
+          continue;
+        }
         // An anchored pattern: :text-is() misses text split across child
         // elements (Returns <em>policy</em>).
         const exact = `^${read.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
