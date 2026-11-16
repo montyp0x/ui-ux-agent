@@ -34,6 +34,15 @@ const PAGES: Record<string, string> = {
   // and an icon drawn with ::before.
   styled:
     '<style>.hide{display:none}.icon::before{content:"\\2192 "}</style><main><h1>Page</h1><a href="/docs">Docs<span class="hide"> (beta)</span></a> <a href="/pricing"><span class="icon"></span>Plans</a></main>',
+  // A news or product card: heading, summary and date are one link, whose
+  // accessible name puts spaces between the blocks its text content joins.
+  card: '<main><h1>News</h1><a href="/features/launch" style="display:block"><h2>Launch day</h2><p>Everything we shipped.</p><span>2 hrs ago</span></a><a href="/docs">Read<br>the docs</a></main>',
+  // hrefs a CSS attribute selector must escape.
+  quoted:
+    '<main><h1>Page</h1><a href=\'/docs/say-"hi"\'>Quoted</a> <a href="/docs/back\\slash">Backslash</a></main>',
+  // Sign-in and sign-out links on in-scope routes that do not say so.
+  account:
+    '<main><h1>Account</h1><a href="/docs/session/end">Sign out</a> <a href="/docs/session/new">Log in</a> <a href="/docs/blog-in-review">Blog in review</a></main>',
 };
 
 async function fixture(run: (page: Page, directory: string) => Promise<void>) {
@@ -128,6 +137,29 @@ test('a link is named by its accessible name and resolved against the document b
   });
 });
 
+test('links whose href holds quotes or backslashes open', async () => {
+  await fixture(async (page, directory) => {
+    assert.equal(
+      await open(page, directory, 'quoted', 'Open Quoted'),
+      '/docs/say-%22hi%22',
+    );
+    assert.equal(
+      await open(page, directory, 'quoted', 'Open Backslash'),
+      // The URL parser reads a backslash in a path as a slash.
+      '/docs/back/slash',
+    );
+  });
+});
+
+test('sign-in and sign-out links are never offered, whatever their route', async () => {
+  await fixture(async (page) => {
+    await page.goto(`${baseURL}/fixture?page=account`);
+    assert.deepEqual(links(await candidates(page, journey, baseURL)), [
+      ['Open Blog in review', `${baseURL}/docs/blog-in-review`],
+    ]);
+  });
+});
+
 test('a link whose name its text does not give is named by the browser', async () => {
   await fixture(async (page, directory) => {
     await page.goto(`${baseURL}/fixture?page=styled`);
@@ -141,6 +173,19 @@ test('a link whose name its text does not give is named by the browser', async (
     for (const [description, href] of offered)
       assert.equal(
         await open(page, directory, 'styled', description!),
+        new URL(href!).pathname,
+      );
+    // Block-level parts and line breaks are separated by spaces.
+    await page.goto(`${baseURL}/fixture?page=card`);
+    const card = links(await candidates(page, journey, baseURL));
+    assert.deepEqual(
+      card.map(([, href]) => href),
+      [`${baseURL}/features/launch`, `${baseURL}/docs`],
+    );
+    assert.match(card[0]![0]!, /^Open Launch day Everything we shipped\. 2 hrs ago$/);
+    for (const [description, href] of card)
+      assert.equal(
+        await open(page, directory, 'card', description!),
         new URL(href!).pathname,
       );
   });

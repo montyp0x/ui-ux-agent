@@ -331,26 +331,54 @@ const resolvedHref = (element: globalThis.Element): string | null => {
   }
 };
 
-// The element a link action opens: the first link with its name that leads
-// to its destination and is in the viewport. A name alone can match several
-// (a header and a footer, desktop and mobile navigation, "Learn more" on
-// every card). Null when none does.
+// The elements that can be offered links (a role of link and an href; links
+// without one are never offered), with this href attribute.
+const linksWithHref = (href: string) =>
+  `:is(a, area, [role="link"])[href="${href.replace(/["\\]/g, '\\$&').replace(/\n/g, '\\a ')}"]`;
+
+// The element a link action opens: the first link in the viewport that leads
+// to its destination and has its name. A name alone can match several (a
+// header and a footer, desktop and mobile navigation, "Learn more" on every
+// card). Copies are found by their href attribute first, with a CSS query: a
+// role query computes every link's accessible name, milliseconds per query
+// on a large page, and binding re-resolves the locator several times. A link
+// alone with its href is located by it, so a removed link matches nothing
+// rather than a neighbour; only copies with the same destination are told
+// apart by position. Null when no link matches.
 async function linkLocator(
   page: Page,
   action: Extract<Action, { kind: 'link' }>,
 ): Promise<Locator | null> {
+  const attributes = await page
+    .locator(':is(a, area, [role="link"])[href]')
+    .evaluateAll(
+      (elements, href) => [
+        ...new Set(
+          elements.flatMap((element) => {
+            const raw = element.getAttribute('href')!;
+            try {
+              // As resolvedHref.
+              return new URL(raw, element.baseURI).href === href ? [raw] : [];
+            } catch {
+              return [];
+            }
+          }),
+        ),
+      ],
+      action.href,
+    );
   const named = locate(page, action.target);
-  const count = await named.count();
-  // The only link with its name: execute still checks its destination and
-  // that it is in the viewport.
-  if (count === 1) return named;
-  for (let index = 0; index < count; index++) {
-    const link = named.nth(index);
-    if (
-      (await link.evaluate(resolvedHref).catch(() => null)) === action.href &&
-      (await inViewport(page, link).catch(() => false))
-    )
-      return link;
+  for (const attribute of attributes) {
+    const copies = page.locator(linksWithHref(attribute));
+    const count = await copies.count();
+    for (let index = 0; index < count; index++) {
+      const link = count === 1 ? copies : copies.nth(index);
+      if (
+        (await inViewport(page, link).catch(() => false)) &&
+        (await link.and(named).count()) === 1
+      )
+        return link;
+    }
   }
   return null;
 }
@@ -494,6 +522,19 @@ async function scrollState(page: Page): Promise<Observation['scroll']> {
   });
 }
 
+// Authentication routes a journey never enters: signing in or out changes
+// the session the run depends on (a GET sign-out link ends it). Path
+// segments in their common spellings, with or without a file extension.
+const AUTH_STEP = String.raw`auth|(?:log|sign)[-_]?(?:in|out|off)|(?:user)?log(?:in|out)`;
+const AUTH_PATH = new RegExp(
+  String.raw`(^|/)(?:${AUTH_STEP})(?:\.\w+)?(?:/|$)`,
+  'i',
+);
+const AUTH_QUERY = new RegExp(
+  String.raw`^(?:[\w.-]*[:/])?(?:${AUTH_STEP}|createaccount)$`,
+  'i',
+);
+
 export function allowedURL(
   value: string,
   baseURL: string,
@@ -512,8 +553,12 @@ export function allowedURL(
     )
       return false;
     const pathname = decodeURIComponent(url.pathname);
-    if (/(^|\/)(auth|login|logout|sign-out)(\/|$)/i.test(pathname))
-      return false;
+    if (AUTH_PATH.test(pathname)) return false;
+    // Query-routed sign-in and sign-out (?action=logout, MediaWiki's
+    // title=Special:UserLogout): a parameter whose value is the auth step
+    // itself, not a value that merely mentions it (?q=login+help).
+    for (const value of url.searchParams.values())
+      if (AUTH_QUERY.test(value)) return false;
     return paths.some((path) =>
       path === '/'
         ? pathname === '/'
@@ -708,32 +753,40 @@ export async function candidates(
                 .map((id) => document.getElementById(id)?.textContent ?? '')
                 .join(' ')
             : element.getAttribute('aria-label');
-        const parts = [element, ...Array.from(element.querySelectorAll('*'))];
+        // Text alone, or a single image alone: block-level parts (a card
+        // whose heading and summary are one link) and line breaks add spaces
+        // the text content lacks, and an image beside text joins it in ways
+        // only the browser knows.
+        const images = element.querySelectorAll('img');
+        const text = element.textContent ?? '';
+        const imageOnly = images.length === 1 && !text.trim();
         if (
           name === null &&
+          (images.length === 0 || imageOnly) &&
           !element.querySelector(
-            'svg, [aria-hidden], [role], [aria-label], [aria-labelledby]',
+            'svg, br, [aria-hidden], [role], [aria-label], [aria-labelledby]',
           ) &&
           // No named helpers in page code: the transpiler wraps them in a
           // __name() call the page does not define.
-          parts.every((part) => {
-            const style = getComputedStyle(part);
-            return (
-              style.display !== 'none' &&
-              style.visibility !== 'hidden' &&
-              ['::before', '::after'].every((pseudo) =>
-                ['none', 'normal'].includes(
-                  getComputedStyle(part, pseudo).content,
-                ),
-              )
-            );
-          })
-        ) {
-          const clone = element.cloneNode(true) as globalThis.Element;
-          for (const image of Array.from(clone.querySelectorAll('img')))
-            image.replaceWith(` ${image.getAttribute('alt') ?? ''} `);
-          name = clone.textContent || element.getAttribute('title') || '';
-        }
+          [element, ...Array.from(element.querySelectorAll('*'))].every(
+            (part) => {
+              const style = getComputedStyle(part);
+              return (
+                (part === element || style.display === 'inline') &&
+                style.visibility !== 'hidden' &&
+                ['::before', '::after'].every((pseudo) =>
+                  ['none', 'normal'].includes(
+                    getComputedStyle(part, pseudo).content,
+                  ),
+                )
+              );
+            },
+          )
+        )
+          name =
+            (imageOnly ? images[0]!.getAttribute('alt') : text) ||
+            element.getAttribute('title') ||
+            '';
         return {
           href,
           name: name === null ? null : name.replace(/\s+/g, ' ').trim(),
@@ -766,6 +819,9 @@ export async function candidates(
         name = snapshotName(snapshot.snapshot);
       }
       if (!name) continue;
+      // Sign-in and sign-out links whose route does not say so
+      // (/session/destroy): the same exclusion as AUTH_PATH, by name.
+      if (/\b(?:log|sign)[\s_-]*(?:in|out|off)\b/i.test(name)) continue;
       const key = JSON.stringify([name, href]);
       if (!observed.has(key)) observed.set(key, { name, href, control });
     }
