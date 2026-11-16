@@ -1,7 +1,7 @@
 // Offline macOS demo: builds the SwiftUI fixture app and runs a journey with
 // deterministic decisions. Needs macOS plus Accessibility and Screen Recording
 // permission for the app running it (e.g. Terminal).
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { suiteSchema, type Action } from '../src/contracts.js';
 import {
   buildFixtureApp,
@@ -72,7 +72,7 @@ for (const result of results)
   console.log(
     `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport}: ${result.reason} · quality ${result.quality.verdict}`,
   );
-console.log(`Report: ${directory}/report.html`);
+console.log(`Report: ${join(directory, 'report.html')}`);
 process.exitCode = results.every((result) => result.status === 'passed')
   ? 0
   : 1;

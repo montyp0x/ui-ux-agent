@@ -11,10 +11,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
 import { baselineDirectory } from '../src/audits/visual.js';
+import { check } from '../src/browser.js';
 import { compareRuns, findingInstances, loadRun } from '../src/compare.js';
 import { gateSchema } from '../src/gate.js';
 import { suiteSchema, type Action, type Choice } from '../src/contracts.js';
 import {
+  markPseudoLocalized,
   pseudoLocalizationScript,
   pseudoNamePattern,
   pseudoPad,
@@ -316,6 +318,65 @@ test('a setting the page does not show is reported as not applied', () => {
     ['colorScheme dark (page reports light)', 'forcedColors active (page reports none)'],
   );
   assert.deepEqual(unappliedSettings({ name: 'defaults' }, probe), []);
+  // A time zone alias is the zone the page reports by its canonical name.
+  assert.deepEqual(
+    unappliedSettings(
+      { name: 'east', timezone: 'US/Eastern' },
+      { ...probe, timezone: 'America/New_York' },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    unappliedSettings(
+      { name: 'east', timezone: 'US/Eastern' },
+      { ...probe, timezone: 'America/Chicago' },
+    ),
+    ['timezone US/Eastern (page reports America/Chicago)'],
+  );
+});
+
+test('two runs that would share an evidence directory are a configuration error', () => {
+  // dark × mobile-wide and dark-mobile × wide both name finish-dark-mobile-wide.
+  const shared = issues({
+    ...base,
+    viewports: [
+      { name: 'mobile-wide', width: 600, height: 800 },
+      { name: 'wide', width: 1600, height: 900 },
+    ],
+    environments: [
+      { name: 'dark', colorScheme: 'dark' },
+      { name: 'dark-mobile', colorScheme: 'dark' },
+    ],
+    combinations: [
+      { environment: 'dark', viewport: 'mobile-wide' },
+      { environment: 'dark-mobile', viewport: 'wide' },
+    ],
+  });
+  assert.ok(
+    shared.some((message) =>
+      /finish\/dark\/mobile-wide and finish\/dark-mobile\/wide would share the evidence directory finish-dark-mobile-wide/.test(
+        message,
+      ),
+    ),
+    JSON.stringify(shared),
+  );
+  // Without environments: journey a-b on viewport c and journey a on b-c.
+  const plain = issues({
+    ...base,
+    viewports: [
+      { name: 'c', width: 1280, height: 800 },
+      { name: 'b-c', width: 390, height: 844 },
+    ],
+    journeys: [
+      { ...journey, id: 'a-b' },
+      { ...journey, id: 'a' },
+    ],
+  });
+  assert.ok(
+    plain.some((message) => /a-b\/c and a\/b-c would share/.test(message)),
+    JSON.stringify(plain),
+  );
+  assert.deepEqual(issues(base), []);
 });
 
 test('pseudo-localization appends marked, deterministic padding and keeps the original text', () => {
@@ -386,6 +447,36 @@ test('the pseudo-localization script pads page text but never field values or ed
     assert.equal(
       (await page.textContent('button'))!.match(/⟦/g)!.length,
       1,
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test('text checks match the application text under pseudo-localization', async () => {
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext();
+    await context.addInitScript({ content: pseudoLocalizationScript({}) });
+    const page = await context.newPage();
+    await page.setContent(
+      `<main><p id="price"><b>$12</b> / month</p></main>`,
+    );
+    await page.waitForFunction(
+      () => document.getElementById('price')!.textContent!.includes('⟦'),
+    );
+    const condition = {
+      kind: 'text' as const,
+      target: { by: 'css' as const, value: '#price' },
+      pattern: '^\\$\\d+ / month$',
+    };
+    // The padding follows each text node, so the raw text does not match.
+    assert.equal(await check(page, condition), false);
+    markPseudoLocalized(page);
+    assert.equal(await check(page, condition), true);
+    assert.equal(
+      await check(page, { ...condition, pattern: '^\\$\\d+ / year$' }),
+      false,
     );
   } finally {
     await browser.close();

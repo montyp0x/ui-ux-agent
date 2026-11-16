@@ -19,7 +19,11 @@ import type {
 import { fillValue } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
-import { isPseudoLocalized, pseudoNamePattern } from './environments.js';
+import {
+  isPseudoLocalized,
+  pseudoNamePattern,
+  withoutPseudo,
+} from './environments.js';
 import type { EventLogger } from './drivers/types.js';
 import {
   keyboardCandidates,
@@ -544,9 +548,12 @@ export async function check(page: Page, condition: Check): Promise<boolean> {
   }
   if ((await target.count()) !== 1 || !(await inViewport(page, target)))
     return false;
-  return (
-    condition.kind === 'visible' ||
-    new RegExp(condition.pattern).test(await target.innerText())
+  if (condition.kind === 'visible') return true;
+  // Under pseudo-localization the padding follows every text node, so a
+  // pattern is tested against the application's own text.
+  const text = await target.innerText();
+  return new RegExp(condition.pattern).test(
+    isPseudoLocalized(page) ? withoutPseudo(text) : text,
   );
 }
 

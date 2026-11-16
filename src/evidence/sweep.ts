@@ -6,6 +6,7 @@
 import { chmod, lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { Redactor } from './redact.js';
+import { makePrivate } from './private.js';
 
 const TEXT = new Set([
   '.json',
@@ -79,9 +80,19 @@ export async function sanitizeTextFiles(
 // umask (Playwright traces and videos and their directories, the macOS
 // window capture, files an audit adds). Symlinks are never followed.
 // Returns the paths whose mode changed.
+//
+// Windows has no such modes: there the directory gets a private ACL
+// (src/evidence/private.ts) that everything inside inherits, including what
+// other writers created in it.
 export async function restrictPermissions(
   directory: string,
 ): Promise<string[]> {
+  if (process.platform === 'win32') {
+    const root = await lstat(directory);
+    if (root.isSymbolicLink() || !root.isDirectory()) return [];
+    await makePrivate(directory, 'directory');
+    return [directory];
+  }
   const changed: string[] = [];
   const restrict = async (path: string, mode: number, current: number) => {
     if ((current & 0o777) === mode) return;

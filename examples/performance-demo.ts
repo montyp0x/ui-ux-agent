@@ -4,7 +4,7 @@
 // The numbers are this machine's, from one run each; they show the evidence
 // the audit produces, not a benchmark.
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { suiteSchema, type Action, type Choice } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
@@ -54,7 +54,7 @@ try {
       );
     }
     console.log(
-      `${mode}: outcome ${result!.status}, quality ${result!.quality.verdict}, ${result!.audits.findings.length} budget finding(s) · report ${directory}/report.html`,
+      `${mode}: outcome ${result!.status}, quality ${result!.quality.verdict}, ${result!.audits.findings.length} budget finding(s) · report ${join(directory, 'report.html')}`,
     );
   }
   const { comparison, html } = await writeComparison({

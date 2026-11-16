@@ -1,0 +1,4 @@
+# Keep LF in every checkout (Windows included): generated schemas and the
+# CI parity check (git diff --exit-code -- schemas/) compare byte for byte.
+* text=auto eol=lf
+*.png binary

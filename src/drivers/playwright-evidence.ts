@@ -123,23 +123,50 @@ export async function protectedScreenshot(
   });
 }
 
+// Options a page's protection has already seen, while its secrets stay the
+// same: the selects are read before every driver call, and most calls find
+// them unchanged.
+const seenOptions = new WeakMap<Page, { secrets: number; keys: Set<string> }>();
+
 // Reads the page's select options so the protection learns the labels of
 // options whose value is a secret (EvidenceProtection.learnOptionLabels).
 // Called before anything the driver returns or logs can show page text.
-// Top-level document only; never throws (the page may be navigating).
+// Top-level document only; never throws (the page may be navigating or
+// closed).
 export async function learnSecretOptions(
   page: Page,
-  protection: Pick<EvidenceProtection, 'learnOptionLabels'> | undefined,
+  protection:
+    | Pick<EvidenceProtection, 'learnOptionLabels' | 'redactor'>
+    | undefined,
 ): Promise<void> {
   if (!protection) return;
-  const options = await page
-    .locator('select option')
-    .evaluateAll((elements) =>
+  const read = () =>
+    page.locator('select option').evaluateAll((elements) =>
       elements.map((element) => {
         const option = element as HTMLOptionElement;
         return { value: option.value, texts: [option.label, option.text] };
       }),
-    )
-    .catch(() => [] as { value: string; texts: string[] }[]);
-  protection.learnOptionLabels(options);
+    );
+  // A navigation can destroy the document mid-read; the caller is about to
+  // read the new one, so its options are read once it is parsed.
+  const options = await read().catch(async () => {
+    await page
+      .waitForLoadState('domcontentloaded', { timeout: 5000 })
+      .catch(() => undefined);
+    return read().catch(() => [] as { value: string; texts: string[] }[]);
+  });
+  // A new secret can make a known option's value secret: start over.
+  const secrets = protection.redactor.literals.length;
+  let seen = seenOptions.get(page);
+  if (!seen || seen.secrets !== secrets) {
+    seen = { secrets, keys: new Set() };
+    seenOptions.set(page, seen);
+  }
+  const fresh = options.filter((option) => {
+    const key = JSON.stringify([option.value, ...option.texts]);
+    if (seen.keys.has(key)) return false;
+    seen.keys.add(key);
+    return true;
+  });
+  if (fresh.length) protection.learnOptionLabels(fresh);
 }

@@ -9,7 +9,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
 import {
@@ -434,13 +434,17 @@ test('the text sweep redacts files drivers and audits wrote, skips binaries and 
   );
   await writeFile(join(directory, 'shot.png'), SUITE_SECRET);
   await writeFile(join(outside, 'secret.txt'), SUITE_SECRET);
-  await symlink(outside, join(directory, 'link'));
+  // A junction on Windows (a symlink needs Developer Mode there); lstat
+  // reports both as symbolic links. Other platforms ignore the type.
+  await symlink(outside, join(directory, 'link'), 'junction');
   const redactor = new Redactor({
     patterns: [{ pattern: 'ACME-CASE-\\d{6}' }],
   });
   const rewritten = await sanitizeTextFiles(directory, redactor);
   assert.deepEqual(
-    rewritten.map((path) => path.slice(directory.length + 1)).sort(),
+    rewritten
+      .map((path) => relative(directory, path).split(sep).join('/'))
+      .sort(),
     ['events.jsonl', 'journey/layout.json'],
   );
   assert.ok(

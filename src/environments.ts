@@ -296,6 +296,18 @@ export const ENVIRONMENT_PROBE = `(() => ({
   contrast: matchMedia('(prefers-contrast: more)').matches ? 'more' : 'no-preference',
 }))()`;
 
+// One name per zone: the schema accepts any IANA name, aliases included
+// (US/Eastern), and the page reports its canonical one (America/New_York).
+// Both sides go through the same ICU here, so aliases compare equal.
+function canonicalTimezone(zone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions()
+      .timeZone;
+  } catch {
+    return zone;
+  }
+}
+
 // The requested settings the page does not show: each is a reason the run
 // did not measure the environment it names.
 export function unappliedSettings(
@@ -308,7 +320,10 @@ export function unappliedSettings(
     probe.locale.toLowerCase() !== environment.locale.toLowerCase()
   )
     out.push(`locale ${environment.locale} (page reports ${probe.locale})`);
-  if (environment.timezone && probe.timezone !== environment.timezone)
+  if (
+    environment.timezone &&
+    canonicalTimezone(probe.timezone) !== canonicalTimezone(environment.timezone)
+  )
     out.push(`timezone ${environment.timezone} (page reports ${probe.timezone})`);
   for (const key of [
     'colorScheme',

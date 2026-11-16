@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { chromium, firefox, webkit } from 'playwright';
 import {
@@ -21,6 +21,7 @@ import { starterSuite } from './scaffold.js';
 import { exitCode, summarize } from './summary.js';
 import { pruneRuns } from './evidence/retention.js';
 import { Redactor, shortSecretLimitation } from './evidence/redact.js';
+import { makePrivate } from './evidence/private.js';
 import { buildFrom, modelIdentity } from './identity.js';
 import { comparisonExitCode, loadRun } from './compare.js';
 import {
@@ -193,7 +194,7 @@ if (values.help) {
         } finally {
           await context.close();
         }
-        await chmod(profile, 0o700);
+        await makePrivate(profile, 'directory');
         console.log(
           `Saved profile ${profile}. Run with --profile ${values.profile} to reuse this sign-in.`,
         );
@@ -234,7 +235,7 @@ if (values.help) {
         const out = resolve(values.login);
         await mkdir(dirname(out), { recursive: true, mode: 0o700 });
         await writeFile(out, JSON.stringify(state, null, 2), { mode: 0o600 });
-        await chmod(out, 0o600);
+        await makePrivate(out, 'file');
         console.log(
           `Saved ${out}: ${report.keptCookies} cookies and ${report.keptOrigins.length} origins for ${suiteOrigins(suite).join(', ')}; dropped ${Object.values(report.droppedCookies).reduce((sum, count) => sum + count, 0)} cookies (${Object.keys(report.droppedCookies).join(', ') || 'none'}) and ${report.droppedOrigins.length} origins.`,
         );
@@ -326,7 +327,7 @@ if (values.help) {
           console.error(
             `CLEANUP FAILED: ${result.journey}/${result.viewport} run ${result.dataLifecycle!.run} on ${result.dataLifecycle!.service}: ${result.dataLifecycle!.cleanup?.detail ?? 'cleanup did not run'}`,
           );
-        console.log(`Report: ${directory}/report.html`);
+        console.log(`Report: ${join(directory, 'report.html')}`);
         // A failed data cleanup fails the command even when every run passed.
         process.exitCode = exitCode(results);
         if (values.compare && gate) {

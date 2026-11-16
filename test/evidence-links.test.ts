@@ -8,9 +8,14 @@ import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { suiteSchema, type Suite } from '../src/contracts.js';
-import { UNRESOLVED_LINK, evidenceLinks } from '../src/evidence/links.js';
+import {
+  UNRESOLVED_LINK,
+  evidenceLinks,
+  fileHref,
+} from '../src/evidence/links.js';
 import { Redactor } from '../src/evidence/redact.js';
 import { runSuite } from '../src/runner.js';
+import { isPrivate } from '../src/evidence/private.js';
 import { notesFixture } from '../examples/notes-fixture.js';
 import { STATE_SCRIPTS, scriptedDecisions } from '../examples/state-fixture.js';
 
@@ -57,6 +62,23 @@ async function assertLinksResolve(directory: string, secret: string) {
   }
   return links;
 }
+
+test(
+  'a file on another drive is linked by its file: URL, not as a relative path',
+  { skip: process.platform !== 'win32' && 'drives exist on Windows only' },
+  () => {
+    const run = 'C:\\runs\\demo';
+    assert.equal(fileHref(run, `${run}\\j\\step-001.png`), 'j/step-001.png');
+    assert.equal(
+      fileHref(run, 'C:\\baselines\\a b.png'),
+      '../../baselines/a b.png',
+    );
+    assert.equal(
+      fileHref(run, 'D:\\baselines\\a b.png'),
+      'file:///D:/baselines/a%20b.png',
+    );
+  },
+);
 
 test('report links resolve when a secret is part of the run directory path', async () => {
   const app = await notesFixture();
@@ -120,7 +142,7 @@ test('report links resolve, without the secret, when it is part of a path inside
       await readFile(real),
     );
     // Evidence stays private.
-    assert.equal((await stat(resolve(directory, deciding))).mode & 0o077, 0);
+    assert.ok(await isPrivate(resolve(directory, deciding), 'file'));
   } finally {
     await app.close();
   }

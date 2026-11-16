@@ -18,7 +18,6 @@
 // (UNRESOLVED_LINK) rather than guessed.
 import { createHash } from 'node:crypto';
 import {
-  chmod,
   copyFile,
   link,
   lstat,
@@ -26,15 +25,25 @@ import {
   readdir,
   readFile,
 } from 'node:fs/promises';
-import { extname, join, relative, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Redactor } from './redact.js';
+import { makePrivate } from './private.js';
 
 export const LINK_DIRECTORY = 'evidence-links';
 // An in-page anchor: no file, no secret.
 export const UNRESOLVED_LINK = '#evidence-path-redacted';
 const TOKEN = /\[REDACTED(?::[^\]\s]*)?\]/;
 
-const href = (path: string) => path.split(sep).join('/');
+// A link to `file` from a page in `directory`: its relative path, or a file:
+// URL when no relative path exists (on Windows, a file on another drive;
+// `D:/x.png` would read as a URL with the scheme d:).
+export function fileHref(directory: string, file: string): string {
+  const path = relative(directory, file);
+  return isAbsolute(path)
+    ? pathToFileURL(file).href
+    : path.split(sep).join('/');
+}
 
 // Every file under `root` by its relative path, symlinks not followed and
 // existing aliases skipped.
@@ -114,12 +123,12 @@ export async function evidenceLinks(
           await copyFile(real, target);
         }
       } else await copyFile(real, target);
-      await chmod(target, 0o600);
+      await makePrivate(target, 'file');
     }
     return `${LINK_DIRECTORY}/${name}`;
   };
   const resolveOne = async (file: string): Promise<string> => {
-    if (!TOKEN.test(file)) return href(relative(directory, file));
+    if (!TOKEN.test(file)) return fileHref(directory, file);
     for (const root of known) {
       const prefix = [root, redactor.text(root)].find(
         (candidate) => file === candidate || file.startsWith(candidate + sep),
@@ -139,10 +148,12 @@ export async function evidenceLinks(
       } catch {
         return UNRESOLVED_LINK;
       }
-      const path = href(relative(directory, real));
+      const path = fileHref(directory, real);
       // A path that would print a secret (a file outside the run whose
-      // location holds it) goes through an alias as well.
-      return !TOKEN.test(rest) && (inside || !redactor.matches(path))
+      // location holds it) goes through an alias as well. The real path is
+      // checked too: a file: URL percent-encodes what the redactor looks for.
+      return !TOKEN.test(rest) &&
+        (inside || (!redactor.matches(path) && !redactor.matches(real)))
         ? path
         : alias(real, inside);
     }
