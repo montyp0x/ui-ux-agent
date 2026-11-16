@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { chromium, firefox, webkit } from 'playwright';
 import {
@@ -327,7 +327,7 @@ if (values.help) {
           console.error(
             `CLEANUP FAILED: ${result.journey}/${result.viewport} run ${result.dataLifecycle!.run} on ${result.dataLifecycle!.service}: ${result.dataLifecycle!.cleanup?.detail ?? 'cleanup did not run'}`,
           );
-        console.log(`Report: ${directory}/report.html`);
+        console.log(`Report: ${join(directory, 'report.html')}`);
         // A failed data cleanup fails the command even when every run passed.
         process.exitCode = exitCode(results);
         if (values.compare && gate) {

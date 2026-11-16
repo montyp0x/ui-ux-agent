@@ -4,7 +4,7 @@
 // `npm run demo:states`; add `--defects` to turn on each page's deliberate
 // defect and see the declared state checks fail while journeys still pass.
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { KEYBOARD_JOURNEY_UNSUPPORTED } from '../src/browser-support.js';
 import { suiteSchema } from '../src/contracts.js';
 import { runSuite } from '../src/runner.js';
@@ -69,7 +69,7 @@ try {
       if (result.status !== 'passed' || result.dataLifecycle?.clean === false)
         failed = true;
     }
-    console.log(`Report: ${directory}/report.html`);
+    console.log(`Report: ${join(directory, 'report.html')}`);
   }
   const left = notes.stored();
   console.log(`Notes fixture after the runs: ${left.notes} note(s), ${left.owners.length} identities`);

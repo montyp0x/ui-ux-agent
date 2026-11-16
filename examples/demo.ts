@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { suiteSchema } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
@@ -93,7 +93,7 @@ try {
     console.log(
       `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport} · ${suite.browser} · quality ${result.quality.verdict} · agent friction: ${result.friction?.actions.product ?? 0} product action(s), ${result.friction?.counts.backtracks ?? 0} backtrack(s), closest reference path ${result.friction?.reference?.closest ?? 'none'}`,
     );
-  console.log(`Report: ${directory}/report.html`);
+  console.log(`Report: ${join(directory, 'report.html')}`);
   process.exitCode = results.every((result) => result.status === 'passed')
     ? 0
     : 1;
