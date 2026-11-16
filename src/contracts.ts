@@ -789,6 +789,9 @@ export type Viewport = {
   canScrollUp: boolean;
   canScrollDown: boolean;
   scrollRegions: ScrollRegion[];
+  // The name of the open modal dialog that limits what is visible to its own
+  // content ('' when it has none); absent without one. Web only.
+  modal?: string;
 };
 export type Observation = {
   step: number;

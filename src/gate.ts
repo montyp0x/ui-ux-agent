@@ -59,7 +59,8 @@ export const gateSchema = z
     // model output; turning this on gates on model judgment.
     hypotheses: z.boolean().default(false),
     // Also gate the runner's own observed findings (detour, policy-block,
-    // action-error, browser-error, data-cleanup, loop, selector-recovery).
+    // action-error, browser-error, data-cleanup, loop, selector-recovery,
+    // blocking-dialog).
     // They carry no severity, so they gate at every failOn except none.
     observed: z.boolean().default(false),
     // Also fail on gating findings present in both runs (known debt), not

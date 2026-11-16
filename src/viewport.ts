@@ -147,6 +147,25 @@ export function projectViewport(
     output.targetName = geometry.controlName(target);
     return output;
   }
+  // An open modal dialog limits what is visible to its own content: named by
+  // its label, else its first heading (its whole text would be the dialog).
+  if (modal) {
+    const labelled = modal
+      .getAttribute('aria-labelledby')
+      ?.split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ');
+    output.modal = (
+      modal.getAttribute('aria-label') ??
+      labelled ??
+      modal.querySelector('h1, h2, h3, h4, h5, h6, [role="heading"]')
+        ?.textContent ??
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+  }
   const roots: ParentNode[] = [document.body];
   for (let index = 0; index < roots.length; index++)
     for (const element of Array.from(roots[index]!.querySelectorAll('*')))

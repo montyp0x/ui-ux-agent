@@ -120,6 +120,16 @@ Apps keep state between runs: a calculator still shows its last result, and a pa
 
 Each step must match the target of an action the driver offers, either a discovered control or a configured interaction, so it gets the same guards and blocklist as any action. Steps are logged as `setup` events, never shown to the models, and not counted as journey actions. A step that is not offered, or fails, ends the run as `blocked` with the step named.
 
+**Cookie and consent banners.** Every run starts in a fresh browser context, so a site's consent banner appears every time. A modal banner limits the page to its own content: checks of what is behind it (`visible`, `text`, `focused`) fail, and its buttons are not offered unless configured. A run stuck behind one says so: `ready_not_reached` names the dialog instead of pointing at authentication, and a journey left with only waiting, scrolling or going back records a `blocking-dialog` observed finding. To get past it, check readiness with something the banner does not hide (`anyRendered`, or a `path`), add its button as an interaction, and click it in `setup`:
+
+```json
+{
+  "ready": { "kind": "anyRendered", "target": { "by": "role", "role": "heading", "name": "Home" } },
+  "interactions": [{ "kind": "click", "target": { "by": "role", "role": "button", "name": "Reject all" }, "description": "Reject optional cookies" }],
+  "setup": [{ "kind": "click", "target": { "by": "role", "role": "button", "name": "Reject all" }, "description": "Reject optional cookies" }]
+}
+```
+
 ### Detours
 
 A journey can name pages that resemble its destination but are not it:
