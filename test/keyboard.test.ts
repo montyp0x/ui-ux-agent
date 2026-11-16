@@ -612,3 +612,55 @@ test('keyboard.focus runs at completion by default, may run at states, and never
         ) === true,
     );
 });
+
+// A panel that animates out on Escape and hands focus back to its opener
+// only once the animation has ended, as many component libraries do.
+const ANIMATED_PANEL = `<main><h1>Devices</h1><button id="open">Open panel</button>
+<div id="panel" role="dialog" aria-modal="true" aria-label="Device" hidden><button id="close">Close panel</button></div></main>
+<style>@keyframes out { from { opacity: 1 } to { opacity: 0 } } .closing { animation: out 400ms forwards }</style>
+<script>
+  const panel = document.getElementById('panel');
+  const opener = document.getElementById('open');
+  opener.addEventListener('click', () => { panel.hidden = false; document.getElementById('close').focus(); });
+  panel.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    panel.classList.add('closing');
+    panel.addEventListener('animationend', () => { panel.hidden = true; panel.classList.remove('closing'); opener.focus(); }, { once: true });
+  });
+</script>`;
+
+test('a key press is measured once focus settles, so a closing panel does not leave a stale observation', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    const url = 'https://keyboard-settle.example';
+    await page.route(`${url}/**`, (route) =>
+      route.fulfill({ contentType: 'text/html', body: ANIMATED_PANEL }),
+    );
+    await page.goto(`${url}/`);
+    const journey = suiteSchema.parse({
+      ...suiteFor(url),
+      journeys: [{ ...journeyConfig, interactions: [], keyboard: undefined }],
+    }).journeys[0]!;
+    // Open panel, Enter opens the panel with focus on Close panel, Escape.
+    for (const [step, key] of ['Tab', 'Enter', 'Escape'].entries())
+      await press(page, journey, url, key, step);
+    // Measured after the exit animation: focus is back on the opener.
+    const offered = await candidates(page, journey, url);
+    const tab = offered.find((action) => action.kind === 'key' && action.key === 'Tab')!;
+    assert.match(tab.description, /focus on button "Open panel"/);
+    // A model call later, the key still goes where the observation said.
+    await page.waitForTimeout(600);
+    const directory = await mkdtemp(join(tmpdir(), 'ui-ux-keyboard-'));
+    await execute(
+      page,
+      tab,
+      await observe(page, 3, join(directory, 'settled.png')),
+      journey,
+      url,
+    );
+    const escape = keyboardTransitions(page).find((entry) => entry.key === 'Escape')!;
+    assert.match(escape.to?.description ?? '', /Open panel/);
+  } finally {
+    await page.close();
+  }
+});
