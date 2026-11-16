@@ -1335,18 +1335,23 @@ export async function runSuite(
   const results: Result[] = [];
   // The report links every file it shows; paths the redaction rewrote in the
   // results are resolved to the files they name (src/evidence/links.ts).
+  // The report is rewritten after every run; files it already linked keep
+  // their link (by recorded path), so only the new run's files are resolved.
+  const links = new Map<string, string>();
   const report = async (name: string, shown: Result[]) => {
     const files = new Set<string>();
     reportHTML(name, shown, options.directory, (file) => {
-      files.add(file);
+      if (!links.has(file)) files.add(file);
       return '';
     });
-    const links = await evidenceLinks(
-      options.directory,
-      redactor,
-      files,
-      baselines ? [baselines] : [],
-    );
+    if (files.size)
+      for (const [file, link] of await evidenceLinks(
+        options.directory,
+        redactor,
+        files,
+        baselines ? [baselines] : [],
+      ))
+        links.set(file, link);
     return reportHTML(
       name,
       shown,

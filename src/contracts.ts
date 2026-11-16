@@ -413,6 +413,31 @@ const suiteObject = z
           message: 'Journey and viewport names must be unique',
         });
     }
+    // Each run's evidence directory is <journey>-<viewport>, or
+    // <journey>-<environment>-<viewport>; names may contain '-', so two runs
+    // can name the same directory, which the second could not create.
+    const cells = suite.environments
+      ? selectCombinations(suite).combinations.map((cell) => ({
+          directory: `${cell.environment}-${cell.viewport}`,
+          name: `${cell.environment}/${cell.viewport}`,
+        }))
+      : suite.viewports.map((viewport) => ({
+          directory: viewport.name,
+          name: viewport.name,
+        }));
+    const directories = new Map<string, string>();
+    for (const journey of suite.journeys)
+      for (const cell of cells) {
+        const directory = `${journey.id}-${cell.directory}`;
+        const run = `${journey.id}/${cell.name}`;
+        const other = directories.get(directory);
+        if (other && other !== run)
+          ctx.addIssue({
+            code: 'custom',
+            message: `Runs ${other} and ${run} would share the evidence directory ${directory}; rename a journey, environment or viewport`,
+          });
+        directories.set(directory, run);
+      }
     if (suite.platform === 'macos') {
       if (!suite.app)
         ctx.addIssue({ code: 'custom', message: 'macOS suites need app' });
