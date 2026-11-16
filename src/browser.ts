@@ -440,15 +440,25 @@ async function enabled(element: Element): Promise<boolean | null> {
 }
 
 // The accessible name from the first line of an aria snapshot. Playwright emits
-// `- role "name"` with JSON-style escapes, and wraps the whole line in YAML
+// `- role "name"` with JSON-style escapes, and wraps the role and name in YAML
 // single quotes (doubling inner ') when the name contains YAML-significant text
-// such as ': ' or ' #'. A trailing ':' marks child nodes.
+// such as ': ' or ' #'. After it, a ':' marks child nodes, and ': text' the
+// element's own text when it differs from the name
+// (- 'button "Column: Last contact"': Last contact).
 export function snapshotName(snapshot: string): string | null {
   let line = snapshot.split('\n')[0]!.trim().replace(/^- /, '');
   if (line.startsWith("'")) {
-    line = line.replace(/:$/, '');
-    if (!line.endsWith("'") || line.length < 2) return null;
-    line = line.slice(1, -1).replace(/''/g, "'");
+    // The quoted key ends at a quote that is not a doubled one.
+    let end = 1;
+    while (end < line.length) {
+      if (line[end] === "'") {
+        if (line[end + 1] !== "'") break;
+        end++;
+      }
+      end++;
+    }
+    if (end >= line.length) return null;
+    line = line.slice(1, end).replace(/''/g, "'");
   }
   const match = line.match(/^[a-z]+ "((?:\\.|[^"\\])*)"/);
   if (!match) return null;

@@ -232,10 +232,23 @@ test('controls whose names Playwright YAML-quotes in snapshots are still discove
     'Say "hi": now',
     'Plain name',
   ];
+  // Labels whose visible text differs: the snapshot adds that text after the
+  // quoted role and name (- 'button "Column: Last contact"': Last contact).
+  const labelled = [
+    ['Column: Last contact', 'Last contact'],
+    ["Sort: it's newest", 'Newest'],
+    ['Say "bye": later', 'Bye: soon'],
+  ];
   await fixture(
     `for (const [i, name] of ${JSON.stringify(names)}.entries()) {
       const button = document.createElement('button');
       button.textContent = name;
+      document.body.append(button);
+    }
+    for (const [label, text] of ${JSON.stringify(labelled)}) {
+      const button = document.createElement('button');
+      button.setAttribute('aria-label', label);
+      button.textContent = text;
       document.body.append(button);
     }`,
     async (page, _directory, logged) => {
@@ -252,8 +265,17 @@ test('controls whose names Playwright YAML-quotes in snapshots are still discove
               action.target.by === 'role' &&
               action.target.name,
           ),
-        names,
+        [...names, ...labelled.map(([label]) => label)],
       );
+      for (const [label] of labelled)
+        assert.equal(
+          snapshotName(
+            await page
+              .getByRole('button', { name: label, exact: true })
+              .ariaSnapshot(),
+          ),
+          label,
+        );
       for (const name of names)
         assert.equal(
           snapshotName(
