@@ -25,6 +25,7 @@ import {
   withoutPseudo,
 } from './environments.js';
 import type { EventLogger } from './drivers/types.js';
+import { protectedScreenshot } from './drivers/playwright-evidence.js';
 import {
   keyboardCandidates,
   keyboardExecute,
@@ -696,17 +697,9 @@ export async function observe(
   // Writes the viewport screenshot to the path; drivers pass one that applies
   // the run's screenshot protection before capture.
   capture: (path: string) => Promise<unknown> = (path) =>
-    page.screenshot({ path, fullPage: false }),
+    protectedScreenshot(page, undefined, { path, fullPage: false }),
 ): Promise<Observation> {
-  try {
-    await capture(screenshotPath);
-  } catch (caught) {
-    // Chromium can fail a capture while it is busy compositing (seen under
-    // load on Windows); that says nothing about the page, so once more.
-    if (!/Unable to capture screenshot/.test(String(caught))) throw caught;
-    await page.waitForTimeout(100);
-    await capture(screenshotPath);
-  }
+  await capture(screenshotPath);
   const snapshot = await page.locator('body').ariaSnapshot();
   const horizontalOverflow = await page.evaluate(() =>
     Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
