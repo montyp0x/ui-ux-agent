@@ -302,7 +302,12 @@ async function bind(
   }
   // Key actions belong to keyboard-only journeys (playwright-keyboard.ts).
   if (action.kind === 'key') return { reason: 'no_recipient' };
-  return bindControl(locate(page, action.target), (element, state) =>
+  const target =
+    action.kind === 'link'
+      ? await linkLocator(page, action)
+      : locate(page, action.target);
+  if (!target) return { reason: 'detached', matches: 0 };
+  return bindControl(target, (element, state) =>
     guards.set(action, {
       kind: 'control',
       url,
@@ -311,6 +316,40 @@ async function bind(
       dialogs: visibleDialogs,
     }),
   );
+}
+
+// A link's destination as the browser follows it: its href against the
+// document's base URL (which <base href> sets), not the page URL. Null
+// without a usable href.
+const resolvedHref = (element: globalThis.Element): string | null => {
+  const raw = element.getAttribute('href');
+  if (raw === null) return null;
+  try {
+    return new URL(raw, element.baseURI).href;
+  } catch {
+    return null;
+  }
+};
+
+// The element a link action opens: the first link with its name that leads
+// to its destination and is in the viewport. A name alone can match several
+// (a header and a footer, desktop and mobile navigation, "Learn more" on
+// every card). Null when none does.
+async function linkLocator(
+  page: Page,
+  action: Extract<Action, { kind: 'link' }>,
+): Promise<Locator | null> {
+  const named = locate(page, action.target);
+  const count = await named.count();
+  for (let index = 0; index < count; index++) {
+    const link = named.nth(index);
+    if (
+      (await link.evaluate(resolvedHref).catch(() => null)) === action.href &&
+      (await inViewport(page, link).catch(() => false))
+    )
+      return link;
+  }
+  return null;
 }
 
 export function locate(page: Page, target: Target): Locator {
@@ -627,68 +666,71 @@ export async function candidates(
       ...skipped,
     });
   try {
-    const counts = new Map<string, number>();
-    const observed: { name: string; href: string; control: string }[] = [];
-    const links = (await page.getByRole('link').elementHandles()) as Element[];
+    // Visible links in scope, one action per accessible name and destination.
+    // Pages repeat links (a header and a footer, desktop and mobile
+    // navigation): copies with the same name and destination are one action,
+    // bound to a copy in the viewport (linkLocator). A name that leads to
+    // several destinations ("Learn more" on every card) names each one.
+    const observed = new Map<
+      string,
+      { name: string; href: string; control: string }
+    >();
+    const all = page.getByRole('link');
+    const links = (await all.elementHandles()) as Element[];
     discovered.push(...links);
     for (const link of links) {
       const control = await visibleName(link);
       if (control === null) continue;
-      // One evaluation reads every field from the same element.
-      const read = await link.evaluate((element) => {
-        const labelledBy = element.getAttribute('aria-labelledby');
-        const name =
+      // One evaluation reads every field from the same element; the label
+      // only names a link that was removed meanwhile in the skip log.
+      const read = await link.evaluate((element) => ({
+        label:
           element.getAttribute('aria-label') ??
-          (labelledBy
-            ? labelledBy
-                .split(/\s+/)
-                .map((id) => document.getElementById(id)?.textContent ?? '')
-                .join(' ')
-            : null) ??
-          (element.textContent?.trim() || element.getAttribute('title') || '');
-        return {
-          name,
-          href: element.getAttribute('href'),
-          target: element.getAttribute('target'),
-          connected: element.isConnected,
-        };
-      });
+          (element.textContent?.trim() || undefined),
+        target: element.getAttribute('target'),
+        connected: element.isConnected,
+      }));
       if (!read.connected) {
-        await skip({ role: 'link', name: read.name, reason: 'detached' });
+        await skip({ role: 'link', name: read.label, reason: 'detached' });
         continue;
       }
-      let resolved: string;
-      try {
-        resolved = new URL(read.href ?? '', page.url()).href;
-      } catch {
-        continue;
-      }
+      const href = await link.evaluate(resolvedHref);
       if (
-        !read.name ||
-        !read.href ||
-        !allowedURL(resolved, baseURL, journey.allowedPaths, origins) ||
-        read.target === '_blank'
+        !href ||
+        read.target === '_blank' ||
+        !allowedURL(href, baseURL, journey.allowedPaths, origins)
       )
         continue;
-      counts.set(read.name, (counts.get(read.name) ?? 0) + 1);
-      observed.push({ name: read.name, href: resolved, control });
-    }
-    for (const link of observed) {
-      const target: Target = { by: 'role', role: 'link', name: link.name };
-      if (
-        counts.get(link.name) === 1 &&
-        (await locate(page, target).count()) === 1
-      ) {
-        const action: Action = {
-          kind: 'link',
-          id: `a${out.length}`,
-          description: `Open ${link.name}`,
-          target,
-          href: link.href,
-        };
-        names.set(action, link.control);
-        out.push(action);
+      // The accessible name, as getByRole matches it: an image link's alt
+      // text, whitespace collapsed.
+      const snapshot = await snapshotOf(all, link);
+      if (!('snapshot' in snapshot)) {
+        await skip({ role: 'link', ...snapshot });
+        continue;
       }
+      const name = snapshotName(snapshot.snapshot);
+      if (!name) continue;
+      const key = JSON.stringify([name, href]);
+      if (!observed.has(key)) observed.set(key, { name, href, control });
+    }
+    const destinations = new Map<string, number>();
+    for (const { name } of observed.values())
+      destinations.set(name, (destinations.get(name) ?? 0) + 1);
+    for (const link of observed.values()) {
+      const where = new URL(link.href);
+      const action: Action = {
+        kind: 'link',
+        id: `a${out.length}`,
+        description:
+          (/^open\b/i.test(link.name) ? link.name : `Open ${link.name}`) +
+          ((destinations.get(link.name) ?? 0) > 1
+            ? ` (${where.pathname}${where.search}${where.hash})`
+            : ''),
+        target: { by: 'role', role: 'link', name: link.name },
+        href: link.href,
+      };
+      names.set(action, link.control);
+      out.push(action);
     }
     for (const interaction of journey.interactions) {
       const target = locate(page, interaction.target);
@@ -975,8 +1017,12 @@ export async function execute(
     await page.waitForTimeout(550);
     return;
   }
-  const target = locate(page, action.target);
+  const target =
+    action.kind === 'link'
+      ? await linkLocator(page, action)
+      : locate(page, action.target);
   if (
+    !target ||
     (await target.count()) !== 1 ||
     !(await inViewport(page, target)) ||
     !(await target.isEnabled())
@@ -997,10 +1043,8 @@ export async function execute(
       'Stale observation: selected target or dialog context changed during selection',
     );
   if (action.kind === 'link') {
-    const href = await target.getAttribute('href');
     if (
-      !href ||
-      new URL(href, page.url()).href !== action.href ||
+      (await target.evaluate(resolvedHref)) !== action.href ||
       !allowedURL(action.href, baseURL, journey.allowedPaths, origins)
     )
       throw new Error('Selected link changed or left the journey scope');
