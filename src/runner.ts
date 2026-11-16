@@ -35,6 +35,7 @@ import {
 import { providerModels } from './evidence/provider.js';
 import { redactError } from './evidence/redact.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
+import { makePrivate } from './evidence/private.js';
 import { writeRunManifest } from './evidence/retention.js';
 import { FrictionRecorder, computeFriction } from './friction/index.js';
 import { AUDIT_CONTRACT_VERSION } from './audits/contract.js';
@@ -1213,6 +1214,9 @@ export async function runSuite(
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
+  // Private before the first file lands in it: on Windows everything the run
+  // writes inherits the directory's ACL.
+  await makePrivate(options.directory, 'directory');
   // The suite's evidence policy with every fill valueEnv and secret setup
   // value as a secret.
   const policy = suiteEvidencePolicy(suite);

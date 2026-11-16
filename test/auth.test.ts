@@ -15,6 +15,7 @@ import {
 import { suiteSchema } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
+import { isPrivate } from '../src/evidence/private.js';
 
 const cookie = (name: string, domain: string) => ({
   name,
@@ -115,7 +116,7 @@ test('--login --from writes a scoped, owner-only session file', async () => {
   );
   assert.match(stdout, /dropped 3 cookies/);
   assert.doesNotMatch(stdout, /"value"/);
-  assert.equal((await stat(out)).mode & 0o777, 0o600);
+  assert.ok(await isPrivate(out, 'file'), `${out} is not private`);
   const saved = JSON.parse(await readFile(out, 'utf8'));
   assert.deepEqual(
     saved.cookies.map((entry: { name: string }) => entry.name),
@@ -361,7 +362,7 @@ test('a persistent profile is a dedicated directory the runner created', async (
   const home = await mkdtemp(join(tmpdir(), 'ui-ux-home-'));
   // A new directory is created owner-only and marked as a test profile.
   const fresh = await dedicatedProfile(join(home, 'profiles', 'app'), home);
-  assert.equal((await stat(fresh)).mode & 0o777, 0o700);
+  assert.ok(await isPrivate(fresh, 'directory'), `${fresh} is not private`);
   await stat(join(fresh, PROFILE_MARKER));
   // Reusing it is accepted once it holds browser data.
   await writeFile(join(fresh, 'Local State'), '{}');

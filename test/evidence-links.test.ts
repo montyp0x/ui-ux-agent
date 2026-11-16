@@ -11,6 +11,7 @@ import { suiteSchema, type Suite } from '../src/contracts.js';
 import { UNRESOLVED_LINK, evidenceLinks } from '../src/evidence/links.js';
 import { Redactor } from '../src/evidence/redact.js';
 import { runSuite } from '../src/runner.js';
+import { isPrivate } from '../src/evidence/private.js';
 import { notesFixture } from '../examples/notes-fixture.js';
 import { STATE_SCRIPTS, scriptedDecisions } from '../examples/state-fixture.js';
 
@@ -120,7 +121,7 @@ test('report links resolve, without the secret, when it is part of a path inside
       await readFile(real),
     );
     // Evidence stays private.
-    assert.equal((await stat(resolve(directory, deciding))).mode & 0o077, 0);
+    assert.ok(await isPrivate(resolve(directory, deciding), 'file'));
   } finally {
     await app.close();
   }

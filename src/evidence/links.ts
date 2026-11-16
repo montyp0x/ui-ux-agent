@@ -18,7 +18,6 @@
 // (UNRESOLVED_LINK) rather than guessed.
 import { createHash } from 'node:crypto';
 import {
-  chmod,
   copyFile,
   link,
   lstat,
@@ -28,6 +27,7 @@ import {
 } from 'node:fs/promises';
 import { extname, join, relative, sep } from 'node:path';
 import type { Redactor } from './redact.js';
+import { makePrivate } from './private.js';
 
 export const LINK_DIRECTORY = 'evidence-links';
 // An in-page anchor: no file, no secret.
@@ -114,7 +114,7 @@ export async function evidenceLinks(
           await copyFile(real, target);
         }
       } else await copyFile(real, target);
-      await chmod(target, 0o600);
+      await makePrivate(target, 'file');
     }
     return `${LINK_DIRECTORY}/${name}`;
   };

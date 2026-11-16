@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Suite } from './contracts.js';
+import { makePrivate } from './evidence/private.js';
 
 // Playwright storage-state file shape, parsed at the boundary. Unknown cookie
 // fields are kept so a scoped file round-trips everything Playwright wrote.
@@ -138,6 +139,7 @@ export async function dedicatedProfile(
     );
   if (!entries?.includes(PROFILE_MARKER)) {
     await mkdir(real, { recursive: true, mode: 0o700 });
+    await makePrivate(real, 'directory');
     await writeFile(
       join(real, PROFILE_MARKER),
       'Dedicated ui-ux-agent test profile. Not a personal browser profile.\n',

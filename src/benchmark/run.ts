@@ -12,6 +12,7 @@ import { dedicatedProfile } from '../auth.js';
 import { suiteEvidencePolicy } from '../contracts.js';
 import type { UIDriver } from '../drivers/types.js';
 import { Redactor } from '../evidence/redact.js';
+import { makePrivate } from '../evidence/private.js';
 import { models, type ModelOptions } from '../models.js';
 import { RESULT_VERSION } from '../results.js';
 import { runSuite } from '../runner.js';
@@ -142,6 +143,7 @@ export async function runBenchmark(
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
   // Not recursive: a benchmark directory is never reused.
   await mkdir(directory, { mode: 0o700 });
+  await makePrivate(directory, 'directory');
 
   const budget = new BenchmarkBudget(config.ceilings);
   const onCancel = () => budget.cancel('cancelled by the user');

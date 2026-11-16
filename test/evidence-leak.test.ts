@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -9,6 +9,7 @@ import { suiteSchema } from '../src/contracts.js';
 import { models } from '../src/models.js';
 import { parseResults } from '../src/results.js';
 import { runSuite } from '../src/runner.js';
+import { isPrivate } from '../src/evidence/private.js';
 import { pixelCounts } from './evidence-fixtures.js';
 
 // Planted fixture secrets (none is a real credential). Every one is drawn in
@@ -291,7 +292,7 @@ test('planted secrets are absent from every model payload and run artifact, and 
     }
 
     // Run evidence stays private to the user.
-    assert.equal((await stat(directory)).mode & 0o077, 0);
+    assert.ok(await isPrivate(directory, 'directory'));
 
     // Disabled formats are reported in the result, the events and the report.
     for (const result of parseResults(
@@ -421,11 +422,7 @@ test('an unauthenticated suite that declares nothing sensitive keeps its trace a
     for (const extension of ['.png', '.zip', '.webm', '.json', '.html'])
       assert.ok(extensions.has(extension), `no ${extension} evidence`);
     for (const path of all)
-      assert.equal(
-        (await stat(path)).mode & 0o777,
-        0o600,
-        `${path} is not private`,
-      );
+      assert.ok(await isPrivate(path, 'file'), `${path} is not private`);
     const directories = [directory];
     for (const path of all)
       for (
@@ -435,11 +432,7 @@ test('an unauthenticated suite that declares nothing sensitive keeps its trace a
       )
         directories.push(dir);
     for (const dir of new Set(directories))
-      assert.equal(
-        (await stat(dir)).mode & 0o777,
-        0o700,
-        `${dir} is not private`,
-      );
+      assert.ok(await isPrivate(dir, 'directory'), `${dir} is not private`);
   } finally {
     await app.close();
   }

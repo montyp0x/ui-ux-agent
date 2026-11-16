@@ -12,6 +12,7 @@ import {
 import { comparisonHTML } from './compare-report.js';
 import { Redactor } from './evidence/redact.js';
 import { gateSchema, type Gate } from './gate.js';
+import { makePrivate } from './evidence/private.js';
 
 export async function loadGate(path: string | undefined): Promise<Gate> {
   if (!path) return gateSchema.parse({});
@@ -123,6 +124,7 @@ export async function writeComparison(options: {
   );
   try {
     await mkdir(directory, { mode: 0o700 });
+    await makePrivate(directory, 'directory');
   } catch (caught) {
     throw new ComparisonInputError(
       `Cannot create the comparison directory ${directory} (it must be new): ${caught instanceof Error ? caught.message : String(caught)}`,

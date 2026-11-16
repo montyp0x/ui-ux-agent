@@ -15,6 +15,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { parseResults, type Result } from './results.js';
 import { RUN_MANIFEST, runManifestSchema } from './evidence/retention.js';
+import { makePrivate } from './evidence/private.js';
 import {
   BASELINE_METADATA_VERSION,
   baselineDirectory,
@@ -233,6 +234,7 @@ export async function approveBaselines(
   await assertOutsideGit(root);
   await assertOutsideRunDirectory(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  await makePrivate(root, 'directory');
   const decisions: ApprovalDecision[] = [];
   // One approval per baseline file: the first selected capture wins and later
   // repetitions of the same key and environment are skipped.
