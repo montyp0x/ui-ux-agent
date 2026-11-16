@@ -5909,7 +5909,8 @@
               "enum": [
                 "button",
                 "tab",
-                "menuitem"
+                "menuitem",
+                "disclosure"
               ]
             }
           },

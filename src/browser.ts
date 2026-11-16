@@ -655,7 +655,15 @@ export async function observe(
   capture: (path: string) => Promise<unknown> = (path) =>
     page.screenshot({ path, fullPage: false }),
 ): Promise<Observation> {
-  await capture(screenshotPath);
+  try {
+    await capture(screenshotPath);
+  } catch (caught) {
+    // Chromium can fail a capture while it is busy compositing (seen under
+    // load on Windows); that says nothing about the page, so once more.
+    if (!/Unable to capture screenshot/.test(String(caught))) throw caught;
+    await page.waitForTimeout(100);
+    await capture(screenshotPath);
+  }
   const snapshot = await page.locator('body').ariaSnapshot();
   const horizontalOverflow = await page.evaluate(() =>
     Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
@@ -889,8 +897,23 @@ export async function candidates(
         out.push(action);
       }
     }
-    for (const role of journey.discoverRoles) {
-      const all = page.getByRole(role);
+    // disclosure: only the buttons that show and hide something (a menu
+    // toggle, a dropdown; aria-expanded), which every button covers too.
+    const discover = journey.discoverRoles.flatMap((entry) =>
+      entry !== 'disclosure'
+        ? [{ role: entry, all: page.getByRole(entry) }]
+        : journey.discoverRoles.includes('button')
+          ? []
+          : [
+              {
+                role: 'button' as const,
+                all: page
+                  .getByRole('button')
+                  .and(page.locator('[aria-expanded]')),
+              },
+            ],
+    );
+    for (const { role, all } of discover) {
       const controls = (await all.elementHandles()) as Element[];
       discovered.push(...controls);
       for (const control of controls) {
@@ -934,7 +957,10 @@ export async function candidates(
     // <details> disclosures (FAQ accordions, "more options"): the summary
     // toggles them like a button but has no button role to discover. Each
     // is targeted by its text, and offered only when that text is unique.
-    if (journey.discoverRoles.includes('button')) {
+    if (
+      journey.discoverRoles.includes('button') ||
+      journey.discoverRoles.includes('disclosure')
+    ) {
       const summaries = (await page
         .locator('details > summary')
         .elementHandles()) as Element[];

@@ -26,6 +26,9 @@ export function starterSuite(
         allowedPaths: ['/', ...(destination === '/' ? [] : [destination])],
         ready: { kind: 'visible', target: { by: 'css', value: 'body' } },
         success: [{ kind: 'path', pattern: `^${escaped}/?$` }],
+        // The narrow viewport usually hides the navigation behind a menu
+        // toggle: let the journey open it, and nothing else that is a button.
+        discoverRoles: ['disclosure'],
       },
     ],
   });
