@@ -1,6 +1,6 @@
 import { mkdir, readdir, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Suite } from './contracts.js';
 import { makePrivate } from './evidence/private.js';
@@ -99,11 +99,26 @@ const PERSONAL_PROFILE_ROOTS = [
   ['.mozilla'],
   ['snap'],
   ['.var', 'app'],
+  // Windows: Firefox and Opera keep profiles in Roaming. Local also holds
+  // the temp directory, so only the browsers' own folders there.
+  ['AppData', 'Roaming'],
+  ['AppData', 'Local', 'Google'],
+  ['AppData', 'Local', 'Microsoft', 'Edge'],
+  ['AppData', 'Local', 'BraveSoftware'],
+  ['AppData', 'Local', 'Chromium'],
+  ['AppData', 'Local', 'Vivaldi'],
+  ['AppData', 'Local', 'Mozilla'],
+  ['AppData', 'Local', 'Packages'],
 ];
 
+// Whether `path` is `root` or below it. On Windows a path on another drive
+// is relative to nothing: relative() returns it absolute.
 const inside = (path: string, root: string) => {
   const rel = relative(root, path);
-  return rel === '' || (!rel.startsWith('..') && !rel.startsWith(sep));
+  return (
+    rel === '' ||
+    (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
+  );
 };
 
 // Resolves --profile to a dedicated test profile directory, creating it (mode

@@ -374,11 +374,17 @@ test('a persistent profile is a dedicated directory the runner created', async (
     ['Library', 'Application Support', 'Dia', 'User Data'],
     ['.config', 'google-chrome'],
     ['.mozilla', 'firefox', 'abc.default'],
+    ['AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default'],
+    ['AppData', 'Local', 'Microsoft', 'Edge', 'User Data', 'Profile 1'],
+    ['AppData', 'Roaming', 'Mozilla', 'Firefox', 'Profiles', 'abc.default'],
   ])
     await assert.rejects(
       dedicatedProfile(join(home, ...personal), home),
       /where browsers keep personal profiles/,
     );
+  // A test profile in the Windows temp directory is not a browser's.
+  const temporary = join(home, 'AppData', 'Local', 'Temp', 'profiles', 'app');
+  assert.equal(await dedicatedProfile(temporary, home), temporary);
   // So is an existing, non-empty directory the runner did not create, such
   // as a copied personal profile; nothing is written into it.
   const copied = join(home, 'copied-profile');

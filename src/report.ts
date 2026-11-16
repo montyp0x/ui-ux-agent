@@ -1,10 +1,10 @@
-import { relative, sep } from 'node:path';
 import type { AuditRun } from './audits/contract.js';
 import type {
   VisualComparison,
   VisualStatus,
 } from './audits/visual-contract.js';
 import type { Quality, Result } from './results.js';
+import { fileHref } from './evidence/links.js';
 import { summarize } from './summary.js';
 import { frictionHTML } from './friction/report.js';
 import { performanceHTML } from './performance-report.js';
@@ -70,8 +70,7 @@ export function reportHTML(
   name: string,
   results: Result[],
   directory: string,
-  href: (file: string) => string = (file) =>
-    relative(directory, file).split(sep).join('/'),
+  href: (file: string) => string = (file) => fileHref(directory, file),
 ): string {
   const link = (file: string) => escapeHTML(href(file));
   const verdicts = { pass: 0, fail: 0, not_evaluated: 0 };

@@ -1,17 +1,20 @@
 // comparison.html: the human-readable view of a comparison (comparison.json
 // holds the same data). Local evidence links are relative to the output
 // directory; nothing is uploaded.
-import { relative, sep } from 'node:path';
 import type { Comparison, FindingInstance } from './compare.js';
 import { escapeHTML } from './report.js';
+import { fileHref } from './evidence/links.js';
 import { performanceComparisonHTML } from './performance-report.js';
 
 export function comparisonHTML(
   comparison: Comparison,
   outDirectory: string,
 ): string {
-  const link = (file: string) =>
-    encodeURI(relative(outDirectory, file).split(sep).join('/'));
+  const link = (file: string) => {
+    const href = fileHref(outDirectory, file);
+    // A file: URL is already encoded.
+    return href.startsWith('file:') ? href : encodeURI(href);
+  };
   const identity = (side: 'base' | 'candidate') => {
     const run = comparison[side];
     const id = run.identity;

@@ -11,7 +11,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { parseResults, type Result } from './results.js';
 import { RUN_MANIFEST, runManifestSchema } from './evidence/retention.js';
@@ -128,9 +128,16 @@ export type ApprovalDecision = {
 export const visualKeyText = (key: VisualKey) =>
   `${key.journey}/${key.viewport}${key.environment ? `@${key.environment}` : ''}/${key.checkpoint}`;
 
+// Strictly below `directory`. On Windows a file on another drive is relative
+// to nothing: relative() returns it absolute.
 function inside(directory: string, file: string): boolean {
   const path = relative(directory, file);
-  return !!path && !path.startsWith('..') && !path.startsWith(sep);
+  return (
+    !!path &&
+    !isAbsolute(path) &&
+    path !== '..' &&
+    !path.startsWith(`..${sep}`)
+  );
 }
 
 // A token the evidence redactor leaves in place of a match.
