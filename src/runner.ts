@@ -386,6 +386,8 @@ async function runJourney(
   // Consecutive executed actions that stayed on the same page path.
   let dwellSteps = 0;
   const stalledPages = new Set<string>();
+  // Modal dialogs already reported as leaving no page action, by name.
+  const blockingDialogs = new Set<string>();
   let stage = 'start';
   let staleActions = 0;
   let actionErrors = 0;
@@ -507,13 +509,47 @@ async function runJourney(
       }
     else setupProblem = 'ready';
     if (setupProblem) {
-      if (setupProblem === 'ready')
+      if (setupProblem === 'ready') {
+        // A modal dialog (a cookie banner) hides the page from visible
+        // checks, and setup, which could dismiss it, runs only after ready.
+        let modal: { name: string; screenshot: string } | null = null;
+        try {
+          const blocked = await session.observe(
+            -1,
+            join(directory, 'ready.png'),
+          );
+          if (blocked.visibleViewport.modal !== undefined)
+            modal = {
+              name: blocked.visibleViewport.modal,
+              screenshot: blocked.screenshot,
+            };
+        } catch {
+          // The page could not be observed: report the plain failure.
+        }
+        if (modal) {
+          const dialog = `a modal dialog${modal.name ? ` "${modal.name}"` : ''}`;
+          await log('blocking_dialog', {
+            journey: journey.id,
+            viewport,
+            step: -1,
+            dialog: modal.name,
+          });
+          result.findings.push({
+            kind: 'observed',
+            category: 'blocking-dialog',
+            description: `${dialog[0]!.toUpperCase()}${dialog.slice(1)} covered the page before ready was reached`,
+            step: -1,
+            screenshot: modal.screenshot,
+          });
+        }
         decide(
           'ready_not_reached',
-          'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector',
-          { step: -1 },
+          modal
+            ? `Ready assertion was not reached while ${modal.name ? `a modal dialog "${modal.name}"` : 'a modal dialog'} covers the page: check readiness with something it does not hide (anyRendered or a path), then dismiss it with a setup interaction`
+            : 'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector',
+          { step: -1, ...(modal ? { screenshot: modal.screenshot } : {}) },
         );
-      else
+      } else
         decide(setupCode, setupProblem, {
           step: -1,
           screenshot: setupScreenshot,
@@ -664,6 +700,32 @@ async function runJourney(
         }
         stage = 'candidates';
         const actions = await session.candidates();
+        // A modal dialog (a cookie banner, a sign-up prompt) whose controls
+        // are not offered leaves the agent only waiting, scrolling or going
+        // back. Reported once per dialog, so the report says why it stalled.
+        const modal = observation.visibleViewport.modal;
+        if (
+          modal !== undefined &&
+          !blockingDialogs.has(modal) &&
+          actions.every((action) =>
+            ['wait', 'back', 'scroll'].includes(action.kind),
+          )
+        ) {
+          blockingDialogs.add(modal);
+          await log('blocking_dialog', {
+            journey: journey.id,
+            viewport,
+            step,
+            dialog: modal,
+          });
+          result.findings.push({
+            kind: 'observed',
+            category: 'blocking-dialog',
+            description: `A modal dialog${modal ? ` "${modal}"` : ''} covers the page and none of its controls is offered; dismiss it with a setup interaction, or add its controls' role to discoverRoles`,
+            step,
+            screenshot: observation.screenshot,
+          });
+        }
         const currentPlanState = {
           url: observation.url,
           actions: actionSignature(actions),

@@ -487,6 +487,17 @@ test('a keyboard-only run reaches its goal with keys, checks its declared states
       journeys: [
         {
           ...journeyConfig,
+          // Saving is configured explicitly: Enter on a control named Save
+          // is otherwise withheld (WEB_BLOCKED_CONTROLS).
+          interactions: [
+            ...journeyConfig.interactions,
+            {
+              kind: 'press',
+              key: 'Enter',
+              target: role('button', 'Save settings'),
+              description: 'Save the settings',
+            },
+          ],
           states: [
             {
               name: 'settings-open',

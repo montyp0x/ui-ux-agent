@@ -354,6 +354,7 @@ export async function playwrightDriver(
             suite.baseURL,
             suite.allowedOrigins,
             log,
+            suite.blockedControls,
           );
         },
         async repeatState(action) {

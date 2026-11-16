@@ -246,6 +246,35 @@ export const DEFAULT_BLOCKED_CONTROLS = [
   '\\b(save|export|overwrite|replace|rename|duplicate|move to)\\b',
 ];
 
+// The web's counterpart: control names the browser driver never discovers
+// (discoverRoles, <details> summaries) or activates with Enter or Space in a
+// keyboard-only journey, unless a suite configures them explicitly as
+// interactions. Write requests are blocked by default, but not what a page
+// does in the browser, through GET endpoints or through an allowed write.
+// Narrower than the native list: closing a dialog, pausing media or a
+// "Sort order" button are ordinary page actions. Suites add patterns with
+// blockedControls.
+export const WEB_BLOCKED_CONTROLS = [
+  '\\b(delete|remove|erase|trash|discard|destroy)\\b',
+  '\\b(send|post|publish|share|submit)\\b',
+  '\\b(buy|purchase|pay|subscribe|unsubscribe|donate|checkout|upgrade)\\b',
+  '\\b(place|confirm|submit) order\\b',
+  '\\b(log ?out|sign ?out|deactivate|disable|disconnect|unlink|revoke)\\b',
+  '\\b(empty|reset|wipe)\\b',
+  '\\b(install|uninstall|save|overwrite|replace|rename|duplicate|move to)\\b',
+];
+
+// Whether a web control's name is blocked (WEB_BLOCKED_CONTROLS and the
+// suite's own blockedControls).
+export function webBlocked(
+  name: string,
+  suitePatterns: readonly string[] = [],
+): boolean {
+  return [...WEB_BLOCKED_CONTROLS, ...suitePatterns].some((pattern) =>
+    new RegExp(pattern, 'i').test(name),
+  );
+}
+
 // Additionally blocked for menu commands: they reveal files, leave the window,
 // or act outside the app. Matched against each menu path segment.
 export const MENU_BLOCKED_CONTROLS = [
@@ -438,6 +467,16 @@ const suiteObject = z
           });
         directories.set(directory, run);
       }
+    // Both drivers apply blockedControls (native and web lists differ).
+    for (const pattern of suite.blockedControls)
+      try {
+        new RegExp(pattern, 'i');
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Invalid blockedControls regex ${pattern}`,
+        });
+      }
     if (suite.platform === 'macos') {
       if (!suite.app)
         ctx.addIssue({ code: 'custom', message: 'macOS suites need app' });
@@ -454,15 +493,6 @@ const suiteObject = z
           message:
             'Web request and session settings do not apply to macOS suites',
         });
-      for (const pattern of suite.blockedControls)
-        try {
-          new RegExp(pattern, 'i');
-        } catch {
-          ctx.addIssue({
-            code: 'custom',
-            message: `Invalid blockedControls regex ${pattern}`,
-          });
-        }
       const targets = suite.journeys.flatMap((journey) => [
         ...journey.interactions.map((interaction) => interaction.target),
         ...[
@@ -789,6 +819,9 @@ export type Viewport = {
   canScrollUp: boolean;
   canScrollDown: boolean;
   scrollRegions: ScrollRegion[];
+  // The name of the open modal dialog that limits what is visible to its own
+  // content ('' when it has none); absent without one. Web only.
+  modal?: string;
 };
 export type Observation = {
   step: number;

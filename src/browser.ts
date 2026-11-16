@@ -16,7 +16,7 @@ import type {
   Suite,
   Target,
 } from './contracts.js';
-import { fillValue } from './contracts.js';
+import { fillValue, webBlocked } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
 import {
@@ -56,7 +56,7 @@ type Guard =
     };
 // Evidence that an offered candidate changed while its guard was being bound.
 type Skip = {
-  reason: 'detached' | 'ambiguous' | 'replaced' | 'no_recipient';
+  reason: 'detached' | 'ambiguous' | 'replaced' | 'no_recipient' | 'blocked';
   matches?: number;
   detail?: string;
 };
@@ -302,7 +302,12 @@ async function bind(
   }
   // Key actions belong to keyboard-only journeys (playwright-keyboard.ts).
   if (action.kind === 'key') return { reason: 'no_recipient' };
-  return bindControl(locate(page, action.target), (element, state) =>
+  const target =
+    action.kind === 'link'
+      ? await linkLocator(page, action)
+      : locate(page, action.target);
+  if (!target) return { reason: 'detached', matches: 0 };
+  return bindControl(target, (element, state) =>
     guards.set(action, {
       kind: 'control',
       url,
@@ -311,6 +316,71 @@ async function bind(
       dialogs: visibleDialogs,
     }),
   );
+}
+
+// A link's destination as the browser follows it: its href against the
+// document's base URL (which <base href> sets), not the page URL. Null
+// without a usable href.
+const resolvedHref = (element: globalThis.Element): string | null => {
+  const raw = element.getAttribute('href');
+  if (raw === null) return null;
+  try {
+    return new URL(raw, element.baseURI).href;
+  } catch {
+    return null;
+  }
+};
+
+// The elements that can be offered links (a role of link and an href; links
+// without one are never offered), with this href attribute.
+const linksWithHref = (href: string) =>
+  `:is(a, area, [role="link"])[href="${href.replace(/["\\]/g, '\\$&').replace(/\n/g, '\\a ')}"]`;
+
+// The element a link action opens: the first link in the viewport that leads
+// to its destination and has its name. A name alone can match several (a
+// header and a footer, desktop and mobile navigation, "Learn more" on every
+// card). Copies are found by their href attribute first, with a CSS query: a
+// role query computes every link's accessible name, milliseconds per query
+// on a large page, and binding re-resolves the locator several times. A link
+// alone with its href is located by it, so a removed link matches nothing
+// rather than a neighbour; only copies with the same destination are told
+// apart by position. Null when no link matches.
+async function linkLocator(
+  page: Page,
+  action: Extract<Action, { kind: 'link' }>,
+): Promise<Locator | null> {
+  const attributes = await page
+    .locator(':is(a, area, [role="link"])[href]')
+    .evaluateAll(
+      (elements, href) => [
+        ...new Set(
+          elements.flatMap((element) => {
+            const raw = element.getAttribute('href')!;
+            try {
+              // As resolvedHref.
+              return new URL(raw, element.baseURI).href === href ? [raw] : [];
+            } catch {
+              return [];
+            }
+          }),
+        ),
+      ],
+      action.href,
+    );
+  const named = locate(page, action.target);
+  for (const attribute of attributes) {
+    const copies = page.locator(linksWithHref(attribute));
+    const count = await copies.count();
+    for (let index = 0; index < count; index++) {
+      const link = count === 1 ? copies : copies.nth(index);
+      if (
+        (await inViewport(page, link).catch(() => false)) &&
+        (await link.and(named).count()) === 1
+      )
+        return link;
+    }
+  }
+  return null;
 }
 
 export function locate(page: Page, target: Target): Locator {
@@ -452,6 +522,21 @@ async function scrollState(page: Page): Promise<Observation['scroll']> {
   });
 }
 
+// Authentication routes a journey never enters: signing in or out changes
+// the session the run depends on (a GET sign-out link ends it). Path
+// segments in their common spellings, with or without a file extension.
+const AUTH_STEP = String.raw`auth|(?:log|sign)[-_]?(?:in|out|off)|(?:user)?log(?:in|out)`;
+const AUTH_PATH = new RegExp(
+  String.raw`(^|/)(?:${AUTH_STEP})(?:\.\w+)?(?:/|$)`,
+  'i',
+);
+const AUTH_QUERY = new RegExp(
+  String.raw`^(?:[\w.-]*[:/])?(?:${AUTH_STEP}|createaccount)$`,
+  'i',
+);
+// A link named for signing in or out, whatever its route (/session/destroy).
+export const AUTH_LINK_NAME = /\b(?:log|sign)[\s_-]*(?:in|out|off)\b/i;
+
 export function allowedURL(
   value: string,
   baseURL: string,
@@ -470,8 +555,12 @@ export function allowedURL(
     )
       return false;
     const pathname = decodeURIComponent(url.pathname);
-    if (/(^|\/)(auth|login|logout|sign-out)(\/|$)/i.test(pathname))
-      return false;
+    if (AUTH_PATH.test(pathname)) return false;
+    // Query-routed sign-in and sign-out (?action=logout, MediaWiki's
+    // title=Special:UserLogout): a parameter whose value is the auth step
+    // itself, not a value that merely mentions it (?q=login+help).
+    for (const value of url.searchParams.values())
+      if (AUTH_QUERY.test(value)) return false;
     return paths.some((path) =>
       path === '/'
         ? pathname === '/'
@@ -605,11 +694,19 @@ export async function candidates(
   baseURL: string,
   origins: string[] = [],
   log?: EventLogger,
+  // The suite's own blockedControls, added to WEB_BLOCKED_CONTROLS.
+  blockedControls: readonly string[] = [],
 ): Promise<Action[]> {
   await releaseActions(page);
   // Keyboard-only journeys are offered key presses only.
   if (journey.input === 'keyboard') {
-    const offered = await keyboardCandidates(page, journey);
+    const offered = await keyboardCandidates(
+      page,
+      journey,
+      baseURL,
+      origins,
+      blockedControls,
+    );
     offeredNames.set(page, []);
     return offered;
   }
@@ -627,68 +724,135 @@ export async function candidates(
       ...skipped,
     });
   try {
-    const counts = new Map<string, number>();
-    const observed: { name: string; href: string; control: string }[] = [];
-    const links = (await page.getByRole('link').elementHandles()) as Element[];
+    // Visible links in scope, one action per accessible name and destination.
+    // Pages repeat links (a header and a footer, desktop and mobile
+    // navigation): copies with the same name and destination are one action,
+    // bound to a copy in the viewport (linkLocator). A name that leads to
+    // several destinations ("Learn more" on every card) names each one.
+    const observed = new Map<
+      string,
+      { name: string; href: string; control: string }
+    >();
+    const all = page.getByRole('link');
+    const links = (await all.elementHandles()) as Element[];
     discovered.push(...links);
     for (const link of links) {
       const control = await visibleName(link);
       if (control === null) continue;
-      // One evaluation reads every field from the same element.
+      // One evaluation reads every field from the same element: a page with
+      // many links pays for each round trip per link, on every step.
       const read = await link.evaluate((element) => {
+        const raw = element.getAttribute('href');
+        let href: string | null = null;
+        try {
+          // As resolvedHref: against the document's base URL.
+          if (raw !== null) href = new URL(raw, element.baseURI).href;
+        } catch {
+          // An unparseable href leads nowhere.
+        }
+        // The accessible name as getByRole matches it, computed here for
+        // the common case: a label, else the text with image alt text and
+        // collapsed whitespace. Null where that could differ from the
+        // browser's (hidden parts, nested roles and labels, SVG), which
+        // the accessibility snapshot names instead.
         const labelledBy = element.getAttribute('aria-labelledby');
-        const name =
-          element.getAttribute('aria-label') ??
-          (labelledBy
+        let name: string | null =
+          labelledBy !== null
             ? labelledBy
                 .split(/\s+/)
                 .map((id) => document.getElementById(id)?.textContent ?? '')
                 .join(' ')
-            : null) ??
-          (element.textContent?.trim() || element.getAttribute('title') || '');
+            : element.getAttribute('aria-label');
+        // Text alone, or a single image alone: block-level parts (a card
+        // whose heading and summary are one link) and line breaks add spaces
+        // the text content lacks, and an image beside text joins it in ways
+        // only the browser knows.
+        const images = element.querySelectorAll('img');
+        const text = element.textContent ?? '';
+        const imageOnly = images.length === 1 && !text.trim();
+        if (
+          name === null &&
+          (images.length === 0 || imageOnly) &&
+          !element.querySelector(
+            'svg, br, [aria-hidden], [role], [aria-label], [aria-labelledby]',
+          ) &&
+          // No named helpers in page code: the transpiler wraps them in a
+          // __name() call the page does not define.
+          [element, ...Array.from(element.querySelectorAll('*'))].every(
+            (part) => {
+              const style = getComputedStyle(part);
+              return (
+                (part === element || style.display === 'inline') &&
+                style.visibility !== 'hidden' &&
+                ['::before', '::after'].every((pseudo) =>
+                  ['none', 'normal'].includes(
+                    getComputedStyle(part, pseudo).content,
+                  ),
+                )
+              );
+            },
+          )
+        )
+          name =
+            (imageOnly ? images[0]!.getAttribute('alt') : text) ||
+            element.getAttribute('title') ||
+            '';
         return {
-          name,
-          href: element.getAttribute('href'),
+          href,
+          name: name === null ? null : name.replace(/\s+/g, ' ').trim(),
+          // Names a link that was removed meanwhile in the skip log.
+          label:
+            element.getAttribute('aria-label') ??
+            (element.textContent?.trim() || undefined),
           target: element.getAttribute('target'),
           connected: element.isConnected,
         };
       });
       if (!read.connected) {
-        await skip({ role: 'link', name: read.name, reason: 'detached' });
+        await skip({ role: 'link', name: read.label, reason: 'detached' });
         continue;
       }
-      let resolved: string;
-      try {
-        resolved = new URL(read.href ?? '', page.url()).href;
-      } catch {
-        continue;
-      }
+      const href = read.href;
       if (
-        !read.name ||
-        !read.href ||
-        !allowedURL(resolved, baseURL, journey.allowedPaths, origins) ||
-        read.target === '_blank'
+        !href ||
+        read.target === '_blank' ||
+        !allowedURL(href, baseURL, journey.allowedPaths, origins)
       )
         continue;
-      counts.set(read.name, (counts.get(read.name) ?? 0) + 1);
-      observed.push({ name: read.name, href: resolved, control });
-    }
-    for (const link of observed) {
-      const target: Target = { by: 'role', role: 'link', name: link.name };
-      if (
-        counts.get(link.name) === 1 &&
-        (await locate(page, target).count()) === 1
-      ) {
-        const action: Action = {
-          kind: 'link',
-          id: `a${out.length}`,
-          description: `Open ${link.name}`,
-          target,
-          href: link.href,
-        };
-        names.set(action, link.control);
-        out.push(action);
+      let name = read.name;
+      if (name === null) {
+        const snapshot = await snapshotOf(all, link);
+        if (!('snapshot' in snapshot)) {
+          await skip({ role: 'link', ...snapshot });
+          continue;
+        }
+        name = snapshotName(snapshot.snapshot);
       }
+      if (!name) continue;
+      // Sign-in and sign-out links whose route does not say so
+      // (/session/destroy): the same exclusion as AUTH_PATH, by name.
+      if (AUTH_LINK_NAME.test(name)) continue;
+      const key = JSON.stringify([name, href]);
+      if (!observed.has(key)) observed.set(key, { name, href, control });
+    }
+    const destinations = new Map<string, number>();
+    for (const { name } of observed.values())
+      destinations.set(name, (destinations.get(name) ?? 0) + 1);
+    for (const link of observed.values()) {
+      const where = new URL(link.href);
+      const action: Action = {
+        kind: 'link',
+        id: `a${out.length}`,
+        description:
+          (/^open\b/i.test(link.name) ? link.name : `Open ${link.name}`) +
+          ((destinations.get(link.name) ?? 0) > 1
+            ? ` (${where.pathname}${where.search}${where.hash})`
+            : ''),
+        target: { by: 'role', role: 'link', name: link.name },
+        href: link.href,
+      };
+      names.set(action, link.control);
+      out.push(action);
     }
     for (const interaction of journey.interactions) {
       const target = locate(page, interaction.target);
@@ -743,8 +907,8 @@ export async function candidates(
         const name = snapshotName(read.snapshot);
         if (name === null) continue;
         const target: Target = { by: 'role', role, name };
+        // Already offered as a configured interaction, which may be blocked.
         if (
-          (await locate(page, target).count()) !== 1 ||
           out.some(
             (action) =>
               'target' in action &&
@@ -752,11 +916,56 @@ export async function candidates(
           )
         )
           continue;
+        if (webBlocked(name, blockedControls)) {
+          await skip({ role, name, reason: 'blocked' });
+          continue;
+        }
+        if ((await locate(page, target).count()) !== 1) continue;
         const action: Action = {
           kind: 'click',
           id: `a${out.length}`,
           target,
           description: `Click ${role} ${name}`,
+        };
+        names.set(action, controlName);
+        out.push(action);
+      }
+    }
+    // <details> disclosures (FAQ accordions, "more options"): the summary
+    // toggles them like a button but has no button role to discover. Each
+    // is targeted by its text, and offered only when that text is unique.
+    if (journey.discoverRoles.includes('button')) {
+      const summaries = (await page
+        .locator('details > summary')
+        .elementHandles()) as Element[];
+      discovered.push(...summaries);
+      for (const summary of summaries) {
+        const controlName = await visibleName(summary);
+        if (controlName === null) continue;
+        const read = await summary.evaluate((element) => ({
+          name: (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          open: (element.parentElement as HTMLDetailsElement).open,
+          first: element.parentElement!.querySelector(':scope > summary') === element,
+        }));
+        // Only a details element's first summary toggles it.
+        if (!read.name || !read.first) continue;
+        if (webBlocked(read.name, blockedControls)) {
+          await skip({ role: 'summary', name: read.name, reason: 'blocked' });
+          continue;
+        }
+        // An anchored pattern: :text-is() misses text split across child
+        // elements (Returns <em>policy</em>).
+        const exact = `^${read.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+        const target: Target = {
+          by: 'css',
+          value: `details > summary:text-matches(${JSON.stringify(exact)})`,
+        };
+        if ((await locate(page, target).count()) !== 1) continue;
+        const action: Action = {
+          kind: 'click',
+          id: `a${out.length}`,
+          target,
+          description: `${read.open ? 'Collapse' : 'Expand'} ${read.name}`,
         };
         names.set(action, controlName);
         out.push(action);
@@ -975,8 +1184,12 @@ export async function execute(
     await page.waitForTimeout(550);
     return;
   }
-  const target = locate(page, action.target);
+  const target =
+    action.kind === 'link'
+      ? await linkLocator(page, action)
+      : locate(page, action.target);
   if (
+    !target ||
     (await target.count()) !== 1 ||
     !(await inViewport(page, target)) ||
     !(await target.isEnabled())
@@ -997,10 +1210,8 @@ export async function execute(
       'Stale observation: selected target or dialog context changed during selection',
     );
   if (action.kind === 'link') {
-    const href = await target.getAttribute('href');
     if (
-      !href ||
-      new URL(href, page.url()).href !== action.href ||
+      (await target.evaluate(resolvedHref)) !== action.href ||
       !allowedURL(action.href, baseURL, journey.allowedPaths, origins)
     )
       throw new Error('Selected link changed or left the journey scope');

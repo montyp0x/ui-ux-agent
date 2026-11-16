@@ -17,11 +17,12 @@ import type { AuditOutput } from '../audits/contract.js';
 import {
   KEYBOARD_KEYS,
   fillValue,
+  webBlocked,
   type Action,
   type Journey,
   type Observation,
 } from '../contracts.js';
-import { allowedURL, locate } from '../browser.js';
+import { AUTH_LINK_NAME, allowedURL, locate } from '../browser.js';
 
 type Element = ElementHandle<HTMLElement | SVGElement>;
 type Guard = {
@@ -393,18 +394,102 @@ export async function focusKey(page: Page): Promise<string> {
 }
 
 // The keyboard actions offered at the current state: every key in
+// The keys that would activate the focused element where a pointer journey
+// would never be offered it: Enter on a link that leaves the journey's scope
+// (a sign-in or sign-out link included, whatever its route), and Enter and
+// Space on a control whose name is blocked (WEB_BLOCKED_CONTROLS). Scope is
+// otherwise checked after a key navigated, which is too late for signing
+// out. A configured interaction on the element keeps its keys.
+async function activationWithheld(
+  page: Page,
+  focused: Element,
+  journey: Journey,
+  baseURL: string,
+  origins: string[],
+  blockedControls: readonly string[],
+): Promise<(typeof KEYBOARD_KEYS)[number][]> {
+  const read = await focused
+    .evaluate((element) => {
+      const raw = element.getAttribute('href');
+      let href: string | null = null;
+      try {
+        if (raw !== null) href = new URL(raw, element.baseURI).href;
+      } catch {
+        // An unparseable href leads nowhere.
+      }
+      // An <input type="submit"> is named by its value; a <button>, whose
+      // type is also "submit", by its text.
+      const value =
+        element instanceof HTMLInputElement &&
+        ['submit', 'button', 'reset'].includes(element.type)
+          ? element.value
+          : '';
+      const name =
+        (element.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .map((id) => (id ? (document.getElementById(id)?.textContent ?? '') : ''))
+          .join(' ')
+          .trim() ||
+        element.getAttribute('aria-label') ||
+        value ||
+        element.textContent ||
+        '';
+      return {
+        link: element.matches('a, area, [role="link"]') && href !== null,
+        href,
+        name: name.replace(/\s+/g, ' ').trim(),
+      };
+    })
+    .catch(() => null);
+  if (!read) return [];
+  const withheld: (typeof KEYBOARD_KEYS)[number][] =
+    read.link &&
+    (!allowedURL(read.href!, baseURL, journey.allowedPaths, origins) ||
+      AUTH_LINK_NAME.test(read.name))
+      ? ['Enter']
+      : !read.link && webBlocked(read.name, blockedControls)
+        ? ['Enter', 'Space']
+        : [];
+  if (!withheld.length) return [];
+  for (const interaction of journey.interactions) {
+    const target = locate(page, interaction.target);
+    if (
+      (await target.count()) === 1 &&
+      (await target.evaluate((element, current) => element === current, focused))
+    )
+      return [];
+  }
+  return withheld;
+}
+
 // KEYBOARD_KEYS, a configured fill or press whose target has focus, and wait.
 // Nothing that needs the pointer: no links, clicks, scrolling or history.
 export async function keyboardCandidates(
   page: Page,
   journey: Journey,
+  baseURL = page.url(),
+  origins: string[] = [],
+  // The suite's own blockedControls, added to WEB_BLOCKED_CONTROLS.
+  blockedControls: readonly string[] = [],
 ): Promise<Action[]> {
   await release(page);
   const url = page.url();
   const focused = await focusedElement(page);
   const { focus, modal } = await measure(page, 'peek');
   const where = focus ? `focus on ${focus.description}` : 'nothing focused';
-  const out: Action[] = KEYBOARD_KEYS.map((key) => ({
+  const withheld = focused
+    ? await activationWithheld(
+        page,
+        focused,
+        journey,
+        baseURL,
+        origins,
+        blockedControls,
+      )
+    : [];
+  const out: Action[] = KEYBOARD_KEYS.filter(
+    (key) => !withheld.includes(key),
+  ).map((key) => ({
     kind: 'key' as const,
     id: '',
     key,

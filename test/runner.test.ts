@@ -251,6 +251,33 @@ test('scope rejects external links, auth paths, prefix collisions and encoded tr
     );
 });
 
+test('scope rejects sign-in and sign-out routes in their common spellings, in paths and queries', () => {
+  const paths = ['/', '/sessions', '/w', '/users', '/blog'];
+  for (const url of [
+    '/sessions/logout',
+    '/sessions/log-out',
+    '/users/sign_out',
+    '/sessions/signout',
+    '/sessions/logoff',
+    '/sessions/SignIn',
+    '/sessions/logout.php',
+    '/w/index.php?title=Special:UserLogout&returnto=Main_Page',
+    '/w/index.php?title=Special:UserLogin',
+    '/w/index.php?title=Special:CreateAccount',
+    '/sessions?action=logout',
+    '/sessions?do=log-out',
+  ])
+    assert.equal(allowedURL(url, base.baseURL, paths), false, url);
+  // Words that only mention signing in are not the route itself.
+  for (const url of [
+    '/blog/login-tips',
+    '/sessions?q=login+help',
+    '/sessions/authors',
+    '/w/index.php?title=Login_systems',
+  ])
+    assert.equal(allowedURL(url, base.baseURL, paths), true, url);
+});
+
 test('request guard allows explicit read-only POST endpoints and blocks every other write', () => {
   const suite = suiteSchema.parse({
     ...base,
