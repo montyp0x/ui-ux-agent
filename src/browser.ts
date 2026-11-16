@@ -646,6 +646,49 @@ export async function check(page: Page, condition: Check): Promise<boolean> {
   );
 }
 
+// How a target reads in an explanation.
+const targetText = (target: Target): string =>
+  target.by === 'role'
+    ? `${target.role} "${target.name}"`
+    : `${target.by} "${target.value}"`;
+
+// Why a condition does not hold on the page now, for a failure the user has
+// to fix in the suite or the app: the target matches nothing, matches several
+// elements, is hidden or outside the viewport, or the path differs. Null
+// when it holds, or when the reason is the condition itself (a text pattern
+// that does not match, focus elsewhere).
+export async function explainCheck(
+  page: Page,
+  condition: Check,
+): Promise<string | null> {
+  if (await check(page, condition)) return null;
+  if (condition.kind === 'path')
+    return `the page path is ${new URL(page.url()).pathname}, which ${condition.pattern} does not match`;
+  const target = locate(page, condition.target);
+  const named = targetText(condition.target);
+  const count = await target.count();
+  if (condition.kind === 'notVisible')
+    return `${named} is visible`;
+  if (!count) return `${named} matches no element on the page`;
+  const single = ['visible', 'text', 'focused'].includes(condition.kind);
+  if (single && count > 1)
+    return `${named} matches ${count} elements; it must match exactly one`;
+  const elements = await target.all();
+  const visible = (
+    await Promise.all(elements.map((element) => element.isVisible()))
+  ).filter(Boolean).length;
+  if (!visible)
+    return `${named} matches ${count === 1 ? 'an element' : `${count} elements`} that ${count === 1 ? 'is' : 'are'} not visible`;
+  if (condition.kind !== 'anyRendered' && condition.kind !== 'focused') {
+    const inView = (
+      await Promise.all(elements.map((element) => inViewport(page, element)))
+    ).filter(Boolean).length;
+    if (!inView)
+      return `${named} is outside the viewport or covered (anyRendered accepts it anywhere on the page)`;
+  }
+  return null;
+}
+
 export async function observe(
   page: Page,
   step: number,

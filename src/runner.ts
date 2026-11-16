@@ -542,12 +542,24 @@ async function runJourney(
             screenshot: modal.screenshot,
           });
         }
+        // What the ready condition found instead (its target matches
+        // nothing, several elements, or a hidden one), so a target the page
+        // does not have is told apart from a page that did not load.
+        const why = modal
+          ? null
+          : await session.explain?.(journey.ready).catch(() => null);
         decide(
           'ready_not_reached',
           modal
             ? `Ready assertion was not reached while ${modal.name ? `a modal dialog "${modal.name}"` : 'a modal dialog'} covers the page: check readiness with something it does not hide (anyRendered or a path), then dismiss it with a setup interaction`
-            : 'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector',
-          { step: -1, ...(modal ? { screenshot: modal.screenshot } : {}) },
+            : why
+              ? `Ready assertion was not reached: ${why}. Check the configured target, authentication or data prerequisites`
+              : 'Ready assertion was not reached: check authentication, data prerequisites, or the configured selector',
+          {
+            step: -1,
+            ...(modal ? { screenshot: modal.screenshot } : {}),
+            ...(why ? { detail: why } : {}),
+          },
         );
       } else
         decide(setupCode, setupProblem, {

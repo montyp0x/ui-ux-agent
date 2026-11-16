@@ -788,6 +788,8 @@ Every result's `outcome` names why the journey ended with a stable `code`, its `
 | error | `run_cancelled` | cancelled | harness |
 | error | `journey_not_finished`, `unclassified_error` | unknown | unknown |
 
+A `ready_not_reached` result says what the ready condition found instead, also in `outcome.detail`: its target matches no element on the page, several elements, or one that is hidden or outside the viewport, or the page path differs; or that a modal dialog covers the page (see [Setup](#setup)). A target the page does not have is a suite to fix, not a page that failed to load.
+
 Only `source: "assertion"` is evidence about the application: an independent outcome assertion was evaluated. A loop, a missing path or an exhausted budget describes the agent's run, not a product defect, and causes the tests cannot tell apart stay `unknown`. A content wait cut short by the journey deadline is `budget_deadline`, not `content_readiness_timeout`. The outcome also records the deciding `stage` and `step`, a `detail` (first error line), and `evidence`: the deciding screenshot, the `events.jsonl` event names that record the decision, and the indices of `checks` that were false. `signals` counts stale actions, action errors, request-policy blocks and browser errors during the run; they may explain an outcome without being its cause.
 
 ### Quality verdict
