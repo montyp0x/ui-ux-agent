@@ -19,6 +19,7 @@ import type {
 import { fillValue } from './contracts.js';
 import { projectViewport } from './viewport.js';
 import { scrollGeometry } from './scroll.js';
+import { isPseudoLocalized, pseudoNamePattern } from './environments.js';
 import type { EventLogger } from './drivers/types.js';
 import {
   keyboardCandidates,
@@ -309,17 +310,25 @@ async function bind(
 }
 
 export function locate(page: Page, target: Target): Locator {
+  // Under pseudo-localization the page's text carries the harness's padding;
+  // names and labels match with it (src/environments.ts).
+  const pseudo = isPseudoLocalized(page);
   switch (target.by) {
     case 'testId':
       return page.getByTestId(target.value);
     case 'label':
-      return page.getByLabel(target.value, { exact: true });
+      return pseudo
+        ? page.getByLabel(pseudoNamePattern(target.value))
+        : page.getByLabel(target.value, { exact: true });
     case 'placeholder':
       return page.getByPlaceholder(target.value, { exact: true });
     case 'css':
       return page.locator(target.value);
     case 'role':
-      return page.getByRole(target.role, { name: target.name, exact: true });
+      return page.getByRole(target.role, {
+        name: pseudo ? pseudoNamePattern(target.name) : target.name,
+        exact: !pseudo,
+      });
   }
 }
 

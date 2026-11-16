@@ -15,6 +15,11 @@
 // assessed the same check (audit, checkpoint and page): a missing, errored,
 // unsupported, incomplete or unreached check leaves the base finding
 // `unassessed`, never resolved.
+//
+// performance.web measurements are compared per journey, viewport,
+// checkpoint, document path and metric, and only when both sides measured
+// under the same conditions in the same browser with the same metric
+// support; otherwise the entry is `incompatible`. There is no overall score.
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -33,6 +38,11 @@ import {
   type RunIdentity,
 } from './identity.js';
 import { RESULT_VERSION, parseResults, type Result } from './results.js';
+import {
+  PERFORMANCE_METRICS,
+  performanceMetricSchema,
+  type PerformanceMeasurement,
+} from './audits/performance-contract.js';
 import {
   gates,
   resolveGate,
@@ -60,6 +70,8 @@ export const findingInstanceSchema = z
     kind: z.enum(['audit', 'observed', 'hypothesis']),
     journey: z.string(),
     viewport: z.string(),
+    // The suite environment (src/environments.ts); absent without one.
+    environment: z.string().optional(),
     auditId: z.string().nullable(),
     ruleId: z.string().min(1),
     // The gate rule key: <audit id>/<rule id>, or finding/<category>.
@@ -157,6 +169,39 @@ export const gateFailureSchema = z
   .strict();
 export type GateFailure = z.infer<typeof gateFailureSchema>;
 
+const performanceSide = z
+  .object({
+    // Measurements (attempts) behind the median.
+    samples: count,
+    median: z.number(),
+    min: z.number(),
+    max: z.number(),
+  })
+  .strict()
+  .nullable();
+
+export const performanceComparisonSchema = z
+  .object({
+    journey: z.string(),
+    viewport: z.string(),
+    // The suite environment (src/environments.ts); absent without one.
+    // Measurements of different environments are never pooled or compared.
+    environment: z.string().optional(),
+    checkpoint: z.string().min(1),
+    path: z.string(),
+    metric: performanceMetricSchema,
+    // compared: both sides measured it under the same conditions.
+    // incompatible: the conditions, browser or metric support differ, so
+    // the values are not compared. not_measured: a side has no value.
+    status: z.enum(['compared', 'incompatible', 'not_measured']),
+    reason: z.string().nullable(),
+    base: performanceSide,
+    candidate: performanceSide,
+    // Candidate median minus base median; null unless compared.
+    delta: z.number().nullable(),
+  })
+  .strict();
+
 export const comparisonSchema = z
   .object({
     comparisonVersion: z.literal(COMPARISON_VERSION),
@@ -178,6 +223,7 @@ export const comparisonSchema = z
         .object({
           journey: z.string(),
           viewport: z.string(),
+          environment: z.string().optional(),
           base: sideOutcome,
           candidate: sideOutcome,
           // Passed in every base run, not in every candidate run.
@@ -222,6 +268,7 @@ export const comparisonSchema = z
         .object({
           journey: z.string(),
           viewport: z.string(),
+          environment: z.string().optional(),
           auditId: z.string().min(1),
           checkpoint: z.string().min(1),
           base: checkStateSchema,
@@ -231,6 +278,9 @@ export const comparisonSchema = z
         })
         .strict(),
     ),
+    // performance.web metrics of both runs (added within comparison version
+    // 1). Empty when the comparison is invalid or nothing was measured.
+    performance: z.array(performanceComparisonSchema),
     counts: z
       .object({
         new: count,
@@ -252,6 +302,7 @@ export const comparisonSchema = z
   })
   .strict();
 export type Comparison = z.infer<typeof comparisonSchema>;
+export type PerformanceComparison = Comparison['performance'][number];
 
 // ---------------------------------------------------------------- loading
 
@@ -528,6 +579,20 @@ const severityRank = (severity: Severity | null): number =>
 // The findings of one result, with stable identities.
 export function findingInstances(result: Result): FindingInstance[] {
   const marker = result.marker;
+  // Findings are per environment: the same rule on the same page in another
+  // environment is another finding. Without environments the ids are as
+  // before (the cell is the viewport name).
+  const environment = result.environment?.name;
+  // And per browser engine: the same environment renders differently on
+  // another engine. Chromium, the default, keeps the ids results had before
+  // engines were selectable (comparisons across engines are incompatible
+  // anyway; this keeps ids used outside a comparison, such as benchmark
+  // labels, apart).
+  const engine = result.identity?.environment.browser?.name;
+  const cell =
+    (environment ? `${result.viewport}@${environment}` : result.viewport) +
+    (engine && engine !== 'chromium' ? `#${engine}` : '');
+  const where = environment ? { environment } : {};
   const norm = (text: string): string =>
     marker ? text.replaceAll(marker, '{{marker}}') : text;
   const out = new Map<string, FindingInstance>();
@@ -554,7 +619,7 @@ export function findingInstances(result: Result): FindingInstance[] {
     const group = [
       'audit',
       result.journey,
-      result.viewport,
+      cell,
       finding.auditId,
       finding.ruleId,
       checkpoint,
@@ -575,6 +640,7 @@ export function findingInstances(result: Result): FindingInstance[] {
         kind: 'audit',
         journey: result.journey,
         viewport: result.viewport,
+        ...where,
         auditId: finding.auditId,
         ruleId: finding.ruleId,
         gateKey: `${finding.auditId}/${finding.ruleId}`,
@@ -603,7 +669,7 @@ export function findingInstances(result: Result): FindingInstance[] {
     const instanceId = hash16([
       'finding',
       result.journey,
-      result.viewport,
+      cell,
       finding.kind,
       finding.category,
       withoutDigits(norm(finding.description)),
@@ -614,6 +680,7 @@ export function findingInstances(result: Result): FindingInstance[] {
       kind: finding.kind,
       journey: result.journey,
       viewport: result.viewport,
+      ...where,
       auditId: null,
       ruleId: finding.category,
       gateKey: `finding/${finding.category}`,
@@ -654,14 +721,26 @@ function runInstances(results: Result[]): Map<string, FindingInstance> {
 
 // ------------------------------------------------------------- coverage
 
-const pairKey = (journey: string, viewport: string) =>
-  `${journey}\u0000${viewport}`;
+// Runs pair up per journey, viewport and environment: only like-for-like
+// runs are compared.
+const pairKey = (journey: string, viewport: string, environment?: string) =>
+  `${journey}\u0000${viewport}\u0000${environment ?? ''}`;
 const checkKey = (
   journey: string,
   viewport: string,
+  environment: string | undefined,
   auditId: string,
   checkpoint: string,
-) => [journey, viewport, auditId, checkpoint].join('\u0000');
+) => [journey, viewport, environment ?? '', auditId, checkpoint].join('\u0000');
+// journey/viewport, or journey/environment/viewport.
+const cellName = (entry: {
+  journey: string;
+  viewport: string;
+  environment?: string;
+}) =>
+  entry.environment
+    ? `${entry.journey}/${entry.environment}/${entry.viewport}`
+    : `${entry.journey}/${entry.viewport}`;
 
 const STATE_RANK: CheckState[] = [
   'assessed',
@@ -677,6 +756,7 @@ type Coverage = Map<
   {
     journey: string;
     viewport: string;
+    environment?: string;
     auditId: string;
     checkpoint: string;
     state: CheckState;
@@ -694,10 +774,18 @@ function coverage(results: Result[]): Coverage {
     state: CheckState,
     path: string | null | undefined,
   ) => {
-    const key = checkKey(result.journey, result.viewport, auditId, checkpoint);
+    const environment = result.environment?.name;
+    const key = checkKey(
+      result.journey,
+      result.viewport,
+      environment,
+      auditId,
+      checkpoint,
+    );
     const entry = map.get(key) ?? {
       journey: result.journey,
       viewport: result.viewport,
+      ...(environment ? { environment } : {}),
       auditId,
       checkpoint,
       state,
@@ -759,6 +847,7 @@ export function compareRuns(
     outcomes: [],
     findings: emptyFindings(),
     checks: [],
+    performance: [],
     counts: {
       new: 0,
       persisting: 0,
@@ -781,17 +870,25 @@ export function compareRuns(
   // Functional outcomes per journey/viewport.
   const pairs = new Map<
     string,
-    { journey: string; viewport: string; base: Result[]; candidate: Result[] }
+    {
+      journey: string;
+      viewport: string;
+      environment?: string;
+      base: Result[];
+      candidate: Result[];
+    }
   >();
   for (const [side, results] of [
     ['base', baseResults],
     ['candidate', candidateResults],
   ] as const)
     for (const result of results) {
-      const key = pairKey(result.journey, result.viewport);
+      const environment = result.environment?.name;
+      const key = pairKey(result.journey, result.viewport, environment);
       const entry = pairs.get(key) ?? {
         journey: result.journey,
         viewport: result.viewport,
+        ...(environment ? { environment } : {}),
         base: [],
         candidate: [],
       };
@@ -812,11 +909,12 @@ export function compareRuns(
     comparison.outcomes.push({
       journey: pair.journey,
       viewport: pair.viewport,
+      ...(pair.environment ? { environment: pair.environment } : {}),
       base: b,
       candidate: c,
       regression,
     });
-    const name = `${pair.journey}/${pair.viewport}`;
+    const name = cellName(pair);
     if (b && !c && gate.unassessed === 'fail')
       failures.push({
         code: 'run_missing',
@@ -854,6 +952,7 @@ export function compareRuns(
     comparison.checks.push({
       journey: entry.journey,
       viewport: entry.viewport,
+      ...(entry.environment ? { environment: entry.environment } : {}),
       auditId: entry.auditId,
       checkpoint: entry.checkpoint,
       base: baseState,
@@ -863,7 +962,7 @@ export function compareRuns(
     if (coverageLost && gate.unassessed === 'fail')
       failures.push({
         code: 'coverage_lost',
-        message: `${entry.auditId} at ${entry.checkpoint} on ${entry.journey}/${entry.viewport} was assessed in the base and is ${candidateState} in the candidate`,
+        message: `${entry.auditId} at ${entry.checkpoint} on ${cellName(entry)} was assessed in the base and is ${candidateState} in the candidate`,
         finding: null,
       });
   }
@@ -878,7 +977,7 @@ export function compareRuns(
       instance,
     ]);
   const label = (instance: FindingInstance) =>
-    `${instance.gateKey}${instance.severity ? ` (${instance.severity})` : ''} on ${instance.journey}/${instance.viewport}${instance.checkpoint ? ` at ${instance.checkpoint}` : ''}${instance.path ? ` ${instance.path}` : ''}${instance.target ? `: ${instance.target.selector ?? instance.target.description}` : ''}`;
+    `${instance.gateKey}${instance.severity ? ` (${instance.severity})` : ''} on ${cellName(instance)}${instance.checkpoint ? ` at ${instance.checkpoint}` : ''}${instance.path ? ` ${instance.path}` : ''}${instance.target ? `: ${instance.target.selector ?? instance.target.description}` : ''}`;
   for (const instance of baseFindings.values()) {
     const found = candidateFindings.get(instance.id);
     if (found) {
@@ -906,7 +1005,9 @@ export function compareRuns(
     }
     const unassessed = whyUnassessed(
       instance,
-      pairs.get(pairKey(instance.journey, instance.viewport))?.candidate
+      pairs.get(
+        pairKey(instance.journey, instance.viewport, instance.environment),
+      )?.candidate
         .length ?? 0,
       candidateCoverage,
       candidateGroups,
@@ -957,8 +1058,148 @@ export function compareRuns(
     coverageLost: comparison.checks.filter((check) => check.coverageLost)
       .length,
   };
+  comparison.performance = comparePerformance(baseResults, candidateResults);
   comparison.gate = { passed: !failures.length, config: gate, failures };
   return comparison;
+}
+
+// ------------------------------------------------------------ performance
+
+type Measured = {
+  journey: string;
+  viewport: string;
+  environment?: string;
+  checkpoint: string;
+  path: string;
+  measurements: PerformanceMeasurement[];
+};
+
+function measurementsOf(results: Result[]): Map<string, Measured> {
+  const out = new Map<string, Measured>();
+  for (const result of results)
+    for (const run of result.audits.runs) {
+      if (run.auditId !== 'performance.web' || !run.performance) continue;
+      const path = run.performance.document.path;
+      // Per environment, like runs and findings: a dark-mode measurement is
+      // never pooled with a light one. The engine is not in the key but in
+      // conditionsKey, so another engine's values are incompatible.
+      const environment = result.environment?.name;
+      const key = canonicalJSON([
+        result.journey,
+        result.viewport,
+        environment ?? null,
+        run.checkpoint.id,
+        path,
+      ]);
+      const entry = out.get(key) ?? {
+        journey: result.journey,
+        viewport: result.viewport,
+        ...(environment ? { environment } : {}),
+        checkpoint: run.checkpoint.id,
+        path,
+        measurements: [],
+      };
+      entry.measurements.push(run.performance);
+      out.set(key, entry);
+    }
+  return out;
+}
+
+// What must match for two measurements to be compared.
+const conditionsKey = (measurement: PerformanceMeasurement) =>
+  canonicalJSON({
+    conditions: measurement.conditions,
+    browser: measurement.browser,
+    unsupported: measurement.unsupported,
+  });
+
+function stats(values: number[]): z.infer<typeof performanceSide> {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2
+      ? sorted[middle]!
+      : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  return {
+    samples: sorted.length,
+    median: Math.round(median * 10000) / 10000,
+    min: sorted[0]!,
+    max: sorted.at(-1)!,
+  };
+}
+
+export function comparePerformance(
+  base: Result[],
+  candidate: Result[],
+): PerformanceComparison[] {
+  const baseMeasured = measurementsOf(base);
+  const candidateMeasured = measurementsOf(candidate);
+  const out: PerformanceComparison[] = [];
+  for (const key of new Set([
+    ...baseMeasured.keys(),
+    ...candidateMeasured.keys(),
+  ])) {
+    const a = baseMeasured.get(key);
+    const b = candidateMeasured.get(key);
+    const where = (a ?? b)!;
+    const keys = (entry: Measured | undefined) =>
+      new Set(entry?.measurements.map(conditionsKey) ?? []);
+    const baseKeys = keys(a);
+    const candidateKeys = keys(b);
+    let incompatible: string | null = null;
+    if (baseKeys.size > 1 || candidateKeys.size > 1)
+      incompatible =
+        'One run measured this document under different conditions or browsers';
+    else if (a && b && [...baseKeys][0] !== [...candidateKeys][0]) {
+      const x = a.measurements[0]!;
+      const y = b.measurements[0]!;
+      incompatible = `Measured under different conditions, browser or metric support (base ${x.browser}: ${canonicalJSON(x.conditions)}; candidate ${y.browser}: ${canonicalJSON(y.conditions)})`;
+    }
+    for (const metric of PERFORMANCE_METRICS) {
+      const values = (entry: Measured | undefined) =>
+        (entry?.measurements ?? []).flatMap((measurement) => {
+          const value = measurement.metrics[metric];
+          return value === null ? [] : [value];
+        });
+      const baseStats = stats(values(a));
+      const candidateStats = stats(values(b));
+      if (!baseStats && !candidateStats) continue;
+      const compared = !incompatible && baseStats && candidateStats;
+      out.push({
+        journey: where.journey,
+        viewport: where.viewport,
+        ...(where.environment ? { environment: where.environment } : {}),
+        checkpoint: where.checkpoint,
+        path: where.path,
+        metric,
+        status: incompatible
+          ? 'incompatible'
+          : compared
+            ? 'compared'
+            : 'not_measured',
+        reason:
+          incompatible ??
+          (compared
+            ? null
+            : `Only the ${baseStats ? 'base' : 'candidate'} run has a value`),
+        base: baseStats,
+        candidate: candidateStats,
+        delta: compared
+          ? Math.round((candidateStats.median - baseStats.median) * 10000) /
+            10000
+          : null,
+      });
+    }
+  }
+  return out.sort(
+    (x, y) =>
+      x.journey.localeCompare(y.journey) ||
+      x.viewport.localeCompare(y.viewport) ||
+      (x.environment ?? '').localeCompare(y.environment ?? '') ||
+      x.checkpoint.localeCompare(y.checkpoint) ||
+      x.path.localeCompare(y.path),
+  );
 }
 
 // Null when the candidate assessed the base finding's check; otherwise why
@@ -972,7 +1213,7 @@ function whyUnassessed(
   if (!candidateRuns)
     return {
       reason: 'run_missing',
-      detail: `The candidate did not run ${instance.journey}/${instance.viewport}`,
+      detail: `The candidate did not run ${cellName(instance)}`,
     };
   // A run finding is assessed by the run itself.
   if (instance.kind !== 'audit') return null;
@@ -980,6 +1221,7 @@ function whyUnassessed(
     checkKey(
       instance.journey,
       instance.viewport,
+      instance.environment,
       instance.auditId!,
       instance.checkpoint!,
     ),

@@ -237,6 +237,7 @@ export async function visualBaselinePlaywrightAudit(
     journey: request.scope.journey,
     checkpoint: request.checkpoint.id,
     viewport: request.viewport.name,
+    ...(request.environment ? { environment: request.environment } : {}),
   });
   const limitations = await settle(page, config.networkIdleMs, deadline);
   const masks = await visualMasks(page, config.mask);

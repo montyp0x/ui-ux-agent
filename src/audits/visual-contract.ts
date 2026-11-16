@@ -32,6 +32,10 @@ export const visualKeySchema = z
     // The audit checkpoint: ready, state:<name> or completion.
     checkpoint: z.string().regex(/^(ready|completion|state:[a-z0-9-]+)$/),
     viewport: z.string().regex(/^[a-z0-9-]+$/),
+    // The suite environment (src/environments.ts), for suites with
+    // environments: each keeps its own baselines, so a dark or pseudo-
+    // localized capture is never compared with another environment's.
+    environment: z.string().regex(/^[a-z0-9-]+$/).optional(),
   })
   .strict();
 export type VisualKey = z.infer<typeof visualKeySchema>;

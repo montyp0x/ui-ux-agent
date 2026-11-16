@@ -7,6 +7,10 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 import { modelOptionsFromEnv } from '../config.js';
 import { suiteSchema, type Suite } from '../contracts.js';
+import {
+  loadDesignTokens,
+  referencedTokenFiles,
+} from '../audits/design-tokens.js';
 import type { ModelOptions } from '../models.js';
 
 export const BENCHMARK_VERSION = 1;
@@ -76,7 +80,10 @@ export const targetSchema = z
       .regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase letters, digits and -'),
     // Suite file, relative to the benchmark config.
     suite: z.string().min(1),
-    // Optional pin of the suite file's contents; a mismatch is refused.
+    // Optional pin of the suite's contents; a mismatch is refused. The
+    // SHA-256 of the suite file, or, when the suite references design token
+    // files, of {suite, tokens} (see suiteDigest), so a token file edit
+    // breaks the pin too.
     sha256: z
       .string()
       .regex(/^[0-9a-f]{64}$/)
@@ -143,6 +150,23 @@ export type LoadedBenchmark = {
 const sha256 = (data: string | Buffer) =>
   createHash('sha256').update(data).digest('hex');
 
+// What a target's sha256 pins: the suite file's SHA-256 when it references
+// no token file (unchanged for such suites); otherwise the SHA-256 of
+// {"suite": <suite sha256>, "tokens": {<path>: <file sha256>, ...}} with the
+// paths as written in the suite, in sorted order.
+async function suiteDigest(
+  bytes: Buffer,
+  suitePath: string,
+  tokenFiles: string[],
+): Promise<string> {
+  const suite = sha256(bytes);
+  if (!tokenFiles.length) return suite;
+  const tokens: Record<string, string> = {};
+  for (const file of tokenFiles)
+    tokens[file] = sha256(await readFile(resolve(dirname(suitePath), file)));
+  return sha256(JSON.stringify({ suite, tokens }));
+}
+
 // Reads and validates the config and every target suite.
 export async function loadBenchmark(path: string): Promise<LoadedBenchmark> {
   const absolute = resolve(path);
@@ -152,12 +176,14 @@ export async function loadBenchmark(path: string): Promise<LoadedBenchmark> {
   for (const target of config.targets) {
     const suitePath = resolve(dirname(absolute), target.suite);
     const bytes = await readFile(suitePath);
-    const digest = sha256(bytes);
+    const unloaded = suiteSchema.parse(JSON.parse(bytes.toString('utf8')));
+    const tokenFiles = referencedTokenFiles(unloaded);
+    const digest = await suiteDigest(bytes, suitePath, tokenFiles);
     if (target.sha256 && target.sha256 !== digest)
       throw new Error(
-        `Target ${target.id}: ${target.suite} does not match its pinned sha256 (found ${digest}); review the suite and update the pin`,
+        `Target ${target.id}: ${target.suite}${tokenFiles.length ? ` with its token file${tokenFiles.length > 1 ? 's' : ''} ${tokenFiles.join(', ')}` : ''} does not match its pinned sha256 (found ${digest}); review the suite and update the pin`,
       );
-    const parsed = suiteSchema.parse(JSON.parse(bytes.toString('utf8')));
+    const parsed = await loadDesignTokens(unloaded, suitePath);
     if (
       target.journey &&
       !parsed.journeys.some((journey) => journey.id === target.journey)

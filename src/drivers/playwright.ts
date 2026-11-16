@@ -31,6 +31,23 @@ import {
 } from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
 import { focusKey } from './playwright-keyboard.js';
+import {
+  ENVIRONMENT_PROBE,
+  environmentContextOptions,
+  environmentProbeSchema,
+  markPseudoLocalized,
+  pseudoLocalizationScript,
+  unappliedSettings,
+} from '../environments.js';
+import {
+  ENGINE_GAPS,
+  engineAuditGap,
+  environmentEmulation,
+} from '../browser-support.js';
+import {
+  preparePerformance,
+  type PerformanceRecorder,
+} from './playwright-performance.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -91,6 +108,7 @@ export async function playwrightDriver(
       suite,
       journey,
       viewport,
+      environment,
       directory,
       storageState,
       video,
@@ -103,12 +121,16 @@ export async function playwrightDriver(
       // Written by the runner, not by Playwright, so the file is private
       // (0600) from the moment it exists.
       const capture = async (path: string) => {
+        const started = Date.now();
         const image = await protectedScreenshot(page, evidence?.screenshots, {
           fullPage: false,
         });
+        timing?.screenshot(Date.now() - started);
         await writeFile(path, image, { mode: 0o600 });
         return image;
       };
+      // Set once the page exists (performance.web suites only).
+      let timing: PerformanceRecorder | null = null;
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)
@@ -123,8 +145,17 @@ export async function playwrightDriver(
         await log('storage_state_scoped', report);
         scoped = state as BrowserContextOptions['storageState'];
       }
+      // Only what this engine is verified to emulate is applied; the rest of
+      // the environment is withheld and reported unsupported (never
+      // half-applied, never assumed).
+      const emulation = environment
+        ? environmentEmulation(browserName, environment)
+        : null;
+      const emulated = emulation?.environment ?? null;
       const contextOptions = {
         viewport,
+        // Locale, time zone and media emulation of the suite environment.
+        ...environmentContextOptions(emulated),
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
         ...(recorded ? { recordVideo: { dir: directory } } : {}),
@@ -139,6 +170,14 @@ export async function playwrightDriver(
       const page = browser
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
+      // Pseudo-localized long text: expand the application's text in every
+      // page the session loads (src/environments.ts).
+      if (emulated?.pseudoLocalization) {
+        await context.addInitScript({
+          content: pseudoLocalizationScript(emulated.pseudoLocalization),
+        });
+        markPseudoLocalized(page);
+      }
       if (!browser && profileVersion === null)
         profileVersion =
           /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
@@ -147,6 +186,14 @@ export async function playwrightDriver(
       // Option labels that name a secret choice become secrets before any
       // page text leaves the driver.
       const learn = () => learnSecretOptions(page, evidence);
+      // Before the first navigation: collector script and conditions.
+      timing = await preparePerformance(
+        context,
+        page,
+        suite,
+        browserName,
+        log,
+      );
       const browserErrors: string[] = [];
       // Screenshot path of each observation step, for audit evidence.
       const screenshots = new Map<number, string>();
@@ -235,6 +282,11 @@ export async function playwrightDriver(
         get unauthorized() {
           return unauthorized;
         },
+        engineGaps: ENGINE_GAPS[browserName],
+        environmentGaps: emulation?.unsupported ?? [],
+        auditUnsupported(config) {
+          return engineAuditGap(browserName, config);
+        },
         async start(timeoutMs) {
           if (
             !allowedURL(
@@ -249,6 +301,27 @@ export async function playwrightDriver(
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
           });
+          if (environment && emulated) {
+            // The page, not the configuration, says what was emulated: a
+            // setting the browser did not apply fails the run instead of
+            // measuring another environment. Settings the engine does not
+            // emulate were withheld and are reported unsupported instead.
+            const measured = environmentProbeSchema.parse(
+              await page.evaluate(ENVIRONMENT_PROBE),
+            );
+            const missing = unappliedSettings(emulated, measured);
+            await log('environment_applied', {
+              environment: environment.name,
+              measured,
+              pseudoLocalization: !!emulated.pseudoLocalization,
+              unapplied: missing,
+              unsupported: emulation?.unsupported ?? [],
+            });
+            if (missing.length)
+              throw new Error(
+                `Environment ${environment.name}: ${suite.browser} did not apply ${missing.join(', ')}`,
+              );
+          }
         },
         setTimeout(timeoutMs) {
           page.setDefaultTimeout(timeoutMs);
@@ -311,7 +384,7 @@ export async function playwrightDriver(
         },
         async runAudit(request) {
           await learn();
-          return runPlaywrightAudit(page, request, {
+          const run = () => runPlaywrightAudit(page, request, {
             journey,
             screenshotAt: (step) => screenshots.get(step) ?? null,
             build: {
@@ -327,7 +400,12 @@ export async function playwrightDriver(
             // pre-capture masks as every other screenshot, on top of the
             // audit's own dynamic-region masks.
             protection: evidence?.screenshots,
+            performance: timing,
           });
+          // Another audit's page work is harness time for performance.web.
+          return timing && request.config.id !== 'performance.web'
+            ? timing.during(run)
+            : run();
         },
         async finish(trace) {
           const recording = page.video();

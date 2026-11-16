@@ -974,6 +974,41 @@ test('a suite whose pinned sha256 does not match is refused', async () => {
   await assert.rejects(loadBenchmark(join(root, 'bad.json')), /sha256/);
 });
 
+test('a pinned sha256 covers the token files the suite references, not only the suite file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ui-ux-benchmark-tokens-'));
+  const tokens = { version: 1, color: { ink: '#1a1f36' } };
+  await writeFile(join(root, 'tokens.json'), JSON.stringify(tokens));
+  const suite = suiteFile();
+  const text = JSON.stringify({
+    ...suite,
+    audits: { checks: [{ id: 'design.tokens', tokens: 'tokens.json' }] },
+  });
+  await writeFile(join(root, 'one.json'), text);
+  const config = configFor('http://127.0.0.1:9', [
+    { id: 'one', suite: 'one.json' },
+  ]);
+  // Unpinned, the loader reports the digest to pin.
+  await writeFile(join(root, 'unpinned.json'), JSON.stringify(config));
+  const pin = (await loadBenchmark(join(root, 'unpinned.json'))).targets[0]!
+    .sha256;
+  // It is not the suite file's own digest: the token file is part of it.
+  assert.notEqual(pin, createHash('sha256').update(text).digest('hex'));
+  await writeFile(
+    join(root, 'pinned.json'),
+    JSON.stringify({ ...config, targets: [{ ...config.targets[0], sha256: pin }] }),
+  );
+  assert.equal((await loadBenchmark(join(root, 'pinned.json'))).targets[0]!.sha256, pin);
+  // Editing only the token file breaks the pin.
+  await writeFile(
+    join(root, 'tokens.json'),
+    JSON.stringify({ ...tokens, color: { ink: '#000000' } }),
+  );
+  await assert.rejects(
+    loadBenchmark(join(root, 'pinned.json')),
+    /one\.json with its token file tokens\.json does not match its pinned sha256/,
+  );
+});
+
 test('the budget refuses dispatch in the model adapter: a refused request never reaches the server', async () => {
   const fake = await fakeModel();
   const budget = new BenchmarkBudget({

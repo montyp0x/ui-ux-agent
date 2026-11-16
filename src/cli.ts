@@ -13,6 +13,8 @@ import { parseArgs } from 'node:util';
 import { modelOptionsFromEnv } from './config.js';
 import { browserLaunchOptions } from './drivers/playwright.js';
 import { suiteEvidencePolicy, suiteSchema } from './contracts.js';
+import { selectCombinations } from './environments.js';
+import { loadDesignTokens } from './audits/design-tokens.js';
 import { models } from './models.js';
 import { runSuite } from './runner.js';
 import { starterSuite } from './scaffold.js';
@@ -41,6 +43,7 @@ const options = {
   out: { type: 'string' },
   journey: { type: 'string' },
   viewport: { type: 'string' },
+  environment: { type: 'string' },
   headed: { type: 'boolean' },
   video: { type: 'boolean' },
   validate: { type: 'boolean' },
@@ -92,7 +95,7 @@ if (values.help) {
     'npm run run -- --init suite.json --url URL --success-path /destination [--goal GOAL]\n' +
       'npm run run -- --suite suite.json --profile .auth/profiles/NAME --sign-in   (once; later runs pass the same --profile)\n' +
       'npm run run -- --suite suite.json --login .auth/app.json [--from EXISTING_STATE.json] [--url URL]\n' +
-      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--build ID] [--compare BASE_RUN [--gate GATE.json]] [--env-file PATH] [--headed] [--video] [--validate]\n' +
+      'npm run run -- --suite suite.json [--url URL] [--browser chromium|firefox|webkit] [--profile DIR | --storage-state PATH] [--journey ID] [--viewport NAME] [--environment NAME] [--out NEW_DIRECTORY] [--repeat N] [--baselines DIR] [--build ID] [--compare BASE_RUN [--gate GATE.json]] [--env-file PATH] [--headed] [--video] [--validate]\n' +
       'npm run compare -- BASE_RUN CANDIDATE_RUN [--gate GATE.json] [--out NEW_DIRECTORY]\n' +
       'npm run baseline -- approve --run RUN_DIRECTORY --baselines DIR (--journey ID | --viewport NAME | --checkpoint ID | --all) [--replace]\n' +
       '\n' +
@@ -144,7 +147,11 @@ if (values.help) {
       const raw: unknown = JSON.parse(
         await readFile(resolve(values.suite), 'utf8'),
       );
-      const suite = suiteSchema.parse(raw);
+      // A design.tokens file path is read relative to the suite file.
+      const suite = await loadDesignTokens(
+        suiteSchema.parse(raw),
+        resolve(values.suite),
+      );
       redactor = new Redactor({
         patterns: suite.evidence.redact,
         envNames: suiteEvidencePolicy(suite).redactEnv,
@@ -240,7 +247,7 @@ if (values.help) {
           }),
         );
         console.log(
-          `Valid suite: ${suite.name} (${suite.journeys.length} journeys, ${suite.viewports.length} viewports)`,
+          `Valid suite: ${suite.name} (${suite.journeys.length} journeys, ${suite.viewports.length} viewports${suite.environments ? `, ${suite.environments.length} environments in ${selectCombinations(suite).combinations.length} combinations` : ''})`,
         );
       } else {
         if (values.gate && !values.compare)
@@ -293,6 +300,7 @@ if (values.help) {
             video: values.video,
             journey: values.journey,
             viewport: values.viewport,
+            environment: values.environment,
             repeat: values.repeat ? Number(values.repeat) : 1,
             baselines: values.baselines,
             signal: cancel.signal,
@@ -304,12 +312,12 @@ if (values.help) {
         // verdict is reported beside it and does not gate yet.
         for (const result of results)
           console.log(
-            `${result.status} [${result.outcome.code}]: ${result.journey}/${result.viewport}: ${result.reason} · quality ${result.quality.verdict}`,
+            `${result.status} [${result.outcome.code}]: ${result.journey}/${result.environment ? `${result.environment.name}/` : ''}${result.viewport}: ${result.reason} · quality ${result.quality.verdict}`,
           );
         for (const row of summarize(results))
           if (row.runs > 1)
             console.log(
-              `${row.journey}/${row.viewport}: ${row.passed}/${row.runs} passed, median ${row.medianSteps} actions, ${(row.medianDurationMs / 1000).toFixed(1)}s`,
+              `${row.journey}/${row.environment ? `${row.environment}/` : ''}${row.viewport}: ${row.passed}/${row.runs} passed, median ${row.medianSteps} actions, ${(row.medianDurationMs / 1000).toFixed(1)}s`,
             );
         const unclean = results.filter(
           (result) => result.dataLifecycle && !result.dataLifecycle.clean,

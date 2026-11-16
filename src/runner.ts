@@ -54,6 +54,14 @@ import {
   type CleanupTrigger,
   type LifecycleRun,
 } from './lifecycle.js';
+import {
+  resultEnvironment,
+  selectCombinations,
+  type Environment,
+  type ResultEnvironment,
+} from './environments.js';
+
+type SuiteViewport = Suite['viewports'][number];
 
 export type RunOptions = {
   directory: string;
@@ -65,6 +73,8 @@ export type RunOptions = {
   video?: boolean;
   journey?: string;
   viewport?: string;
+  // Runs only the suite's combinations with this environment.
+  environment?: string;
   driver?: UIDriver;
   // Runs per journey/viewport, for pass rates (1-50, default 1).
   repeat?: number;
@@ -262,6 +272,8 @@ async function runJourney(
   // This run's friction-relevant events as written to events.jsonl.
   friction: FrictionRecorder | null = null,
   identity?: RunIdentity,
+  // The suite environment the session emulates; null without environments.
+  environment: ResultEnvironment | null = null,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -283,10 +295,16 @@ async function runJourney(
       width: 0,
       height: 0,
     },
+    environment: environment?.name ?? null,
     directory,
     baselines,
     session,
     log,
+    harness: () => ({
+      elapsedMs: Date.now() - started,
+      modelCalls: usage.planner.calls + usage.selector.calls,
+      modelMs: usage.planner.durationMs + usage.selector.durationMs,
+    }),
   });
   // Timers run on a monotonic clock and can fire a millisecond before
   // Date.now() reaches the deadline; the rest is waited out, so the abort
@@ -306,6 +324,22 @@ async function runJourney(
     resultVersion: RESULT_VERSION,
     journey: journey.id,
     viewport,
+    ...(environment
+      ? {
+          // The requested settings, plus the ones the engine withheld.
+          environment: session.environmentGaps?.length
+            ? {
+                ...environment,
+                syntheticText:
+                  environment.syntheticText &&
+                  !session.environmentGaps.some(
+                    (gap) => gap.id === 'environment.pseudoLocalization',
+                  ),
+                unsupported: session.environmentGaps,
+              }
+            : environment,
+        }
+      : {}),
     attempt,
     usage,
     status: 'error',
@@ -1087,6 +1121,8 @@ async function runJourney(
       policyBlocks,
       evidenceComplete,
       audits: result.audits,
+      engineGaps: session.engineGaps,
+      environmentGaps: session.environmentGaps,
     });
     result.durationMs = Date.now() - started;
     // Files drivers and audits wrote (measurements, the native tree) get the
@@ -1134,11 +1170,39 @@ export async function runSuite(
     throw new Error(
       `Set the environment variable${unset.length > 1 ? 's' : ''} ${unset.join(', ')} read by fill valueEnv`,
     );
-  const viewports = suite.viewports.filter(
-    (viewport) => !options.viewport || viewport.name === options.viewport,
-  );
-  if (!journeys.length || !viewports.length)
-    throw new Error('No matching journey or viewport');
+  // What runs for each journey: every viewport once, or, in a suite with
+  // environments, exactly the combinations it selects (src/environments.ts).
+  if (options.environment !== undefined && !suite.environments)
+    throw new Error(
+      `--environment ${options.environment}: this suite has no environments`,
+    );
+  const selection = suite.environments ? selectCombinations(suite) : null;
+  if (selection?.issues.length)
+    throw new Error(`Invalid environment selection: ${selection.issues[0]}`);
+  const cells: { environment: Environment | null; viewport: SuiteViewport }[] =
+    (selection
+      ? selection.combinations.map((cell) => ({
+          environment: suite.environments!.find(
+            (entry) => entry.name === cell.environment,
+          )!,
+          viewport: suite.viewports.find(
+            (entry) => entry.name === cell.viewport,
+          )!,
+        }))
+      : suite.viewports.map((viewport) => ({ environment: null, viewport }))
+    ).filter(
+      (cell) =>
+        (!options.viewport || cell.viewport.name === options.viewport) &&
+        (!options.environment ||
+          cell.environment?.name === options.environment),
+    );
+  const viewports = [...new Set(cells.map((cell) => cell.viewport))];
+  if (!journeys.length || !cells.length)
+    throw new Error(
+      suite.environments
+        ? 'No matching journey, viewport or environment combination'
+        : 'No matching journey or viewport',
+    );
   const repeat = options.repeat ?? 1;
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
@@ -1235,6 +1299,13 @@ export async function runSuite(
         journeys: journeys.map((journey) => journey.id),
         viewports: viewports.map((viewport) => viewport.name),
         repeat,
+        ...(selection
+          ? {
+              combinations: cells.map(
+                (cell) => `${cell.environment!.name}/${cell.viewport.name}`,
+              ),
+            }
+          : {}),
       },
     },
     engine: {
@@ -1284,14 +1355,15 @@ export async function runSuite(
     : null;
   try {
     runs: for (const journey of journeys) {
-      for (const viewport of viewports) {
+      for (const { environment, viewport } of cells) {
         for (let attempt = 1; attempt <= repeat; attempt++) {
           if (options.signal?.aborted) break runs;
+          const cell = environment
+            ? `${journey.id}-${environment.name}-${viewport.name}`
+            : `${journey.id}-${viewport.name}`;
           const directory = join(
             options.directory,
-            repeat > 1
-              ? `${journey.id}-${viewport.name}-${attempt}`
-              : `${journey.id}-${viewport.name}`,
+            repeat > 1 ? `${cell}-${attempt}` : cell,
           );
           await mkdir(directory, { mode: 0o700 });
           // A unique marker per run, substituted for {{marker}} in the journey
@@ -1329,6 +1401,7 @@ export async function runSuite(
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,
+            ...(environment ? { environment: environment.name } : {}),
             attempt,
             ...(runJourneyConfig !== journey || data ? { marker } : {}),
           });
@@ -1337,6 +1410,7 @@ export async function runSuite(
               suite,
               journey: runJourneyConfig,
               viewport,
+              environment,
               directory,
               storageState: options.storageState,
               video: options.video,
@@ -1362,6 +1436,7 @@ export async function runSuite(
                 options.signal,
                 friction,
                 await identityFor(),
+                environment ? resultEnvironment(environment) : null,
               );
               if (runJourneyConfig !== journey || data) result.marker = marker;
               results.push(result);

@@ -4,6 +4,7 @@
 import { relative, sep } from 'node:path';
 import type { Comparison, FindingInstance } from './compare.js';
 import { escapeHTML } from './report.js';
+import { performanceComparisonHTML } from './performance-report.js';
 
 export function comparisonHTML(
   comparison: Comparison,
@@ -34,7 +35,7 @@ export function comparisonHTML(
       )
       .join(' ');
   const row = (instance: FindingInstance, extra: string, gating: boolean) =>
-    `<tr${gating ? ' class="gating"' : ''}><td>${gating ? '<strong>GATES</strong>' : ''}</td><td><code>${escapeHTML(instance.gateKey)}</code><br><small>${escapeHTML(instance.kind === 'audit' ? `${instance.certainty ?? ''} · ${instance.severity ?? 'no severity'}` : instance.kind)}</small></td><td>${escapeHTML(`${instance.journey}/${instance.viewport}`)}${instance.checkpoint ? `<br><small>${escapeHTML(instance.checkpoint)} ${escapeHTML(instance.path ?? '')}</small>` : ''}</td><td>${escapeHTML(instance.target ? (instance.target.selector ?? instance.target.description) : '—')}</td><td>${escapeHTML(instance.description)}${extra}</td><td>${evidence(instance)}</td><td><code>${instance.id}</code></td></tr>`;
+    `<tr${gating ? ' class="gating"' : ''}><td>${gating ? '<strong>GATES</strong>' : ''}</td><td><code>${escapeHTML(instance.gateKey)}</code><br><small>${escapeHTML(instance.kind === 'audit' ? `${instance.certainty ?? ''} · ${instance.severity ?? 'no severity'}` : instance.kind)}</small></td><td>${escapeHTML(instance.environment ? `${instance.journey}/${instance.environment}/${instance.viewport}` : `${instance.journey}/${instance.viewport}`)}${instance.checkpoint ? `<br><small>${escapeHTML(instance.checkpoint)} ${escapeHTML(instance.path ?? '')}</small>` : ''}</td><td>${escapeHTML(instance.target ? (instance.target.selector ?? instance.target.description) : '—')}</td><td>${escapeHTML(instance.description)}${extra}</td><td>${evidence(instance)}</td><td><code>${instance.id}</code></td></tr>`;
   const table = (title: string, note: string, rows: string[]) =>
     `<h2>${title} (${rows.length})</h2><p><small>${note}</small></p>${rows.length ? `<table><thead><tr><th></th><th>Rule</th><th>Where</th><th>Target</th><th>Finding</th><th>Evidence</th><th>Id</th></tr></thead><tbody>${rows.join('')}</tbody></table>` : ''}`;
   const { findings, gate } = comparison;
@@ -53,7 +54,7 @@ export function comparisonHTML(
 ${fields('Why the comparison is invalid', comparison.incompatibilities)}${fields('Warnings', comparison.warnings)}
 ${
   comparison.compatible
-    ? `<h2>Functional outcomes</h2><table><thead><tr><th>Journey/viewport</th><th>Base passed</th><th>Candidate passed</th><th></th></tr></thead><tbody>${comparison.outcomes.map((outcome) => `<tr><td>${escapeHTML(`${outcome.journey}/${outcome.viewport}`)}</td><td>${outcome.base ? `${outcome.base.passed}/${outcome.base.runs}` : 'not run'}</td><td>${outcome.candidate ? `${outcome.candidate.passed}/${outcome.candidate.runs}` : 'not run'}</td><td>${outcome.regression ? '<strong>REGRESSION</strong>' : ''}</td></tr>`).join('')}</tbody></table>
+    ? `<h2>Functional outcomes</h2><table><thead><tr><th>Journey/viewport</th><th>Base passed</th><th>Candidate passed</th><th></th></tr></thead><tbody>${comparison.outcomes.map((outcome) => `<tr><td>${escapeHTML(outcome.environment ? `${outcome.journey}/${outcome.environment}/${outcome.viewport}` : `${outcome.journey}/${outcome.viewport}`)}</td><td>${outcome.base ? `${outcome.base.passed}/${outcome.base.runs}` : 'not run'}</td><td>${outcome.candidate ? `${outcome.candidate.passed}/${outcome.candidate.runs}` : 'not run'}</td><td>${outcome.regression ? '<strong>REGRESSION</strong>' : ''}</td></tr>`).join('')}</tbody></table>
 ${table(
   'New',
   'Reported by the candidate, not by the base.',
@@ -88,7 +89,8 @@ ${table(
   'Reported by the base; the candidate assessed the same check, page and elements and did not report it.',
   findings.resolved.map((entry) => row(entry.base, '', false)),
 )}
-<h2>Checks not assessed by the candidate (${lost.length})</h2>${lost.length ? `<table><thead><tr><th>Journey/viewport</th><th>Audit</th><th>Checkpoint</th><th>Base</th><th>Candidate</th></tr></thead><tbody>${lost.map((check) => `<tr${check.coverageLost ? ' class="gating"' : ''}><td>${escapeHTML(`${check.journey}/${check.viewport}`)}</td><td><code>${escapeHTML(check.auditId)}</code></td><td>${escapeHTML(check.checkpoint)}</td><td>${check.base}</td><td>${check.candidate}${check.coverageLost ? ' · <strong>coverage lost</strong>' : ''}</td></tr>`).join('')}</tbody></table>` : '<p>None.</p>'}`
+${performanceComparisonHTML(comparison.performance, escapeHTML)}
+<h2>Checks not assessed by the candidate (${lost.length})</h2>${lost.length ? `<table><thead><tr><th>Journey/viewport</th><th>Audit</th><th>Checkpoint</th><th>Base</th><th>Candidate</th></tr></thead><tbody>${lost.map((check) => `<tr${check.coverageLost ? ' class="gating"' : ''}><td>${escapeHTML(check.environment ? `${check.journey}/${check.environment}/${check.viewport}` : `${check.journey}/${check.viewport}`)}</td><td><code>${escapeHTML(check.auditId)}</code></td><td>${escapeHTML(check.checkpoint)}</td><td>${check.base}</td><td>${check.candidate}${check.coverageLost ? ' · <strong>coverage lost</strong>' : ''}</td></tr>`).join('')}</tbody></table>` : '<p>None.</p>'}`
     : ''
 }
 <p><small>Model hypotheses and needs-review items are listed but do not gate unless the gate turns them on. Finding ids exclude steps, timestamps, run markers, evidence paths, URL origins and queries, and digits in descriptions. Evidence links point into the local run directories; keep them local.</small></p></html>`;

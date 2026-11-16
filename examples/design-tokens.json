@@ -1,0 +1,42 @@
+{
+  "name": "Storefront design tokens",
+  "baseURL": "https://your-app.example",
+  "requiresAuth": false,
+  "viewports": [{ "name": "desktop", "width": 1440, "height": 1000 }],
+  "audits": {
+    "failOn": "serious",
+    "checks": [
+      { "id": "layout.horizontal-overflow" },
+      {
+        "id": "design.tokens",
+        "at": ["ready", "completion"],
+        "tokens": "design/tokens.json",
+        "include": ["main"],
+        "exclude": ["#support-chat"],
+        "tolerance": { "colorDeltaE": 1, "lengthPx": 0.5 },
+        "severity": "moderate",
+        "exceptions": [
+          {
+            "selector": ".partner-offer",
+            "rules": ["color"],
+            "reason": "Partner offers use the partner's brand colours"
+          }
+        ]
+      }
+    ]
+  },
+  "journeys": [
+    {
+      "id": "browse",
+      "goal": "Open a product page from the catalogue.",
+      "persona": "A first-time shopper.",
+      "startPath": "/",
+      "allowedPaths": ["/", "/products"],
+      "ready": {
+        "kind": "visible",
+        "target": { "by": "role", "role": "heading", "name": "Catalogue" }
+      },
+      "success": [{ "kind": "path", "pattern": "^/products/[^/]+$" }]
+    }
+  ]
+}

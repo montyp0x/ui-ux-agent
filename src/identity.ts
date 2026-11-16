@@ -93,6 +93,11 @@ export const runIdentitySchema = z
             journeys: z.array(z.string()),
             viewports: z.array(z.string()),
             repeat: z.number().int().min(1),
+            // Suites with environments: the <environment>/<viewport>
+            // combinations run, in order. Absent otherwise (every selected
+            // viewport ran once per repeat, with no environment). What each
+            // environment emulates is part of the suite hash.
+            combinations: z.array(z.string().min(1)).optional(),
           })
           .strict(),
       })

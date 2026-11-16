@@ -7,6 +7,9 @@ import {
 import { targetSchema, type Target } from './target.js';
 import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
 import { referencePathsSchema } from './friction/contract.js';
+import { environmentSuiteShape, selectCombinations } from './environments.js';
+import { KEYBOARD_JOURNEY_UNSUPPORTED } from './browser-support.js';
+import { unknownTokenEnvironments } from './audits/design-tokens.js';
 
 export { targetSchema, type Target };
 
@@ -357,9 +360,29 @@ const suiteObject = z
     // Reset, setup and cleanup hooks on a local fixture service for
     // authorized write flows (see src/lifecycle.ts). Web only.
     dataLifecycle: dataLifecycleSchema.optional(),
+    // Named environments (locale, time zone, colour scheme, reduced motion,
+    // forced colours, contrast, pseudo-localized long text) and the explicit
+    // environment × viewport combinations, or capped matrix, that run them
+    // (see src/environments.ts). Web only.
+    ...environmentSuiteShape,
   })
   .strict()
   .superRefine((suite, ctx) => {
+    for (const message of selectCombinations(suite).issues)
+      ctx.addIssue({ code: 'custom', message });
+    // design.tokens sets per environment name suite environments.
+    const environmentNames = (suite.environments ?? []).map(
+      (environment) => environment.name,
+    );
+    suite.audits.checks.forEach((check, index) => {
+      if (check.id !== 'design.tokens') return;
+      for (const name of unknownTokenEnvironments(check, environmentNames))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['audits', 'checks', index, 'environments', name],
+          message: `design.tokens environments: unknown environment ${name}; each name must be one of the suite's environments`,
+        });
+    });
     // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
     // trace or video would record it.
     if (fillSecrets(suite).length)
@@ -510,6 +533,17 @@ const suiteObject = z
         code: 'custom',
         message: 'Use browserChannel or browserExecutable, not both',
       });
+    // An engine whose keyboard navigation differs from the measured model
+    // (src/browser-support.ts) refuses keyboard-only journeys outright.
+    const keyboardRefused =
+      suite.platform === 'web'
+        ? KEYBOARD_JOURNEY_UNSUPPORTED[suite.browser]
+        : undefined;
+    if (
+      keyboardRefused &&
+      suite.journeys.some((journey) => journey.input === 'keyboard')
+    )
+      ctx.addIssue({ code: 'custom', message: keyboardRefused });
     const auditsAtStates = suite.audits.checks.some((check) =>
       (check.at as string[]).includes('states'),
     );
