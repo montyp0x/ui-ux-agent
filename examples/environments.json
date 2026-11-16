@@ -1,0 +1,76 @@
+{
+  "name": "Documentation discovery across environments",
+  "baseURL": "https://your-app.example",
+  "requiresAuth": false,
+  "viewports": [
+    { "name": "desktop", "width": 1440, "height": 1000 },
+    { "name": "narrow", "width": 390, "height": 844 }
+  ],
+  "environments": [
+    {
+      "name": "light",
+      "locale": "en-US",
+      "timezone": "UTC",
+      "colorScheme": "light"
+    },
+    {
+      "name": "dark",
+      "locale": "en-US",
+      "timezone": "UTC",
+      "colorScheme": "dark",
+      "reducedMotion": "reduce"
+    },
+    {
+      "name": "high-contrast",
+      "locale": "en-US",
+      "timezone": "UTC",
+      "forcedColors": "active",
+      "contrast": "more"
+    },
+    {
+      "name": "long-text",
+      "locale": "de-DE",
+      "timezone": "Europe/Berlin",
+      "pseudoLocalization": {}
+    }
+  ],
+  "matrix": {
+    "environments": ["light", "dark"],
+    "viewports": ["desktop", "narrow"],
+    "exclude": [{ "environment": "light", "viewport": "narrow" }],
+    "include": [
+      { "environment": "high-contrast", "viewport": "desktop" },
+      { "environment": "long-text", "viewport": "narrow" }
+    ],
+    "max": 5
+  },
+  "journeys": [
+    {
+      "id": "find-installation",
+      "goal": "Find the installation instructions through visible navigation.",
+      "persona": "A first-time visitor trying to set up the product.",
+      "startPath": "/",
+      "allowedPaths": ["/", "/docs"],
+      "ready": {
+        "kind": "visible",
+        "target": { "by": "css", "value": "main" }
+      },
+      "success": [
+        { "kind": "path", "pattern": "^/docs/install/?$" },
+        {
+          "kind": "visible",
+          "target": { "by": "role", "role": "heading", "name": "Installation" }
+        }
+      ],
+      "discoverRoles": ["button", "tab"]
+    }
+  ],
+  "audits": {
+    "checks": [
+      { "id": "layout.horizontal-overflow" },
+      { "id": "accessibility.axe", "at": ["ready", "completion"] },
+      { "id": "layout.responsive", "at": ["ready"] }
+    ],
+    "failOn": "serious"
+  }
+}

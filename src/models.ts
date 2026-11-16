@@ -29,6 +29,10 @@ export type ModelOptions = {
   selectorRateLimit?: RateLimit;
   // A model request waited: for its endpoint's pacing, or after a 429/503.
   onWait?: (data: ModelWait) => Promise<void>;
+  // Called synchronously right before each HTTP request is sent (every
+  // attempt, retries included). Throwing refuses the request: it is not sent
+  // and post() rethrows. Used by the benchmark to enforce its call ceiling.
+  beforeDispatch?: (data: ModelDispatch) => void;
   onCall?: (data: {
     role: 'planner' | 'selector';
     model: string;
@@ -187,6 +191,12 @@ export type ModelWait = {
 // so a cooldown applied while it waits always delays it, and a request whose
 // start would fall at or after its deadline, or whose signal aborts, gives its
 // slot back and never starts.
+export type ModelDispatch = {
+  role: 'planner' | 'selector';
+  model: string;
+  attempt: number;
+};
+
 export class EndpointLimiter {
   private nextStart = 0;
   private pausedUntil = 0;
@@ -337,6 +347,9 @@ export async function post(
     role: 'planner' | 'selector';
     limiter: EndpointLimiter;
     onWait?: (data: ModelWait) => Promise<void>;
+    // See ModelOptions.beforeDispatch.
+    beforeDispatch?: (data: ModelDispatch) => void;
+    model?: string;
   },
   signal?: AbortSignal,
 ): Promise<unknown> {
@@ -364,6 +377,11 @@ export async function post(
           'Model request deadline passed before dispatch',
           'TimeoutError',
         );
+      pacing?.beforeDispatch?.({
+        role: pacing.role,
+        model: pacing.model ?? '',
+        attempt,
+      });
       const timeout = AbortSignal.timeout(
         Math.max(1, Math.min(60000, remaining)),
       );
@@ -442,6 +460,8 @@ export function models(options: ModelOptions): Models {
       options.plannerRateLimit ?? DEFAULT_PLANNER_RATE_LIMIT,
     ),
     onWait: options.onWait,
+    beforeDispatch: options.beforeDispatch,
+    model: options.plannerModel,
   };
   const selector = {
     role: 'selector' as const,
@@ -450,6 +470,8 @@ export function models(options: ModelOptions): Models {
       options.selectorRateLimit ?? DEFAULT_SELECTOR_RATE_LIMIT,
     ),
     onWait: options.onWait,
+    beforeDispatch: options.beforeDispatch,
+    model: options.selectorModel,
   };
   return {
     async plan(

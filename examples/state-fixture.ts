@@ -194,6 +194,12 @@ export function scriptedDecisions(scripts: Record<string, string[]>): Models {
       ['no_match', id === 'no_match' ? 1 : 0],
     ]),
   });
+  const shown = (action: Action, snapshot: string) => {
+    const target = 'target' in action ? action.target : undefined;
+    return (
+      !(target?.by === 'role' && target.name) || snapshot.includes(target.name)
+    );
+  };
   const matches = (action: Action, wanted: string | undefined) =>
     wanted !== undefined &&
     (action.description === wanted ||
@@ -205,12 +211,20 @@ export function scriptedDecisions(scripts: Record<string, string[]>): Models {
         concerns: [],
       };
     },
-    async choose(journey, _observation, _plan, actions, history) {
+    async choose(journey, observation, _plan, actions, history) {
       const script = scripts[journey.id] ?? [];
       const done = history.filter(
         (entry) => !entry.error && !/^Wait\b/.test(entry.action),
       ).length;
-      const next = actions.find((action) => matches(action, script[done]));
+      // Candidates are read from the live page after the observation, so a
+      // control can be offered that the observed state did not show yet (the
+      // error panel replacing the loading one in between). Acting on it would
+      // skip a state the journey declares, so a role/name target is chosen
+      // only once the observation shows it.
+      const next = actions.find(
+        (action) =>
+          matches(action, script[done]) && shown(action, observation.snapshot),
+      );
       if (next) return choice(actions, next.id);
       const wait = actions.find((action) => action.kind === 'wait');
       return choice(actions, wait?.id ?? 'no_match');

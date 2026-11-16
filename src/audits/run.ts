@@ -2,7 +2,11 @@
 // run, including unsupported and failed ones, in the audit result. Nothing
 // here throws into the journey: an audit exception becomes an `error` run.
 import type { Journey, Observation, Suite } from '../contracts.js';
-import type { EventLogger, UISession } from '../drivers/types.js';
+import type {
+  DriverAuditRequest,
+  EventLogger,
+  UISession,
+} from '../drivers/types.js';
 import type { AuditConfig, AuditId } from './config.js';
 import {
   AUDIT_CONTRACT_VERSION,
@@ -20,6 +24,8 @@ export type JourneyAuditOptions = {
   suite: Suite;
   journey: Journey;
   viewport: { name: string; width: number; height: number };
+  // The suite environment's name (src/environments.ts), null without one.
+  environment?: string | null;
   directory: string;
   // The user-supplied visual baseline directory, or null.
   baselines?: string | null;
@@ -27,6 +33,9 @@ export type JourneyAuditOptions = {
   log: EventLogger;
   // The audit registry; tests substitute their own definitions.
   definitions?: (id: AuditId) => AuditDefinition;
+  // Harness time spent so far in the journey (wall clock, model calls), for
+  // audits that report app timing apart from it (performance.web).
+  harness?: () => { elapsedMs: number; modelCalls: number; modelMs: number };
 };
 
 function firstLine(caught: unknown): string {
@@ -134,6 +143,14 @@ export class JourneyAudits {
     }
   }
 
+  // Whether a declared state an audit runs at has not been reached yet.
+  statesPending(): boolean {
+    if (!this.at('states').length) return false;
+    return (this.options.journey.states ?? []).some(
+      (state) => !this.statesDone.has(state.name),
+    );
+  }
+
   // The final state, once, after the journey ended. Skipped when no state was
   // ever observed (the journey stopped before ready and setup completed).
   async completion(step: number, screenshot: string | null): Promise<void> {
@@ -165,6 +182,16 @@ export class JourneyAudits {
               notReached.push({ auditId: check.id, at: `state:${state.name}` });
       }
     return { ...this.result, notReached };
+  }
+
+  // Harness time so far, earlier audit runs included.
+  private harness(): DriverAuditRequest['harness'] {
+    const source = this.options.harness?.();
+    if (!source) return null;
+    return {
+      ...source,
+      auditMs: this.result.runs.reduce((sum, run) => sum + run.durationMs, 0),
+    };
   }
 
   private at(at: 'ready' | 'states' | 'completion'): AuditConfig[] {
@@ -224,6 +251,19 @@ export class JourneyAudits {
         null,
         started,
       );
+    // Supported by the driver, but not verified on this session's engine,
+    // or configured with an option the engine cannot apply
+    // (src/browser-support.ts).
+    const engineGap = this.options.session.auditUnsupported?.(config);
+    if (engineGap)
+      return this.push(
+        config,
+        checkpoint,
+        'unsupported',
+        engineGap,
+        null,
+        started,
+      );
     let output: ParsedAuditOutput;
     try {
       const { session, directory, suite } = this.options;
@@ -252,10 +292,12 @@ export class JourneyAudits {
             config,
             checkpoint,
             viewport: { ...this.options.viewport },
+            environment: this.options.environment ?? null,
             directory,
             scope: { suite: suite.name, journey: this.options.journey.id },
             baselines: this.options.baselines ?? null,
             timeoutMs,
+            harness: this.harness(),
           }),
           timeoutMs,
         );
@@ -394,6 +436,7 @@ export class JourneyAudits {
       exemptions: output?.exemptions ?? [],
       findings,
       visual: output?.visual ?? null,
+      ...(output?.performance ? { performance: output.performance } : {}),
     });
     await log('audit_run', {
       journey: journey.id,

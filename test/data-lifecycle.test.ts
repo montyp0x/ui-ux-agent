@@ -234,15 +234,21 @@ test('a cancelled run still cleans up and no further run starts', async () => {
       repeat: 3,
       signal: cancel.signal,
     };
+    const suite = await notesSuite(app.url, {
+      success: [
+        {
+          kind: 'text',
+          target: { by: 'testId', value: 'notes' },
+          pattern: 'never shown',
+        },
+      ],
+    });
     const results = await runSuite(
-      await notesSuite(app.url, {
-        success: [
-          {
-            kind: 'text',
-            target: { by: 'testId', value: 'notes' },
-            pattern: 'never shown',
-          },
-        ],
+      // A public owner keeps the Playwright trace on (a secret setup value
+      // turns it off), so the permission pass below covers a trace too.
+      suiteSchema.parse({
+        ...suite,
+        dataLifecycle: { ...suite.dataLifecycle, publicValues: ['owner'] },
       }),
       cancelling,
       options,

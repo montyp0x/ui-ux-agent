@@ -15,6 +15,7 @@ import type {
 } from './contracts.js';
 import type { History, Models, PlanContext } from './models.js';
 import { reportHTML } from './report.js';
+import { UNRESOLVED_LINK, evidenceLinks } from './evidence/links.js';
 import { emptyAudits } from './audits/contract.js';
 import { JourneyAudits } from './audits/run.js';
 import { baselineDirectoryForRun } from './baselines.js';
@@ -32,14 +33,35 @@ import {
   type EvidenceProtection,
 } from './evidence/protection.js';
 import { providerModels } from './evidence/provider.js';
+import { redactError } from './evidence/redact.js';
 import { restrictPermissions, sanitizeTextFiles } from './evidence/sweep.js';
 import { writeRunManifest } from './evidence/retention.js';
+import { FrictionRecorder, computeFriction } from './friction/index.js';
+import { AUDIT_CONTRACT_VERSION } from './audits/contract.js';
+import {
+  ENGINE_VERSION,
+  IDENTITY_VERSION,
+  osIdentity,
+  suiteHash,
+  suiteTarget,
+  type Build,
+  type ModelIdentity,
+  type RunIdentity,
+} from './identity.js';
 import {
   DataLifecycleHooks,
   withData,
   type CleanupTrigger,
   type LifecycleRun,
 } from './lifecycle.js';
+import {
+  resultEnvironment,
+  selectCombinations,
+  type Environment,
+  type ResultEnvironment,
+} from './environments.js';
+
+type SuiteViewport = Suite['viewports'][number];
 
 export type RunOptions = {
   directory: string;
@@ -51,6 +73,8 @@ export type RunOptions = {
   video?: boolean;
   journey?: string;
   viewport?: string;
+  // Runs only the suite's combinations with this environment.
+  environment?: string;
   driver?: UIDriver;
   // Runs per journey/viewport, for pass rates (1-50, default 1).
   repeat?: number;
@@ -64,6 +88,19 @@ export type RunOptions = {
   // Cancels the suite: the current run stops at its next stage, its data
   // cleanup still runs, and no further run starts.
   signal?: AbortSignal;
+  // The build or revision under test, recorded in each result's identity
+  // as given (--build / UIUX_BUILD); null or omitted records it as unknown.
+  build?: Build | null;
+  // The model endpoints and names in use (never keys), for the identity;
+  // omitted for custom Models implementations.
+  modelIdentity?: ModelIdentity | null;
+  // Called as each run starts, before its session opens and its first model
+  // call (the benchmark attributes model calls to runs with it).
+  onRunStart?: (run: {
+    journey: string;
+    viewport: string;
+    attempt: number;
+  }) => void;
 };
 export type Logger = EventLogger;
 
@@ -232,6 +269,11 @@ async function runJourney(
   baselines: string | null,
   lifecycle: LifecycleRun | null = null,
   cancel?: AbortSignal,
+  // This run's friction-relevant events as written to events.jsonl.
+  friction: FrictionRecorder | null = null,
+  identity?: RunIdentity,
+  // The suite environment the session emulates; null without environments.
+  environment: ResultEnvironment | null = null,
 ): Promise<Result> {
   const started = Date.now();
   const deadline = started + journey.maxDurationMs;
@@ -253,22 +295,51 @@ async function runJourney(
       width: 0,
       height: 0,
     },
+    environment: environment?.name ?? null,
     directory,
     baselines,
     session,
     log,
+    harness: () => ({
+      elapsedMs: Date.now() - started,
+      modelCalls: usage.planner.calls + usage.selector.calls,
+      modelMs: usage.planner.durationMs + usage.selector.durationMs,
+    }),
   });
-  const deadlineTimer = setTimeout(
-    () =>
-      deadlineAbort.abort(
-        new DOMException('Journey deadline reached', 'TimeoutError'),
-      ),
-    journey.maxDurationMs,
-  );
+  // Timers run on a monotonic clock and can fire a millisecond before
+  // Date.now() reaches the deadline; the rest is waited out, so the abort
+  // never comes before the deadline the run reports against.
+  const abortAtDeadline = () => {
+    const remaining = deadline - Date.now();
+    if (remaining > 0) {
+      deadlineTimer = setTimeout(abortAtDeadline, remaining);
+      return;
+    }
+    deadlineAbort.abort(
+      new DOMException('Journey deadline reached', 'TimeoutError'),
+    );
+  };
+  let deadlineTimer = setTimeout(abortAtDeadline, journey.maxDurationMs);
   const result: Result = {
     resultVersion: RESULT_VERSION,
     journey: journey.id,
     viewport,
+    ...(environment
+      ? {
+          // The requested settings, plus the ones the engine withheld.
+          environment: session.environmentGaps?.length
+            ? {
+                ...environment,
+                syntheticText:
+                  environment.syntheticText &&
+                  !session.environmentGaps.some(
+                    (gap) => gap.id === 'environment.pseudoLocalization',
+                  ),
+                unsupported: session.environmentGaps,
+              }
+            : environment,
+        }
+      : {}),
     attempt,
     usage,
     status: 'error',
@@ -298,6 +369,7 @@ async function runJourney(
     trace: join(directory, 'trace.zip'),
     video: null,
     evidence: protection.report(0),
+    ...(identity ? { identity } : {}),
   };
   let observation: Observation | null = null;
   let plan: Plan | null = null;
@@ -497,6 +569,22 @@ async function runJourney(
         result.checks = await Promise.all(
           journey.success.map((condition) => session.check(condition)),
         );
+        // Declared states are checked right after an observation, and the
+        // page can reach one (loaded items) between that and the success
+        // checks. Before deciding on success, observe once more so a state
+        // still pending is checked against the page that passed.
+        if (result.checks.every(Boolean) && audits.statesPending()) {
+          observation = await session.observe(step, observation.screenshot);
+          await log('state_observation', {
+            journey: journey.id,
+            viewport,
+            ...observation,
+          });
+          await measure(observation);
+          result.checks = await Promise.all(
+            journey.success.map((condition) => session.check(condition)),
+          );
+        }
         if (result.checks.every(Boolean)) {
           stage = 'content';
           const completion = journey.contentReady
@@ -1015,6 +1103,10 @@ async function runJourney(
           screenshot: finalScreenshot ?? join(directory, 'final.png'),
         });
     }
+    // Task friction from the events this run wrote (already redacted), so it
+    // reconciles exactly with events.jsonl. Descriptive only: computed after
+    // the outcome and never read by the quality verdict.
+    if (friction) result.friction = computeFriction(friction, journey);
     const policyBlocks = new Set(session.policyBlocks ?? []).size;
     result.outcome.signals = {
       staleActions,
@@ -1029,6 +1121,8 @@ async function runJourney(
       policyBlocks,
       evidenceComplete,
       audits: result.audits,
+      engineGaps: session.engineGaps,
+      environmentGaps: session.environmentGaps,
     });
     result.durationMs = Date.now() - started;
     // Files drivers and audits wrote (measurements, the native tree) get the
@@ -1076,11 +1170,39 @@ export async function runSuite(
     throw new Error(
       `Set the environment variable${unset.length > 1 ? 's' : ''} ${unset.join(', ')} read by fill valueEnv`,
     );
-  const viewports = suite.viewports.filter(
-    (viewport) => !options.viewport || viewport.name === options.viewport,
-  );
-  if (!journeys.length || !viewports.length)
-    throw new Error('No matching journey or viewport');
+  // What runs for each journey: every viewport once, or, in a suite with
+  // environments, exactly the combinations it selects (src/environments.ts).
+  if (options.environment !== undefined && !suite.environments)
+    throw new Error(
+      `--environment ${options.environment}: this suite has no environments`,
+    );
+  const selection = suite.environments ? selectCombinations(suite) : null;
+  if (selection?.issues.length)
+    throw new Error(`Invalid environment selection: ${selection.issues[0]}`);
+  const cells: { environment: Environment | null; viewport: SuiteViewport }[] =
+    (selection
+      ? selection.combinations.map((cell) => ({
+          environment: suite.environments!.find(
+            (entry) => entry.name === cell.environment,
+          )!,
+          viewport: suite.viewports.find(
+            (entry) => entry.name === cell.viewport,
+          )!,
+        }))
+      : suite.viewports.map((viewport) => ({ environment: null, viewport }))
+    ).filter(
+      (cell) =>
+        (!options.viewport || cell.viewport.name === options.viewport) &&
+        (!options.environment ||
+          cell.environment?.name === options.environment),
+    );
+  const viewports = [...new Set(cells.map((cell) => cell.viewport))];
+  if (!journeys.length || !cells.length)
+    throw new Error(
+      suite.environments
+        ? 'No matching journey, viewport or environment combination'
+        : 'No matching journey or viewport',
+    );
   const repeat = options.repeat ?? 1;
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50)
     throw new Error('repeat must be an integer from 1 to 50');
@@ -1091,7 +1213,8 @@ export async function runSuite(
   await mkdir(dirname(options.directory), { recursive: true, mode: 0o700 });
   // Not recursive: an existing run directory is never reused or overwritten.
   await mkdir(options.directory, { mode: 0o700 });
-  // The suite's evidence policy with every fill valueEnv as a secret.
+  // The suite's evidence policy with every fill valueEnv and secret setup
+  // value as a secret.
   const policy = suiteEvidencePolicy(suite);
   await writeRunManifest(options.directory, policy.retentionDays);
   const protection = evidenceProtection(
@@ -1115,22 +1238,32 @@ export async function runSuite(
     },
   );
   const { redactor } = protection;
-  // Journeys run one at a time, so model calls belong to the current run.
+  // Journeys run one at a time, so model calls and friction events belong
+  // to the current run.
   let currentUsage: Usage | null = null;
+  let currentFriction: FrictionRecorder | null = null;
+  // Writes are serialized, so each event lands on the line it was numbered
+  // with, even when a driver logs without awaiting.
+  let lines = 0;
+  let written: Promise<void> = Promise.resolve();
   const log: Logger = async (event, data) => {
     if (event === 'model_call' && currentUsage)
       addModelCall(currentUsage, data);
     // Every event is redacted before it is written: page text, errors,
     // model responses and audit output alike.
-    await appendFile(
-      join(options.directory, 'events.jsonl'),
-      JSON.stringify({
-        time: new Date().toISOString(),
-        event,
-        data: redactor.deep(data),
-      }) + '\n',
-      { mode: 0o600 },
+    const redacted = redactor.deep(data);
+    const line = ++lines;
+    currentFriction?.record(line, event, redacted);
+    const text =
+      JSON.stringify({ time: new Date().toISOString(), event, data: redacted }) +
+      '\n';
+    const write = written.then(() =>
+      appendFile(join(options.directory, 'events.jsonl'), text, {
+        mode: 0o600,
+      }),
     );
+    written = write.catch(() => undefined);
+    await write;
   };
   // Model adapters receive only the redacted, provider-visible view.
   const engine = providerModels(
@@ -1153,20 +1286,84 @@ export async function runSuite(
           suite,
           options.profile,
         ));
+  // What every run of this suite measures, for comparisons (src/compare.ts).
+  // The driver's environment is read once a session has opened.
+  const identityFor = async (): Promise<RunIdentity> => ({
+    identityVersion: IDENTITY_VERSION,
+    build: options.build ?? null,
+    suite: {
+      name: suite.name,
+      hash: suiteHash(suite, redactor),
+      target: suiteTarget(suite.baseURL),
+      selection: {
+        journeys: journeys.map((journey) => journey.id),
+        viewports: viewports.map((viewport) => viewport.name),
+        repeat,
+        ...(selection
+          ? {
+              combinations: cells.map(
+                (cell) => `${cell.environment!.name}/${cell.viewport.name}`,
+              ),
+            }
+          : {}),
+      },
+    },
+    engine: {
+      version: ENGINE_VERSION,
+      resultVersion: RESULT_VERSION,
+      auditContractVersion: AUDIT_CONTRACT_VERSION,
+    },
+    environment: {
+      platform: suite.platform,
+      ...((await driver.environment?.()) ?? {
+        driver: options.driver
+          ? 'custom'
+          : suite.platform === 'macos'
+            ? 'macos'
+            : 'playwright',
+        browser: null,
+      }),
+      os: osIdentity(),
+      node: process.versions.node,
+    },
+    models: options.modelIdentity ?? null,
+  });
   const results: Result[] = [];
+  // The report links every file it shows; paths the redaction rewrote in the
+  // results are resolved to the files they name (src/evidence/links.ts).
+  const report = async (name: string, shown: Result[]) => {
+    const files = new Set<string>();
+    reportHTML(name, shown, options.directory, (file) => {
+      files.add(file);
+      return '';
+    });
+    const links = await evidenceLinks(
+      options.directory,
+      redactor,
+      files,
+      baselines ? [baselines] : [],
+    );
+    return reportHTML(
+      name,
+      shown,
+      options.directory,
+      (file) => links.get(file) ?? UNRESOLVED_LINK,
+    );
+  };
   const lifecycle = suite.dataLifecycle
     ? new DataLifecycleHooks(suite.dataLifecycle, log)
     : null;
   try {
     runs: for (const journey of journeys) {
-      for (const viewport of viewports) {
+      for (const { environment, viewport } of cells) {
         for (let attempt = 1; attempt <= repeat; attempt++) {
           if (options.signal?.aborted) break runs;
+          const cell = environment
+            ? `${journey.id}-${environment.name}-${viewport.name}`
+            : `${journey.id}-${viewport.name}`;
           const directory = join(
             options.directory,
-            repeat > 1
-              ? `${journey.id}-${viewport.name}-${attempt}`
-              : `${journey.id}-${viewport.name}`,
+            repeat > 1 ? `${cell}-${attempt}` : cell,
           );
           await mkdir(directory, { mode: 0o700 });
           // A unique marker per run, substituted for {{marker}} in the journey
@@ -1182,15 +1379,29 @@ export async function runSuite(
                 viewport: viewport.name,
               })
             : null;
+          // Setup values (except publicValues) are secrets from here on:
+          // redacted from every event, result and file, masked in screenshots.
+          protection.beginRun(
+            data?.values ?? {},
+            suite.dataLifecycle?.publicValues ?? [],
+          );
           if (data) {
             const filled = withData(runJourneyConfig, data.values);
             if (filled.missing && !data.setupFailure)
               data.missingValue(filled.missing);
             runJourneyConfig = filled.journey;
           }
+          const friction = new FrictionRecorder();
+          currentFriction = friction;
+          options.onRunStart?.({
+            journey: journey.id,
+            viewport: viewport.name,
+            attempt,
+          });
           await log('journey_start', {
             journey: journey.id,
             viewport: viewport.name,
+            ...(environment ? { environment: environment.name } : {}),
             attempt,
             ...(runJourneyConfig !== journey || data ? { marker } : {}),
           });
@@ -1199,6 +1410,7 @@ export async function runSuite(
               suite,
               journey: runJourneyConfig,
               viewport,
+              environment,
               directory,
               storageState: options.storageState,
               video: options.video,
@@ -1222,11 +1434,15 @@ export async function runSuite(
                 baselines,
                 data,
                 options.signal,
+                friction,
+                await identityFor(),
+                environment ? resultEnvironment(environment) : null,
               );
               if (runJourneyConfig !== journey || data) result.marker = marker;
               results.push(result);
             } finally {
               currentUsage = null;
+              currentFriction = null;
             }
           } finally {
             // A run that never produced a result (the session failed to
@@ -1245,12 +1461,16 @@ export async function runSuite(
           );
           await writeFile(
             join(options.directory, 'report.html'),
-            reportHTML(redactor.text(suite.name), results, options.directory),
+            await report(redactor.text(suite.name), results),
             { mode: 0o600 },
           );
         }
       }
     }
+  } catch (caught) {
+    // Errors can quote the journey, the page or a hook's reply, which can
+    // hold a setup value only this run's redactor knows.
+    throw redactError(caught, redactor);
   } finally {
     try {
       await driver.close();

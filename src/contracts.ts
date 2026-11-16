@@ -2,10 +2,14 @@ import { z } from 'zod';
 import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
 import {
   evidencePolicySchema,
-  type EvidencePolicy,
+  type RunEvidencePolicy,
 } from './evidence/policy.js';
 import { targetSchema, type Target } from './target.js';
-import { dataLifecycleSchema } from './lifecycle.js';
+import { DATA_PLACEHOLDER, dataLifecycleSchema } from './lifecycle.js';
+import { referencePathsSchema } from './friction/contract.js';
+import { environmentSuiteShape, selectCombinations } from './environments.js';
+import { KEYBOARD_JOURNEY_UNSUPPORTED } from './browser-support.js';
+import { unknownTokenEnvironments } from './audits/design-tokens.js';
 
 export { targetSchema, type Target };
 
@@ -184,6 +188,10 @@ export const journeySchema = z
       )
       .max(10)
       .optional(),
+    // Optional reviewed routes to the goal (alternate valid paths allowed),
+    // compared with each run's task-friction summary. Never sent to the HTTP
+    // model adapters, and never part of an outcome or quality verdict.
+    referencePaths: referencePathsSchema.optional(),
     interactions: z.array(interactionSchema).default([]),
     // Steps run once after ready and before the first observation, to reach a
     // known starting state (e.g. clear a calculator). Each must match the
@@ -352,9 +360,29 @@ const suiteObject = z
     // Reset, setup and cleanup hooks on a local fixture service for
     // authorized write flows (see src/lifecycle.ts). Web only.
     dataLifecycle: dataLifecycleSchema.optional(),
+    // Named environments (locale, time zone, colour scheme, reduced motion,
+    // forced colours, contrast, pseudo-localized long text) and the explicit
+    // environment × viewport combinations, or capped matrix, that run them
+    // (see src/environments.ts). Web only.
+    ...environmentSuiteShape,
   })
   .strict()
   .superRefine((suite, ctx) => {
+    for (const message of selectCombinations(suite).issues)
+      ctx.addIssue({ code: 'custom', message });
+    // design.tokens sets per environment name suite environments.
+    const environmentNames = (suite.environments ?? []).map(
+      (environment) => environment.name,
+    );
+    suite.audits.checks.forEach((check, index) => {
+      if (check.id !== 'design.tokens') return;
+      for (const name of unknownTokenEnvironments(check, environmentNames))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['audits', 'checks', index, 'environments', name],
+          message: `design.tokens environments: unknown environment ${name}; each name must be one of the suite's environments`,
+        });
+    });
     // A valueEnv value is a secret (see suiteEvidencePolicy): an unsanitized
     // trace or video would record it.
     if (fillSecrets(suite).length)
@@ -364,6 +392,16 @@ const suiteObject = z
             code: 'custom',
             path: ['evidence', format],
             message: `evidence.${format}: 'local' cannot be sanitized and this suite types a secret from fill valueEnv; use 'auto' or 'off'`,
+          });
+    // So is a secret setup value (see suiteEvidencePolicy).
+    const secretData = secretDataKeys(suite);
+    if (secretData.length)
+      for (const format of ['trace', 'video'] as const)
+        if (suite.evidence[format] === 'local')
+          ctx.addIssue({
+            code: 'custom',
+            path: ['evidence', format],
+            message: `evidence.${format}: 'local' cannot be sanitized and this suite uses secret dataLifecycle setup values (${secretData.join(', ')}); use 'auto' or 'off', or list values that are not secret in dataLifecycle.publicValues`,
           });
     for (const values of [
       suite.journeys.map((j) => j.id),
@@ -495,6 +533,17 @@ const suiteObject = z
         code: 'custom',
         message: 'Use browserChannel or browserExecutable, not both',
       });
+    // An engine whose keyboard navigation differs from the measured model
+    // (src/browser-support.ts) refuses keyboard-only journeys outright.
+    const keyboardRefused =
+      suite.platform === 'web'
+        ? KEYBOARD_JOURNEY_UNSUPPORTED[suite.browser]
+        : undefined;
+    if (
+      keyboardRefused &&
+      suite.journeys.some((journey) => journey.input === 'keyboard')
+    )
+      ctx.addIssue({ code: 'custom', message: keyboardRefused });
     const auditsAtStates = suite.audits.checks.some((check) =>
       (check.at as string[]).includes('states'),
     );
@@ -593,6 +642,25 @@ function fillSecrets(suite: {
   );
 }
 
+// The {{data.<key>}} keys in `value` that are secret: every setup value
+// except those listed in dataLifecycle.publicValues.
+function dataKeysIn(value: unknown, publicValues: readonly string[]): string[] {
+  const keys = [...JSON.stringify(value).matchAll(DATA_PLACEHOLDER)].map(
+    (match) => match[1]!,
+  );
+  return [...new Set(keys)].filter((key) => !publicValues.includes(key));
+}
+
+// The secret setup value keys the suite's journeys use, sorted.
+export function secretDataKeys(
+  suite: Pick<Suite, 'journeys'> & {
+    dataLifecycle?: Pick<NonNullable<Suite['dataLifecycle']>, 'publicValues'>;
+  },
+): string[] {
+  if (!suite.dataLifecycle) return [];
+  return dataKeysIn(suite.journeys, suite.dataLifecycle.publicValues).sort();
+}
+
 // The evidence policy a run applies: the suite's own, plus every fill
 // valueEnv treated as a declared secret. Its variable joins redactEnv, so the
 // value is redacted from all text evidence (accessibility snapshots in
@@ -600,16 +668,38 @@ function fillSecrets(suite: {
 // video are off under 'auto'); on the web the filled field is also masked in
 // every screenshot. macOS window captures cannot be masked; there the
 // declared secret keeps screenshots from the planner instead.
+//
+// Secret dataLifecycle setup values ({{data.<key>}} not in publicValues) are
+// treated the same way: `secretData` lists the keys the journeys use, which
+// makes the suite sensitive, and every fill or select whose value reads one
+// is masked.
+// The values themselves are redacted once setup returns them
+// (EvidenceProtection.beginRun).
 export function suiteEvidencePolicy(
-  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys'>,
-): EvidencePolicy {
+  suite: Pick<Suite, 'evidence' | 'platform' | 'journeys' | 'dataLifecycle'>,
+): RunEvidencePolicy {
   const fills = fillSecrets(suite);
-  if (!fills.length) return suite.evidence;
+  const publicValues = suite.dataLifecycle?.publicValues ?? [];
+  const secretData = secretDataKeys(suite);
+  // Fields that show a secret setup value: a fill typed from one, or a
+  // select set to one (a closed select draws the chosen option's text).
+  const dataFields = secretData.length
+    ? suite.journeys.flatMap((journey) =>
+        [...journey.interactions, ...(journey.setup ?? [])].flatMap(
+          (interaction) =>
+            (interaction.kind === 'fill' || interaction.kind === 'select') &&
+            dataKeysIn(interaction.value ?? '', publicValues).length
+              ? [interaction.target]
+              : [],
+        ),
+      )
+    : [];
+  if (!fills.length && !secretData.length) return suite.evidence;
   const key = (target: Target) => JSON.stringify(target);
   const masked = new Set(suite.evidence.masks.map(key));
   const masks = [...suite.evidence.masks];
   if (suite.platform !== 'macos')
-    for (const { target } of fills)
+    for (const target of [...fills.map((fill) => fill.target), ...dataFields])
       if (!masked.has(key(target))) {
         masked.add(key(target));
         masks.push(target);
@@ -623,6 +713,7 @@ export function suiteEvidencePolicy(
       ]),
     ],
     masks,
+    ...(secretData.length ? { secretData } : {}),
   };
 }
 export type Action =

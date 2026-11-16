@@ -25,9 +25,29 @@ import {
 import type { Suite } from '../contracts.js';
 import type { UIDriver } from './types.js';
 import { runPlaywrightAudit } from './playwright-audits.js';
-import { protectedScreenshot } from './playwright-evidence.js';
+import {
+  learnSecretOptions,
+  protectedScreenshot,
+} from './playwright-evidence.js';
 import { formatEnabled } from '../evidence/policy.js';
 import { focusKey } from './playwright-keyboard.js';
+import {
+  ENVIRONMENT_PROBE,
+  environmentContextOptions,
+  environmentProbeSchema,
+  markPseudoLocalized,
+  pseudoLocalizationScript,
+  unappliedSettings,
+} from '../environments.js';
+import {
+  ENGINE_GAPS,
+  engineAuditGap,
+  environmentEmulation,
+} from '../browser-support.js';
+import {
+  preparePerformance,
+  type PerformanceRecorder,
+} from './playwright-performance.js';
 
 // Which build to launch: Playwright's bundled browser, an installed channel,
 // or another Chromium-based browser by path (e.g. Dia). Used by runs and by
@@ -64,11 +84,31 @@ export async function playwrightDriver(
   // Only a dedicated test profile; a personal browser profile is refused.
   if (profile) profile = await dedicatedProfile(profile);
   const browser = profile ? null : await engine.launch(launchOptions);
+  const buildName = build.browserChannel
+    ? `channel:${build.browserChannel}`
+    : build.browserExecutable
+      ? 'executable'
+      : 'bundled';
+  // A persistent-profile context has no Browser object: its version is read
+  // from the first session's user agent.
+  let profileVersion: string | null = null;
   return {
+    environment() {
+      return {
+        driver: 'playwright',
+        browser: {
+          name: browserName,
+          version: browser?.version() ?? profileVersion,
+          build: buildName,
+          headless,
+        },
+      };
+    },
     async openSession({
       suite,
       journey,
       viewport,
+      environment,
       directory,
       storageState,
       video,
@@ -81,12 +121,16 @@ export async function playwrightDriver(
       // Written by the runner, not by Playwright, so the file is private
       // (0600) from the moment it exists.
       const capture = async (path: string) => {
+        const started = Date.now();
         const image = await protectedScreenshot(page, evidence?.screenshots, {
           fullPage: false,
         });
+        timing?.screenshot(Date.now() - started);
         await writeFile(path, image, { mode: 0o600 });
         return image;
       };
+      // Set once the page exists (performance.web suites only).
+      let timing: PerformanceRecorder | null = null;
       // Load only the session material for the suite's own origins.
       let scoped: BrowserContextOptions['storageState'];
       if (storageState && profile)
@@ -101,8 +145,17 @@ export async function playwrightDriver(
         await log('storage_state_scoped', report);
         scoped = state as BrowserContextOptions['storageState'];
       }
+      // Only what this engine is verified to emulate is applied; the rest of
+      // the environment is withheld and reported unsupported (never
+      // half-applied, never assumed).
+      const emulation = environment
+        ? environmentEmulation(browserName, environment)
+        : null;
+      const emulated = emulation?.environment ?? null;
       const contextOptions = {
         viewport,
+        // Locale, time zone and media emulation of the suite environment.
+        ...environmentContextOptions(emulated),
         serviceWorkers: 'block' as const,
         acceptDownloads: false,
         ...(recorded ? { recordVideo: { dir: directory } } : {}),
@@ -117,6 +170,30 @@ export async function playwrightDriver(
       const page = browser
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
+      // Pseudo-localized long text: expand the application's text in every
+      // page the session loads (src/environments.ts).
+      if (emulated?.pseudoLocalization) {
+        await context.addInitScript({
+          content: pseudoLocalizationScript(emulated.pseudoLocalization),
+        });
+        markPseudoLocalized(page);
+      }
+      if (!browser && profileVersion === null)
+        profileVersion =
+          /(?:HeadlessChrome|Chrome|Chromium|Firefox|Version)\/(\d+(?:\.\d+)*)/.exec(
+            await page.evaluate(() => navigator.userAgent),
+          )?.[1] ?? null;
+      // Option labels that name a secret choice become secrets before any
+      // page text leaves the driver.
+      const learn = () => learnSecretOptions(page, evidence);
+      // Before the first navigation: collector script and conditions.
+      timing = await preparePerformance(
+        context,
+        page,
+        suite,
+        browserName,
+        log,
+      );
       const browserErrors: string[] = [];
       // Screenshot path of each observation step, for audit evidence.
       const screenshots = new Map<number, string>();
@@ -205,6 +282,11 @@ export async function playwrightDriver(
         get unauthorized() {
           return unauthorized;
         },
+        engineGaps: ENGINE_GAPS[browserName],
+        environmentGaps: emulation?.unsupported ?? [],
+        auditUnsupported(config) {
+          return engineAuditGap(browserName, config);
+        },
         async start(timeoutMs) {
           if (
             !allowedURL(
@@ -219,6 +301,27 @@ export async function playwrightDriver(
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
           });
+          if (environment && emulated) {
+            // The page, not the configuration, says what was emulated: a
+            // setting the browser did not apply fails the run instead of
+            // measuring another environment. Settings the engine does not
+            // emulate were withheld and are reported unsupported instead.
+            const measured = environmentProbeSchema.parse(
+              await page.evaluate(ENVIRONMENT_PROBE),
+            );
+            const missing = unappliedSettings(emulated, measured);
+            await log('environment_applied', {
+              environment: environment.name,
+              measured,
+              pseudoLocalization: !!emulated.pseudoLocalization,
+              unapplied: missing,
+              unsupported: emulation?.unsupported ?? [],
+            });
+            if (missing.length)
+              throw new Error(
+                `Environment ${environment.name}: ${suite.browser} did not apply ${missing.join(', ')}`,
+              );
+          }
         },
         setTimeout(timeoutMs) {
           page.setDefaultTimeout(timeoutMs);
@@ -226,10 +329,14 @@ export async function playwrightDriver(
         location() {
           return page.url();
         },
+        // A check returns only a boolean, so no page text leaves through it,
+        // and it runs for every condition between an observation and its
+        // candidates: reading the options here would only widen that gap.
         check(condition) {
           return check(page, condition);
         },
         async observe(step, screenshot) {
+          await learn();
           screenshots.set(step, screenshot);
           const observation = await observe(page, step, screenshot, capture);
           // Keyboard focus is part of a keyboard-only journey's state.
@@ -239,7 +346,8 @@ export async function playwrightDriver(
               .digest('hex');
           return observation;
         },
-        candidates() {
+        async candidates() {
+          await learn();
           return candidates(
             page,
             journey,
@@ -248,27 +356,35 @@ export async function playwrightDriver(
             log,
           );
         },
-        repeatState(action) {
+        async repeatState(action) {
+          await learn();
           return repeatState(page, action, journey);
         },
         offeredControls() {
           return offeredControls(page);
         },
-        execute(action, before) {
-          return execute(
-            page,
-            action,
-            before,
-            journey,
-            suite.baseURL,
-            suite.allowedOrigins,
-          );
+        async execute(action, before) {
+          try {
+            return await execute(
+              page,
+              action,
+              before,
+              journey,
+              suite.baseURL,
+              suite.allowedOrigins,
+            );
+          } finally {
+            // An error message can quote the page.
+            await learn();
+          }
         },
         async screenshot(path) {
+          await learn();
           await capture(path);
         },
-        runAudit(request) {
-          return runPlaywrightAudit(page, request, {
+        async runAudit(request) {
+          await learn();
+          const run = () => runPlaywrightAudit(page, request, {
             journey,
             screenshotAt: (step) => screenshots.get(step) ?? null,
             build: {
@@ -284,7 +400,12 @@ export async function playwrightDriver(
             // pre-capture masks as every other screenshot, on top of the
             // audit's own dynamic-region masks.
             protection: evidence?.screenshots,
+            performance: timing,
           });
+          // Another audit's page work is harness time for performance.web.
+          return timing && request.config.id !== 'performance.web'
+            ? timing.during(run)
+            : run();
         },
         async finish(trace) {
           const recording = page.video();

@@ -4,6 +4,7 @@
 // hypotheses and never become audit findings.
 import { z } from 'zod';
 import { visualComparisonSchema } from './visual-contract.js';
+import { performanceMeasurementSchema } from './performance-contract.js';
 
 // Bumped when an audit record changes shape; stored on every result.
 // Version 2 adds `visual` to audit output and runs (visual.baseline).
@@ -164,6 +165,9 @@ export const auditOutputSchema = z
     // The baseline comparison of a visual.baseline run; null for every
     // other audit (src/audits/visual-contract.ts).
     visual: visualComparisonSchema.nullable().default(null),
+    // The measurement of a performance.web run; null for every other audit
+    // (src/audits/performance-contract.ts).
+    performance: performanceMeasurementSchema.nullable().default(null),
   })
   .strict();
 export type AuditOutput = z.input<typeof auditOutputSchema>;
@@ -235,6 +239,10 @@ export const auditRunSchema = z
     // including missing, incompatible and unstable outcomes. Null for other
     // audits and for unsupported or errored runs.
     visual: visualComparisonSchema.nullable(),
+    // performance.web only: what the run measured. Optional: added within
+    // audit contract version 2, absent for other audits and for runs that
+    // measured nothing (unsupported, errored, not instrumented).
+    performance: performanceMeasurementSchema.optional(),
   })
   .strict();
 export type AuditRun = z.infer<typeof auditRunSchema>;

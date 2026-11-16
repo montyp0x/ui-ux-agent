@@ -82,11 +82,12 @@ Use [examples/website.json](examples/website.json) as a template. [schemas/suite
 | Setting              | Purpose                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
 | `baseURL`            | Target website or browser application                                         |
-| `browser`            | `chromium` (default), `firefox` or `webkit`                                   |
+| `browser`            | `chromium` (default), `firefox` or `webkit`; what each engine is verified to do is in [Browser support](#browser-support) |
 | `browserChannel`     | Chromium only: an installed build (`chrome`, `chrome-beta`, `msedge`)         |
 | `browserExecutable`  | Chromium only: absolute path to another Chromium-based browser's executable   |
 | `requiresAuth`       | Require a storage-state file or a dedicated `--profile`; defaults to false    |
 | `viewports`          | Named widths/heights to run independently                                     |
+| `environments`       | Named locale, time zone, colour scheme, reduced motion, forced colours, contrast and pseudo-localized long-text settings, run only in the `combinations` or capped `matrix` the suite selects (see [Environments](#environments)) |
 | `allowedOrigins`     | Explicit additional origins the agent may navigate to                         |
 | `applicationOrigins` | Backend origins whose 401 responses block the journey                         |
 | `allowedRequests`    | Explicit method/origin rules for write requests in authorized test flows, each with an exact `path` or a `pathPattern` (regex on the URL path) |
@@ -96,7 +97,7 @@ Use [examples/website.json](examples/website.json) as a template. [schemas/suite
 
 A journey offers visible links within its configured paths and origins. `"/"` permits the homepage only; `/docs` permits `/docs` and its descendants. Paths apply to all permitted navigation origins. Auth/logout routes, new tabs and popups are excluded. `discoverRoles` optionally enables discovery of visible, uniquely named buttons, tabs or menu items. It defaults to an empty list.
 
-Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code. A `fill` takes either a literal `value` or `valueEnv`, the name of an environment variable read when the field is filled, so a test password never sits in a suite file: actions, decisions, results and the run's `suite.json` carry only the variable name, and a run fails before it starts, naming every unset variable. Every `valueEnv` variable is also treated as a declared secret (as if listed in `evidence.redactEnv`): its value is redacted from all text evidence, the accessibility snapshots in `observation` events included; the suite counts as sensitive, so traces and video are not captured under `auto` and `trace`/`video: "local"` is refused; and on the web the filled field is masked in every screenshot (macOS window captures cannot be masked, so a macOS suite with `valueEnv` keeps screenshots from the planner). Values shorter than 4 characters are not redacted as text. `{{marker}}` anywhere in a journey (typed values, check patterns) is replaced by a value unique to each run, recorded as the result's `marker`, so a run can find its own effects.
+Locators support accessible roles/names, labels, placeholders, CSS selectors and test IDs. A site does not need test IDs. Configured actions support click, fill, select, check/uncheck and a bounded set of keys. On Chromium the agent is also offered **Go back** when the browser's session history has a previous entry inside the journey's scope, read from the browser's own navigation history so client-side routes count. Going back rechecks the current URL, history position and target entry before dispatch, and is rejected as stale if any changed. Values and selectors come from reviewed suite configuration, never generated model code. A `fill` takes either a literal `value` or `valueEnv`, the name of an environment variable read when the field is filled, so a test password never sits in a suite file: actions, decisions, results and the run's `suite.json` carry only the variable name, and a run fails before it starts, naming every unset variable. Every `valueEnv` variable is also treated as a declared secret (as if listed in `evidence.redactEnv`): its value is redacted from all text evidence, the accessibility snapshots in `observation` events included; the suite counts as sensitive, so traces and video are not captured under `auto` and `trace`/`video: "local"` is refused; and on the web the filled field is masked in every screenshot (macOS window captures cannot be masked, so a macOS suite with `valueEnv` keeps screenshots from the planner). Values shorter than 4 characters are not redacted as text; the CLI warns about them when it loads the suite and every result lists them (see [Evidence protection](#evidence-protection)). `{{marker}}` anywhere in a journey (typed values, check patterns) is replaced by a value unique to each run, recorded as the result's `marker`, so a run can find its own effects.
 
 ```json
 {
@@ -133,6 +134,49 @@ A journey can name pages that resemble its destination but are not it:
 
 Up to ten path regexes. When the agent reaches a matching path, the runner records an observed `detour` finding with the screenshot and the reviewed description, plus the number of observed steps spent there. Each visit is logged as a `detour` event. Success checks are unchanged: a detour never counts as reaching the destination. The planner is not told about detours, so the finding reflects what a user without inside knowledge would do. Use it when look-alike pages are a usability question rather than a test bug.
 
+### Task friction
+
+Every run's result carries `friction`: a summary of how the agent's run went, computed only from the run's own events in `events.jsonl` (`src/friction`), so it can be recomputed from the log and reconciles with it exactly (`eventLogRuns` and `computeFriction` do that for a consumer). It counts and links; it judges nothing, gates nothing and never changes the outcome or the quality verdict.
+
+- **Actions:** `product` (actions the selector chose on the product, waits excluded), `waits`, and `recovery` (the runner's no-match recovery scrolls). `overhead` keeps planner and runner work apart from product actions: planner refreshes with their reasons, `no_match` decisions, replans before revisiting a tried state, and recovery actions.
+- **Items**, each linked to its `events.jsonl` line, the observation step, its URL and the screenshots of that state and the next one:
+  - `backtrack`: a browser-history **Go back**, or a navigation to a page (URL without fragment) observed earlier in the run;
+  - `repeat`: an action dispatched again in a state where it was already tried (the loop check's second or third visit);
+  - `recovery`: a runner recovery after two `no_match` decisions;
+  - `detour`: an observed step on a configured [detour](#detours);
+  - `failed_attempt`: an action whose dispatch failed (`stale:` when a guard rejected it, else `error:`);
+  - `no_effect`: an action after which the observed state did not change (waits excluded).
+- **Review rubric:** four fixed questions for a human reviewer (`discoverability`, `feedback`, `clarity`, `recovery`), each with the run's counts that bear on it. No dimension is scored; every one is `review: "pending"`, and `no_signals` means nothing was counted, not that the dimension is good. Model concerns stay `hypothesis` findings; `friction.hypotheses` points at the plan events that raised them.
+
+A journey can list up to five reviewed `referencePaths`, alternate valid routes to its goal:
+
+```json
+{
+  "referencePaths": [
+    {
+      "name": "via-docs",
+      "waypoints": [
+        { "kind": "page", "pattern": "^/docs$" },
+        { "kind": "action", "action": "link", "to": "^/docs/install$" }
+      ],
+      "expectedActions": 2
+    },
+    {
+      "name": "via-search",
+      "ordered": false,
+      "waypoints": [{ "kind": "page", "pattern": "^/search$" }, { "kind": "page", "pattern": "^/docs/install$" }],
+      "allow": [{ "description": "cookies" }]
+    }
+  ]
+}
+```
+
+A `page` waypoint matches an observed page path (regex); an `action` waypoint matches an agent action that did not fail by `action` kind, a `description` regex and, for links and history back, a `to` regex on the destination path (at least one of the three). Waypoints are matched in order unless `ordered` is false; an unmatched waypoint is reported and does not block later ones. `expectedActions` (default: the number of action waypoints) is compared with the run's product actions minus those matching an `allow` entry (a cookie banner, say); the difference is `extraActions`. Each run is compared with every path and names the `closest` (most waypoints matched, then fewest extra actions). Reference paths are never sent to a model adapter, custom `Models` implementations included: the provider view (`src/evidence/provider.ts`) drops them before redacting the journey (the built-in HTTP adapters read only the goal and persona anyway).
+
+Across repeated runs (`--repeat`), `summary.json` adds a `friction` aggregate per journey/viewport: `runs` (runs with a friction summary), `withoutFriction` (results recorded before friction existed, not counted as zero), per count kind (`backtracks`, `repeats`, `recoveries`, `detours`, `failedAttempts`, `noEffect`) the `total` items and the `runs` with at least one, and `reference` (runs compared with reference paths and how many followed their closest path, `null` when none was). Like the per-run summary it is descriptive only and never gates.
+
+What this does not establish: these are counts from an automated agent's run. Agent actions, agent duration and synthetic success rates are not human task time, success rate or satisfaction, and extra actions alone do not establish poor usability: a route the reference paths do not list may be just as valid. Read the linked steps before drawing a conclusion. Friction text comes from the redacted event log and the result is redacted again, like other evidence.
+
 ### Content readiness
 
 Route/page-shell checks prove arrival, not loaded content. Optionally add `contentReady` to a journey:
@@ -157,7 +201,7 @@ GET, HEAD and OPTIONS are allowed. Other request methods are blocked unless conf
 
 ### State coverage
 
-A declared journey state can carry its own `expect` checks, evaluated once at the first observed state where its `when` holds, independently of the journey's `success` checks. A loading, empty, error or success state is then verified on its own terms (the error state offers a retry, the empty state explains itself) whatever the journey's outcome:
+A declared journey state can carry its own `expect` checks, evaluated once at the first observed state where its `when` holds, independently of the journey's `success` checks. States are checked right after each observation; when the success checks pass while a declared state is still unreached (the page loaded between the observation and the checks), the runner takes one more observation of the same step (`state_observation` in `events.jsonl`) and checks the pending states against it before deciding, so a state the passing page shows is not skipped. A loading, empty, error or success state is then verified on its own terms (the error state offers a retry, the empty state explains itself) whatever the journey's outcome:
 
 ```json
 {
@@ -228,6 +272,7 @@ Journeys that write need reviewed `allowedRequests`, and their data needs a life
 - `setup` (optional) runs before each run with `{"run": "<marker>"}` and may answer `{"values": {"owner": "…"}}`: disposable values, such as a test identity, that replace `{{data.<key>}}` anywhere in the journey. Only the keys are recorded. A failed reset or setup, or a `{{data.*}}` value setup did not return, ends the run as `blocked` (`data_setup_failed`) before the journey starts.
 - `cleanup` (required) runs after every run, after the browser session closed, whatever ended it, with `{"run": "<marker>", "trigger": "passed|failed|blocked|timeout|cancelled|error"}`.
 - `verify` (optional) is a `GET` with `?run=<marker>` answering `{"remaining": N}`; any remaining record is a cleanup failure.
+- `publicValues` (optional, default `[]`): setup value keys that are **not** secret. Every other setup value is a secret, like a `valueEnv` value: once setup returns it, it is redacted as `[REDACTED:data:<key>]` from all text evidence (the event log, its accessibility snapshots and URLs, results, the summary, the report, files drivers and audits write, model payloads) and masked in every screenshot where it is visible as page text, an input value or a select's chosen option (its value or the option text the closed select draws); a fill or select whose value reads it has its field masked; the label and text of a select option whose value is a secret (a setup value or any other redacted value) are redacted too, as `[REDACTED:<secret label>:option]` (for example `[REDACTED:data:owner:option]`), because they name the secret choice; and a suite whose journeys use it counts as sensitive, so traces and video are not captured under `auto` and `trace`/`video: "local"` is refused at load. A secret value setup returns that no journey references makes the run sensitive too, from that run on (the redactor keeps every secret for the rest of the suite): traces and video are off for it, under `local` as well, with the reason in `evidence.formats`. The result's `evidence.redactedData` lists the keys redacted in that run. A test identity a reviewer needs to read in the evidence, and that is safe to keep there, goes in `publicValues`. Values shorter than 4 characters cannot be redacted as text (see [Evidence protection](#evidence-protection)).
 
 Each hook is bounded by `timeoutMs`, never follows redirects and parses its answer strictly. A cleanup that fails, times out, answers invalid output or leaves records keeps the functional outcome but is reported prominently: `dataLifecycle.clean` is `false` on the result, a `data-cleanup` finding is added, the report opens with a **CLEANUP FAILED** banner naming the runs, the CLI prints a `CLEANUP FAILED` line and exits 1. Nothing else changes: the quality verdict and its checks are those of the same run with a clean cleanup. Hook calls are logged as `data_reset`, `data_setup` and `data_cleanup` events. Ctrl-C cancels a CLI run: the current run stops at its next stage (`run_cancelled`), its cleanup still runs, and no further run starts; a second Ctrl-C exits at once. Library callers pass `signal` to `runSuite`. [examples/notes.json](examples/notes.json) with [examples/notes-fixture.ts](examples/notes-fixture.ts) is the reference flow, also run by `npm run demo:states`.
 
@@ -267,6 +312,8 @@ Built-in audits:
 - `layout.horizontal-overflow`: the document is wider than the viewport in a state observed since the audit's previous checkpoint (severity `serious`). Playwright only; unsupported on macOS.
 - `accessibility.axe`: an opt-in automated axe-core scan of web pages; see [Accessibility scan](#accessibility-scan-axe-core).
 - `visual.baseline`: an opt-in screenshot comparison with reviewed baselines; see [Visual baselines](#visual-baselines).
+- `design.tokens`: an opt-in check of computed styles against a suite-owned token set; see [Design tokens](#design-tokens).
+- `performance.web`: opt-in navigation timing and Web Vitals of the page under test, with optional network/CPU conditions and suite-owned budgets; see [Web performance](#web-performance).
 - `layout.responsive` (opt-in; default checkpoints `ready` and `completion`): deterministic layout measurement at the session's viewport, then at each extra `matrix.breakpoints` entry and a reflow case, resized in place and restored (viewport and scroll position) before the journey continues. Rules (`rules`, default all three):
   - `clipping`: text or a control cut off by an `overflow: hidden`/`clip` ancestor, by more than `clipping.tolerancePx` (default 1). Severity `serious` when a control is cut, `moderate` for text. Visually hidden (1px) and collapsed containers are skipped. Declared truncation (`text-overflow: ellipsis`, `-webkit-line-clamp`) is a `needs_review` item, never a violation.
   - `occlusion`: a control scrolled into view (block and inline centre) is hit-tested at a 3x3 grid; another element covering its centre or at least `occlusion.minCoveredFraction` (default 0.3) of the points is a violation, smaller overlaps are `needs_review`. Its own labels and descendants do not count; controls behind an open modal are skipped. Checks the `requiredControls` targets (severity `serious`; a target that matches nothing makes the run `incomplete`), or every rendered interactive control when none are configured (`moderate`). Elements with `pointer-events: none` are transparent to hit testing and are not reported.
@@ -325,7 +372,7 @@ What a scan does not establish (each run's `limitations` repeats the coverage li
 mkdir -p ~/ui-baselines            # outside Git (or a Git-ignored path such as .baselines/)
 npm run run -- --suite suite.json --baselines ~/ui-baselines
 # review visual-<checkpoint>-current.png in the run directory or report.html, then:
-npm run baseline -- approve --run runs/<run> --baselines ~/ui-baselines --journey ID [--viewport NAME] [--checkpoint ready]
+npm run baseline -- approve --run runs/<run> --baselines ~/ui-baselines --journey ID [--viewport NAME] [--environment NAME] [--checkpoint ready]
 npm run baseline -- approve --run runs/<run> --baselines ~/ui-baselines --all          # after reviewing every capture
 npm run baseline -- approve --run runs/<later run> --baselines ~/ui-baselines --checkpoint ready --replace   # an intended change
 npm run baseline -- list --baselines ~/ui-baselines
@@ -355,11 +402,144 @@ Each run records a `visual` comparison with one status:
 
 Only `match` passes: `missing`, `incompatible` and `unstable` make the check `inconclusive` and the verdict `not_evaluated`. The report shows baseline, current and diff images (red: changed, blue: darker now), the aggregate changed pixels against the tolerance, the changed regions (connected areas on a 16px grid, largest first) and the environment.
 
-The compatibility environment is part of every baseline: viewport size, browser name, version, build (bundled, channel or executable) and headless mode, OS platform, architecture and major release, device scale factor, locale, timezone, colour scheme, reduced motion and the capture settings (`fullPage`, masks, whether evidence protection applied). Its hash names the baseline file: `<dir>/<suite slug>/<journey>/<checkpoint>/<viewport>/<environment id>.png` with a `.json` beside it holding the environment, the image checksum, the masked boxes, when it was approved and from which run. A baseline whose image no longer matches its checksum is an audit `error`.
+The compatibility environment is part of every baseline: viewport size, browser name, version, build (bundled, channel or executable) and headless mode, OS platform, architecture and major release, device scale factor, locale, timezone, colour scheme, reduced motion and the capture settings (`fullPage`, masks, whether evidence protection applied). Its hash names the baseline file: `<dir>/<suite slug>/<journey>/<checkpoint>/<viewport>/<environment id>.png` (in a suite with [environments](#environments), `<viewport>@<suite environment>/`, so each suite environment keeps its own baselines; forced colours, contrast and pseudo-localization are not in the rendering environment hash and are kept apart by that directory) with a `.json` beside it holding the environment, the image checksum, the masked boxes, when it was approved and from which run. A baseline whose image no longer matches its checksum is an audit `error`.
 
-Approval: `approve` reads the run's `results.json`, checks each selected capture against the checksum the run recorded and writes it as the baseline for the environment it was rendered in. `results.json` is redacted text, so when the suite's redaction rewrote a recorded path (a secret value that is part of the run directory's path, for example), the capture is found inside the run directory by that checksum; a suite name the suite's own patterns redacted is skipped, since its baseline location is unknown. Without `--journey`/`--viewport`/`--checkpoint` it requires `--all`. A capture that differs from an approved baseline is approved only with `--replace`; captures that already match or did not settle are skipped; captures from runs whose functional outcome did not pass need `--allow-failed-runs`. The run's `--baselines` directory must exist; `approve` creates it. Either refuses a directory inside a Git work tree unless Git ignores it (`.baselines/` is ignored in this repository), and a directory inside a run directory, which `--prune-runs` would delete with the run; pruning never deletes a baseline directory, which carries no run manifest. Baselines and diff images are run evidence and are never committed; shared storage needs an approved destination and privacy policy.
+Approval: `approve` reads the run's `results.json`, checks each selected capture against the checksum the run recorded and writes it as the baseline for the environment it was rendered in. `results.json` is redacted text, so when the suite's redaction rewrote a recorded path (a secret value that is part of the run directory's path, for example), the capture is found inside the run directory by that checksum; a suite name the suite's own patterns redacted is skipped, since its baseline location is unknown. Without `--journey`/`--viewport`/`--environment`/`--checkpoint` it requires `--all`. A capture that differs from an approved baseline is approved only with `--replace`; captures that already match or did not settle are skipped; captures from runs whose functional outcome did not pass need `--allow-failed-runs`. The run's `--baselines` directory must exist; `approve` creates it. Either refuses a directory inside a Git work tree unless Git ignores it (`.baselines/` is ignored in this repository), and a directory inside a run directory, which `--prune-runs` would delete with the run; pruning never deletes a baseline directory, which carries no run manifest. Baselines and diff images are run evidence and are never committed; shared storage needs an approved destination and privacy policy.
 
 Calibration (`test/visual-baseline.test.ts`, local Chromium, prints its numbers as test diagnostics): five fresh captures of each fixture page (gradients, shadows, SVG, a raster image, a focused field, a CSS transition and an infinite animation) differ by 0 pixels; seeded changes differ by about 700 pixels (one word on a button), 3,900 (an accent colour) and 7,600 (a 2px move). The default tolerance is therefore 0 changed pixels at colour threshold 0.1: comparisons are only made within one rendering environment, where rendering was deterministic. Raise `maxDiffPixels` per suite if a target shows nondeterministic rendering, after measuring it. Web only: unsupported on macOS.
+
+### Environments
+
+A suite can name the settings its users run with and test each one in the combinations that matter, without multiplying every journey into every setting. Each environment is a name plus any of:
+
+| Setting              | Values                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `locale`             | A BCP 47 tag (`de-DE`): `navigator.language`, `Accept-Language` and `Intl` formatting       |
+| `timezone`           | An IANA zone (`Europe/Berlin`)                                                              |
+| `colorScheme`        | `light`, `dark`, `no-preference` (`prefers-color-scheme`)                                   |
+| `reducedMotion`      | `reduce`, `no-preference` (`prefers-reduced-motion`)                                        |
+| `forcedColors`       | `active`, `none` (`forced-colors`)                                                          |
+| `contrast`           | `more`, `no-preference` (`prefers-contrast`)                                                |
+| `pseudoLocalization` | `{}` or `{ "expansion": 0.4 }`: synthetic long text, below                                  |
+
+A setting left out keeps the browser's default (Playwright's: `light`, no reduced motion; the machine's locale and time zone), which can differ between machines, so set what a comparison depends on. Which environments run is always explicit: either `combinations`, a list of `{ "environment", "viewport" }` pairs run in order, or a `matrix` of `environments` × `viewports` with optional `exclude` and `include` pairs and a required `max`:
+
+```json
+"environments": [
+  { "name": "light", "locale": "en-US", "colorScheme": "light" },
+  { "name": "dark", "locale": "en-US", "colorScheme": "dark", "reducedMotion": "reduce" },
+  { "name": "long-text", "locale": "de-DE", "pseudoLocalization": {} }
+],
+"matrix": {
+  "environments": ["light", "dark"],
+  "viewports": ["desktop", "narrow"],
+  "exclude": [{ "environment": "light", "viewport": "narrow" }],
+  "include": [{ "environment": "long-text", "viewport": "narrow" }],
+  "max": 4
+}
+```
+
+A suite with `environments` but neither selection is invalid, as is a matrix over its `max` (the error names the count: `matrix selects 6 environment × viewport combinations … over its max of 4`), a `max` above 24, an unknown or repeated name, an `exclude` outside the product, an `include` already in it, and `combinations` together with `matrix`. Suites without `environments` run every viewport as before and record no environment. `--environment NAME` (with `--viewport`) runs part of the selection. [examples/environments.json](examples/environments.json) is a template.
+
+Each run opens its browser context with the environment's settings, then reads them back from the page (`navigator.language`, the resolved time zone and the media queries) and logs them as `environment_applied` in `events.jsonl`; a setting the browser did not apply fails the run as a `driver_error` naming it, rather than measuring another environment. A setting the suite's engine is not verified to emulate ([Browser support](#browser-support)) is not applied at all: it is withheld from the session (never half-applied), listed with the engine's reason in the result's `environment.unsupported`, in `quality.unsupported` as `environment.<setting>` and in the `environment_applied` event, and the report marks it **Not emulated on this browser engine**. The run still runs and keeps its functional outcome, but its quality verdict cannot be `pass` (`not_evaluated` unless a check failed), because its checks measured another environment. On WebKit that is `forcedColors: active` (the media query matches but author colours are not replaced); on Firefox it is every setting, since nothing was executed there. Every audit runs in each combination as configured, so a dark-mode-only contrast failure (`accessibility.axe`) or a clipped long label (`layout.responsive`) appears only in the environment that has it. Each result records `environment` (the settings and `syntheticText`), its evidence directory is `<journey>-<environment>-<viewport>`, the summary and report group by environment, the run identity lists the selected `combinations` (what each environment emulates is part of the suite hash), and comparisons pair runs per journey, environment and viewport: finding ids include the environment, so a finding in `dark` is never resolved by a `light` run (and, on engines other than Chromium, the engine, whose ids are otherwise unchanged).
+
+**Pseudo-localization** finds layouts that break when translations run long. The harness appends synthetic padding between `⟦` and `⟧` to the application's visible text in every page and frame of the session, as it renders: `Save` becomes `Save ⟦ǟβçđ⟧`. By default short strings grow most (100% up to 10 characters, 80% to 20, 60% to 30, 50% to 50, 40% to 70, 30% beyond); `expansion` sets one ratio. The padding is broken into words of up to 10 characters. The original text stays in front, so suite targets and checks by role name and label still match (the driver accepts the padding after any text node), but a `text` check whose pattern spans a padded node, or ends with `$`, can stop matching. The padding is test content, never application content and never typed: form fields (`input`, `textarea`, `select` and its options), editable regions, code and scripts are left alone, a fill types its configured value, and field values stay their own. Results mark `syntheticText: true` and the report labels every such run **Synthetic text**; findings there were measured on padded text, and the planner and screenshots see it too.
+
+Limits: environments are web only (the macOS driver does not emulate them) and are emulated by the browser, not set in the OS, so system fonts, native form controls and OS-level high-contrast themes are not changed; forced colours and contrast follow the browser's emulation. Chromium and WebKit are exercised by this repository's tests (`test/environments.test.ts` on Chromium, `test/cross-browser.test.ts` on every engine that launches); Firefox is not. Pseudo-localization pads text nodes only: attributes (`placeholder`, `aria-label`, `title`, `alt`), CSS generated content, text in closed or open shadow roots, canvas and images keep their size; it does not mirror layouts (no right-to-left mode) or change fonts or scripts. A real translation can grow differently, so a clean pseudo-localized run is not evidence that a given translation fits. Each combination is a full run (agent steps, model calls, audits), so cost grows with the number selected.
+
+### Design tokens
+
+`design.tokens` is an opt-in driver audit that reads the computed styles of the elements in scope and reports every value that is not one of the suite's design tokens. It checks objective values only: whether a colour, font family, font size, spacing or corner radius the browser computed is in the token set, within a stated tolerance. It does not compare the page with design files or mockups (Figma, Sketch), judge visual similarity or assess aesthetics; those are not attempted, and every run says so in its limitations. For a reviewed picture of the page, use [Visual baselines](#visual-baselines). [examples/design-tokens.json](examples/design-tokens.json) shows it in a suite, with its token file in [examples/design/tokens.json](examples/design/tokens.json):
+
+```json
+{
+  "id": "design.tokens",
+  "at": ["ready", "completion"],
+  "tokens": "design/tokens.json",
+  "include": ["main"],
+  "exclude": ["#support-chat"],
+  "exceptions": [{ "selector": ".partner-offer", "rules": ["color"], "reason": "Partner offers use the partner's brand colours" }]
+}
+```
+
+| Option        | Purpose                                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `at`          | Checkpoints: `ready`, `states`, `completion`; default ready and completion                                                      |
+| `tokens`      | A token file path, relative to the suite file, or an inline token set in the native format                                     |
+| `environments` | Token sets for some of the suite's [environments](#environments), by name, each a file path or inline set like `tokens` (for example a dark theme's set): a run in a listed environment measures against its set, every other run against `tokens`. Each name must be a suite environment; the run's limitations name the set used |
+| `include`     | CSS selectors of the regions to measure; empty measures the body. A selector that matches nothing is an audit `error`          |
+| `exclude`     | CSS selectors of regions to leave out, such as a third-party widget                                                            |
+| `rules`       | `color`, `font-family`, `font-size`, `spacing`, `radius`; default every rule whose category the set defines. Selecting a rule whose category is missing is an `error` |
+| `tolerance`   | `colorDeltaE` (CIEDE2000, default 1, about one just-noticeable difference), `alpha` (default 0.02), `lengthPx` (default 0.5)     |
+| `severity`    | Severity of an off-token finding, gating at or above `failOn`; default `moderate`, so it reports without failing under the default `failOn: serious` |
+| `exceptions`  | Intentional values: a CSS `selector` matched against the element or an ancestor, a `reason`, and optionally the `rules` it exempts (all when omitted) |
+| `maxElements` | Elements measured at most (default 3000); past it the run is `incomplete`                                                      |
+| `timeoutMs`   | Bound on one run, overriding `audits.timeoutMs`                                                                                |
+
+The native token format (Zod-validated at load; an unknown key, an invalid colour or length, an empty category or a set with no category is an error naming the file):
+
+```json
+{
+  "version": 1,
+  "name": "Storefront design tokens",
+  "color": { "ink": "#1a1f36", "brand": "#0b5fff", "overlay": "rgba(16, 24, 40, 0.6)" },
+  "fontFamily": { "body": ["Inter", "Arial", "sans-serif"], "mono": "\"JetBrains Mono\", monospace" },
+  "fontSize": { "sm": "14px", "md": "1rem", "lg": 20 },
+  "spacing": { "1": "4px", "2": "8px", "4": "16px" },
+  "radius": { "sm": "4px", "pill": "9999px" }
+}
+```
+
+Colours are hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`) or `rgb()`/`rgba()`; lengths are numbers (CSS px) or `"<n>px"` / `"<n>rem"` strings, with rem converted using the page's root font size. A token file without `"version"` is read as a [W3C Design Tokens Community Group](https://tr.designtokens.org/format/) document: nested groups, `$type` inherited from groups and `{group.token}` aliases are resolved; `color` tokens (hex strings, or `srgb` objects with `components` or `hex`) and `fontFamily` tokens (a string or a list) are used directly; `dimension` tokens are used when their group names their purpose (`fontSize`/`font.size`, `spacing`/`space`, `radius`/`radii`/`borderRadius`), since the format itself does not say what a dimension is for. Token names are their dotted paths. Tokens of other types (`fontWeight`, `shadow`, `typography` ...), dimensions in other groups and unsupported values are listed in the run's limitations, never silently dropped; an alias cycle or an unknown alias is a load error. The CLI (`--suite`, including `--validate`) and the benchmark load the file relative to the suite; programmatic `runSuite` callers call `loadDesignTokens(suite, suitePath)` first or give the set inline, and an unloaded path is an `error` run that says so.
+
+What is measured, on each rendered element in scope (open shadow roots included; elements with `display: none` or `opacity: 0` and their subtrees, `visibility: hidden` elements, SVG and frames are skipped):
+
+- `color`: the text colour of elements with their own text (and form controls), the background colour when not transparent and each visible border's colour. A colour is on token when some token is within `colorDeltaE` (CIEDE2000) and `alpha`. Other colour syntaxes (`oklch()`, `color()` ...) are converted to sRGB first.
+- `font-family` and `font-size`: on elements with their own text. Font family compares the primary (first) family of the computed stack with each token's primary family, case-insensitively.
+- `spacing`: margins, paddings and, on flex and grid containers, gaps. Zero is always on token; `auto` margins and relative values (percentages, `calc()` with percentages) are counted and not compared; negative margins are compared by magnitude. Needs CSS Typed OM (`computedStyleMap`); a browser without it makes the run `incomplete`. An engine that returns a length as an untyped value (WebKit) has its text parsed with `CSSNumericValue.parse`: a px length is measured, a percentage or `calc()` is a relative value (counted, not compared, as when typed), and anything else (unparseable text, `em` and other units) is not guessed and makes the run `incomplete`. Radii are read from the computed style text, not Typed OM.
+- `radius`: each corner's radius; zero is on token, percentages are counted and not compared.
+
+Each distinct off-token value of a rule is one `violation` finding with the configured severity, for example `Off-token background-color #ff5a1f on 3 elements; nearest token danger (#e5484d), ΔE2000 6.1` or `Off-token spacing 10px (padding) on 1 element; nearest token 2 (8px), 2px away`; a font family lists the allowed families instead. Its targets are up to ten elements (tag with id or classes, selector, and the measured value with its nearest token as `reason`; no page text). Values under a configured exception are listed in the run's `exemptions`, never as findings; an exception that matched no measured element is noted in the limitations. Every off-token and exempted value with all its elements, the counts and the tolerance are written to `design-tokens-<checkpoint>-step<N>.json` in the run directory and listed in each finding's evidence files. A run that measures nothing (no rendered element in scope) or stops at `maxElements` is `incomplete`, never clean; its detail counts the elements measured and the values compared.
+
+Token sets are part of the run identity: the CLI and the benchmark load every referenced file into the suite before it is hashed, so editing a token file changes the suite hash and makes runs before and after it incompatible in [comparisons](#comparing-runs); a benchmark target's `sha256` pin covers its token files too ([docs/benchmark.md](docs/benchmark.md)).
+
+Not checked, and listed on every run: comparisons with design files or mockups, visual similarity and aesthetics; whether the declared font actually loaded (a fallback font passes if the declared family is a token); pseudo-elements (`::before`, `::after`, `::placeholder`), SVG content, gradients and background images, shadows, outlines, line height, letter spacing and font weight; hover, focus and other interaction states (only the audited state is measured); closed shadow roots and frames. The audit raises no `needs_review` items: anything it cannot measure objectively is not attempted. Web only: unsupported on macOS.
+
+### Web performance
+
+`performance.web` is an opt-in driver audit (default checkpoints `ready` and `completion`) that reads the browser's own performance timeline for the document at each checkpoint. Without `budgets` it only measures: it never reports a finding and never fails the quality verdict.
+
+```json
+"audits": {
+  "checks": [
+    {
+      "id": "performance.web",
+      "at": ["ready", "completion"],
+      "conditions": { "network": "fast-3g", "cpuSlowdown": 4 },
+      "interactionTargets": ["#checkout"],
+      "budgets": [
+        { "metric": "lcpMs", "max": 2500, "severity": "serious" },
+        { "metric": "inpMs", "max": 200, "severity": "moderate" },
+        { "metric": "cls", "max": 0.1, "severity": "moderate" }
+      ]
+    }
+  ]
+}
+```
+
+When the suite configures the audit, the web driver adds a fixed collector script to the page before the first navigation (PerformanceObserver for paint, largest-contentful-paint, layout-shift, event and longtask entries, plus a passive count of trusted `pointerdown`/`keydown` inputs) and, at each checkpoint, waits for the document's `load` event (at most 10 s, inside the audit's `timeoutMs`), lets pending observer callbacks run and reads what was recorded. Each run stores a `performance` record with:
+
+- `metrics`, from browser timestamps relative to the document's navigation start: `ttfbMs` (responseStart), `fcpMs`, `lcpMs` (the latest LCP candidate; `lcpElement` names it as `tag#id.class`), `cls` (the largest burst of layout shifts not caused by recent input: shifts under 1 s apart, a burst at most 5 s), `inpMs` (the slowest selected interaction, ignoring one in fifty), `domContentLoadedMs`, `loadMs` and `blockingTimeMs` (the time long tasks spent over 50 ms, from navigation start to the checkpoint — not Lighthouse's FCP-to-TTI TBT). A metric the browser does not report is `null` and listed in `unsupported`, never 0: WebKit reports neither layout shifts nor long tasks, so `cls` and `blockingTimeMs` are null there. A value the page has not produced yet (no interaction at `ready`, no `load` event) is null too.
+- `interactions`: the number of interactions (trusted pointer presses and key presses), how many are selected by `interactionTargets` (CSS selectors; an interaction counts when its target is inside a match; empty selects all), and the ten slowest with their target, input delay, processing and presentation time. Event Timing only reports interactions of 16 ms or more, so when every selected interaction was faster, `inpMs` is null and the run says it is under 16 ms; an `inpMs` budget of 16 ms or more then holds.
+- `harness`: time the harness spent so far in the journey, beside the metrics and never in them — wall-clock time since the journey started, planner/selector calls and their latency, evidence screenshots and their capture time, and earlier audit runs. `document.ageMs` (time from navigation start to the measurement) is mostly harness time in a model-driven run.
+- `longTasks.duringHarness` and `excludedDuringHarness`: long tasks, layout shifts, LCP candidates and interactions recorded while another audit was running in the page (an axe-core scan, a `layout.responsive` breakpoint sweep, a visual capture), left out of the metrics. The attribution is by timestamp overlap with a 100 ms tail, so app work that coincides with another audit is also left out; the journey's own observation reads are not excluded.
+- `conditions`, `browser`, `budgets` (each with its measured `value` and `within`, `exceeded`, `not_measured` or `unsupported`) and `dropped` (entries past the collector's cap of 500 per type).
+
+**Conditions** (`conditions`, optional) apply to the whole session from before the first navigation: `network` is `slow-3g` (400 ms latency, 400/400 kbps), `fast-3g` (150 ms, 1600/750 kbps) or `{ "latencyMs", "downloadKbps", "uploadKbps" }`, and `cpuSlowdown` a factor from 1 to 20. They are applied through Chromium's DevTools protocol (`Network.emulateNetworkConditions`, `Emulation.setCPUThrottlingRate`), so they slow the agent's whole journey (budget `maxDurationMs` for it) and the harness's own page scripts too. In Firefox and WebKit a suite with conditions gets an `unsupported` run at every checkpoint (declared in the [browser support](#browser-support) table, `ENGINE_AUDIT_OPTIONS`), never an unthrottled measurement in its place; without conditions those browsers are measured with the metrics they report. A failure to apply them in Chromium is an `error` run. Chromium applies emulated latency when the response body arrives, not to the first byte, so `ttfbMs` does not include it while `fcpMs`, `lcpMs` and `loadMs` do.
+
+**Budgets** (`budgets`, optional) are owned by the suite: one per metric, each with `max` and an explicit `severity` (there is no default). A measured value above `max` is a violation `performance-budget.<metric>` at that severity, gated by `audits.failOn` like any audit finding; a budget on a metric the page did not produce at the checkpoint is `not_measured` and noted in `limitations`; a budget on a metric the browser does not report makes the run `incomplete` (never clean).
+
+Limits: metrics describe the current document only — client-side (soft) navigations are not separated, a back/forward cache restore keeps the earlier navigation entry, and browsers stop reporting LCP at the first input or scroll. One run is one sample; timings vary between runs and machines, so compare repeated runs (`--repeat`) under the same conditions, not single values or other machines. The fixture (`examples/performance-fixture.ts`, used by the tests and `npm run demo:performance`) seeds a parser-blocking script, a late banner, a long task and a slow click handler and assert a slow page against its fast twin with wide margins. macOS: unsupported.
 
 ## Authentication and browser selection
 
@@ -388,7 +568,40 @@ The runner creates the directory (mode 0700) and marks it as its own. It refuses
 
 The runner never extracts a personal browser profile: there is no option to read cookies or sessions from an installed browser, and unknown options are rejected. Runs use isolated contexts, or the dedicated profile above.
 
-Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. Browser integration tests and the bundled demo currently verify Chromium only; Firefox/WebKit are configurable but unverified in this checkout.
+Override the target URL with `--url`, the engine with `--browser`, or use `--headed` for a visible test browser. Install the selected runtime with `npx playwright install firefox` or `npx playwright install webkit`. What each engine is verified to do is below.
+
+### Browser support
+
+`browser` (`chromium`, `firefox` or `webkit`, default `chromium`) selects the Playwright engine for the whole suite, and `--browser` overrides it (the suite is validated again). The engine is part of the run identity twice: in the suite hash and in `environment.browser` (name, version, build, headless). Runs on different engines are therefore never compared as compatible, and visual baselines are keyed by engine and version.
+
+Support is declared per engine in `src/browser-support.ts` and proved by `test/cross-browser.test.ts`, which runs every row on every engine that launches on the machine. An engine that is not installed, or does not launch, is **skipped with the reason**, never counted as verified. What is not verified on an engine is not assumed to behave like Chromium. An audit that is not verified there runs as `unsupported` with the engine's reason (shown in the report and in `quality.unsupported`), and an engine-wide gap is listed in `quality.unsupported` on every result.
+
+What was executed for this table: macOS 27.0.1 (arm64), Playwright 1.61.1, headless, bundled builds. Chromium 149.0.7827.55 and WebKit 26.5 ran the whole of `test/cross-browser.test.ts`, `npm run demo -- --browser <engine>` and `npm run demo:states -- --browser <engine>`. Firefox 151.0 (Playwright build 1532) is installed but **does not launch on this machine**: `browserType.launch` times out, with `sandbox_extension_issue_file_to_process failed … plugin-container.app (Operation not permitted)` on stderr. A probe of Playwright 1.65's Firefox build 1572 also failed, differently: it exits at once with `Could not find profile folder`. So a Playwright upgrade is not a known fix. Nothing about Firefox was executed. CI (Linux) installs only Chromium, so it verifies only the Chromium rows.
+
+| Feature | Chromium | WebKit | Firefox |
+| --- | --- | --- | --- |
+| Scripted journey (navigate, click, fill, outcome checks) | verified | verified | not verified: runs are allowed, with an `engine.firefox` gap on every result |
+| `back` action (session history) | verified, launched and persistent profile | not offered (`navigation.back` gap): history needs CDP | not offered (`navigation.back` gap) |
+| Keyboard-only journeys (`input: keyboard`) | verified (Tab reaches links and buttons) | **refused at suite validation**: Tab reaches only form fields on WebKit (macOS default) | not verified |
+| `accessibility.axe` | verified (finds `label`) | verified (finds `label`) | `unsupported` |
+| `layout.horizontal-overflow` | verified | verified | `unsupported` |
+| `layout.responsive` | verified | verified | `unsupported` |
+| `visual.baseline` (missing → approve → match) | verified | verified | `unsupported` |
+| `journey.state-checks` | verified | verified (all 7 state example journeys pass) | `unsupported` |
+| `keyboard.focus` | verified | `unsupported` (Tab model above) | `unsupported` |
+| [`performance.web`](#web-performance) | verified (all metrics) | verified; `cls` and `blockingTimeMs` are not reported (null, listed in `unsupported`, a budget on them makes the run `incomplete`); with `conditions` the run is `unsupported` (DevTools protocol only) | `unsupported` |
+| [`design.tokens`](#design-tokens) | verified | verified (finds off-scale colours, measured completely; the `test/design-tokens.test.ts` page tests also passed in a one-off run on WebKit) | `unsupported` |
+| Screenshot masks (planted secret never in an image) | verified | verified | not verified |
+| Trace and video | verified | verified | not verified |
+| Dedicated persistent profile (`--profile`), same version in the identity | verified | verified | not verified |
+| `browserChannel` / `browserExecutable` | Chromium only (validated); not executed in this verification | n/a | n/a |
+| [Environment](#environments) `colorScheme`, `reducedMotion`, `contrast`, `locale`, `timezone` | applied (read back) | applied (read back) | `unsupported`: withheld, untested |
+| Environment `forcedColors: active` | applied: media query matches and author colours are replaced | `unsupported`: withheld, because only the media query matches; author colours are not replaced (`forcedColors: none` is applied) | `unsupported`: withheld, untested |
+| Environment `pseudoLocalization` (init script pads page text) | applied | applied | `unsupported`: withheld, untested |
+| Environment selection (`combinations`, capped `matrix`, at most 24) and per-environment results, baselines and finding ids | verified | verified (finding ids also carry the engine) | runs allowed; every setting `unsupported` |
+| CSS Typed OM (`computedStyleMap`) | lengths: padding, margin and radii are `CSSUnitValue` px | partial: the API exists and padding/margin are `CSSUnitValue`, but border-radius longhands are an untyped `CSSStyleValue` (`"8px"`; `CSSNumericValue.parse` reads it); `design.tokens` reads radii from the computed style text, and parses any untyped margin, padding or gap with `CSSNumericValue.parse` | untested |
+
+Two things need care when reading a result. WebKit's forced-colours emulation would pass a `matchMedia` read-back without changing how the page renders, so the harness never applies it there and reports it `unsupported`. And the default WebKit tab model is that of macOS Safari; Linux WebKit was not executed. Running the existing low-level Chromium tests against WebKit (a one-off exploration, not part of `npm test`) found only these differences, plus timing-sensitive tests that passed when rerun alone.
 
 ## macOS apps
 
@@ -458,6 +671,8 @@ Current macOS limits: accessibility quality varies by app (custom-drawn UI may e
 - `src/auth.ts`: session (storage-state) parsing and origin scoping.
 - `src/planning.ts`: semantic action signatures and bounded planner refresh rules.
 - `src/report.ts`: local evidence report.
+- `src/friction/`: task-friction summaries computed from a run's event stream, reference-path comparison and the review rubric.
+- `src/identity.ts`, `src/compare.ts`, `src/gate.ts`, `src/compare-files.ts`, `src/compare-report.ts`, `src/compare-cli.ts`: run identity, finding identity, compatible-run comparison, gates and `npm run compare`.
 
 `runSuite(suite, models, options)` can be called from another TypeScript project. Supply a `UIDriver` in `options.driver` to replace the browser implementation while preserving the journey engine. This version supports websites, browser applications and macOS apps; other native platforms (Windows, mobile) are not implemented.
 
@@ -497,14 +712,16 @@ Every offered action is bound to a guard (element identity plus control state, o
 
 Each run uses a fresh private directory under `runs/`: every file in it is mode 0600 and every directory 0700, including what Playwright and `screencapture` write (screenshots are written by the runner with 0600; traces, videos and their directories are restricted when the journey ends). `--out` can choose another new directory. Existing runs are never overwritten: a run refuses a directory that already exists. Each run directory starts with a `run.json` manifest (creation time, `deleteAfter` from `evidence.retentionDays`, `uploaded: false`). The runner never uploads or deletes evidence on its own; `npm run run -- --prune-runs runs [--dry-run]` deletes the run directories whose retention has passed, and only directories carrying a valid manifest (other directories, files and symlinks are skipped).
 
-Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N` (1–50) runs each selected journey and viewport N times in sequence, each with its own evidence directory (`<journey>-<viewport>-<n>`). The CLI prints `passed/runs` with median actions and duration per journey/viewport. Every result records its `attempt` and its `usage`: per role (planner, selector), the call count, total latency, and input/output tokens. Usage is taken from `model_call` events, from `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, and counts as zero when a provider omits it. Token counts are not converted to cost.
+Model-driven journeys are stochastic, so one run is not a pass rate. `--repeat N` (1–50) runs each selected journey and viewport N times in sequence, each with its own evidence directory (`<journey>-<viewport>-<n>`). The CLI prints `passed/runs` with median actions and duration per journey/viewport. Every result records its `attempt` and its `usage`: per role (planner, selector), the call count, total latency, and input/output tokens. Usage is taken from `model_call` events, from `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, and counts as zero when a provider omits it. **Limitation:** a result's `usage` cannot tell a provider that omitted usage from one that reported zero; the [benchmark](docs/benchmark.md) keeps its own call log, where omitted usage is `unknown`. Token counts are not converted to cost.
+
+For a pinned, repeated comparison across a small reviewed set of suites, with required ceilings on model requests, tokens and wall time, use the opt-in live-model benchmark (`npm run benchmark`, see [docs/benchmark.md](docs/benchmark.md)). It reports completion with sample size and a 95% interval, separates model quality from harness correctness, and records missing usage as unknown. All four ceilings are required, `unknownUsage` (`stop` or `continue`) included: it has no default, so whether a provider that omits usage can run past the token ceiling is always an explicit choice.
 
 Once the suite, credentials and session are supplied, the CLI executes without interactive action prompts. Use `--headed --video` to watch the browser and keep a recording. Headed Chromium is pinned to device scale factor 1. Without that, on Retina/HiDPI displays each per-step screenshot briefly re-renders the window at the display's pixel ratio, a visible flicker every step. With the pin the window looks slightly softer; page `devicePixelRatio` and screenshots are unchanged. The CLI prints the live log path at startup; follow it in another terminal with `tail -f runs/<run>/events.jsonl`. Open `report.html` after completion for outcomes, screenshots, video and traces.
 
-- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median actions and duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, and evidence links.
+- `report.html`: a summary table per journey/viewport (pass rate, other outcomes by category and reason, quality verdicts, median agent actions and agent duration, model calls and tokens), then each run's functional outcome, its quality verdict and coverage, its audit runs with violations and needs-review items listed apart, its [task friction](#task-friction) with links to the observed steps, and evidence links. Results are redacted text, so a recorded path can contain `[REDACTED:<label>]` when a secret is part of it; the report still links the file without printing the secret: a path whose secret is only in the run (or baseline) directory's own location is linked relative to the run directory, and a path redacted below it is matched to the one file it names and linked through `evidence-links/<content sha256, 16 hex>.<ext>` in the run directory (a hard link to a file inside the run, a private copy of one outside it, such as an approved baseline). A redacted path that names no file or several is not guessed: it links to the in-page anchor `#evidence-path-redacted`.
 - `summary.json`: the same summary as data.
 - `events.jsonl`: observations, plans, model responses/timings, candidate probabilities, actions, console/network observations and request-policy blocks.
-- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs. Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category.
+- `results.json` (and each run's `result.json`): checks, statuses, outcome codes, quality verdicts, findings and audits. The contract is `resultVersion: 4`, published as `schemas/result.schema.json` and parsed by `parseResults` in `src/results.ts`. Version 2 kept every version-1 field (`status`, `reason`, `checks`, `findings`, …) and added `resultVersion`, `outcome` and `quality`. Version 3 adds `audits` (`contractVersion: 1`: configured audits, runs per checkpoint, audit findings, checkpoints not reached); the horizontal overflow check moved from an `overflow` finding to an audit finding, and quality checks gained `source: "audit"` with an `audit` field indexing `audits.runs` and the gating `audits.findings`. Version 4 adds `evidence` (each evidence format's status, protection and destination, the redacted environment names and setup value keys, and the protection's limitations for the run, see [Evidence protection](#evidence-protection)) and makes `trace` nullable: `null` when no trace was captured; its audits use `contractVersion: 2`, which adds a `visual` record (the baseline comparison of a `visual.baseline` run, `null` for every other audit) to audit runs, and, added within version 2, an optional `performance` record on `performance.web` runs (absent elsewhere). Version 4 also adds `dataLifecycle` (present only with a configured lifecycle: service, run, reset/setup/cleanup records with durations and details, the cleanup trigger and remaining records, the setup value keys and `clean`), the `data_setup_failed` and `run_cancelled` codes and the `cancelled` category, the optional `friction` summary (see [Task friction](#task-friction); absent in results written before it), and an optional `identity`: what the run measured, used to compare runs (see [Comparing runs](#comparing-runs)); results without it are still version 4 but cannot be compared.
 - Per journey/viewport: screenshots, Playwright trace and optional video, when the evidence policy allows them.
 
 Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewport>/trace.zip`. Artifacts may contain private application data, session material and request bodies. They are ignored by Git and never automatically uploaded.
@@ -527,15 +744,15 @@ Open traces locally with `npx playwright show-trace runs/<run>/<journey>-<viewpo
 
 **Provider-visible** (sent to the planner and selector endpoints, after redaction): the journey goal and persona, the current URL, visible viewport text and control names and values, offered action descriptions and link destination paths, recent action history, the planner's objective, and the masked viewport screenshot (planner only; `providerScreenshots: false` withholds it). **Local-only** (the run directory): everything else, including the accessibility snapshot, selectors and configured values, the event log, results, the report, screenshots, audit findings and files, traces and videos.
 
-- **Text redaction** applies to model payloads, `events.jsonl`, `suite.json`, results, the summary, the report, CLI error output, and every text file a driver or audit writes in the run directory (a final sweep). It replaces matches with `[REDACTED:<label>]`: the suite's `redact` patterns (JavaScript regular expressions; a pattern that matches empty text is refused), the values of the variables in `redactEnv`, the values of every environment variable whose name marks it as a credential (`…_KEY`, `…_TOKEN`, `…_SECRET`, `…_PASSWORD`, … at least 8 characters, model gateway header values included), and built-in credential shapes (bearer tokens, JWTs, `sk-`/GitHub/AWS/Slack/Google keys, private key blocks, URL user info, credential-like URL parameters and `password=`-style assignments). String values under credential-named keys (`authorization`, `cookie`, `password`, …) are replaced whole. Patterns and secret values are never written to evidence; results record only their counts and, in `evidence.redactedEnv`, the names of the variables whose values were redacted (declared in `redactEnv` or discovered by their credential-like name), so a reviewer can see which environment values a run treated as secret.
-- **Screenshot masks** are applied before capture (Playwright `mask`): the configured `masks` targets, elements whose text matches a redaction pattern or secret value, and input fields whose value matches are covered with solid magenta while the image is rendered, so the written file and the image sent to the planner never contain them. Masks cannot reach text drawn into images or canvases, or content in cross-origin frames. macOS window captures cannot be masked: `masks` is refused for macOS suites, their screenshots are reported `not_sanitized`, and a macOS suite that declares `redact` or `redactEnv` does not send screenshots to the planner.
-- **Traces and videos** cannot be sanitized (a Playwright trace holds DOM snapshots, network traffic including cookies and bodies, and unmasked screenshots; a recording cannot be masked). With `auto` (the default), a suite that declares sensitive content (`redact`, `redactEnv` or `masks`) captures neither, even with `--video`, and an authenticated run (`--profile` or `--storage-state`) captures no trace. `off` never captures; `local` captures unsanitized and is refused for a suite that declares sensitive content. The macOS accessibility-tree `trace.json` is text and is redacted.
+- **Text redaction** applies to model payloads, `events.jsonl`, `suite.json`, results, the summary, the report, CLI error output (an error thrown out of `runSuite` is redacted by the run's own redactor first, so it never quotes a secret setup value), and every text file a driver or audit writes in the run directory (a final sweep). It replaces matches with `[REDACTED:<label>]`: the suite's `redact` patterns (JavaScript regular expressions; a pattern that matches empty text is refused), the values of the variables in `redactEnv` (and of every fill `valueEnv`), every secret `dataLifecycle` setup value once setup returns it (`[REDACTED:data:<key>]`; see `publicValues`), the values of every environment variable whose name marks it as a credential (`…_KEY`, `…_TOKEN`, `…_SECRET`, `…_PASSWORD`, … at least 8 characters, model gateway header values included), and built-in credential shapes (bearer tokens, JWTs, `sk-`/GitHub/AWS/Slack/Google keys, private key blocks, URL user info, credential-like URL parameters and `password=`-style assignments). String values under credential-named keys (`authorization`, `cookie`, `password`, …) are replaced whole. **Select options:** the web driver reads the page's select options before it checks, observes, offers or audits anything and after each action, and the label and text of every option whose value is redacted become secrets from then on (`[REDACTED:<secret label>:option]`); this covers the top-level document only (not options inside frames), and a label shorter than 4 characters is not redacted from text (it is listed in `evidence.limitations`; the select itself is still masked in screenshots). **Short secrets** are not redacted: a declared value (a `redactEnv` or `valueEnv` variable, a gateway header value, a secret setup value) shorter than 4 characters is left in text, because a 1–3 character string occurs throughout ordinary evidence (step counts, ports, timestamps, selectors) and replacing every occurrence would corrupt the evidence while the pattern of replacements would itself point at the value. The gap is made visible instead: the CLI prints a `Warning:` line naming the variable when it loads the suite (`--validate` included), and every result lists it in `evidence.limitations`, shown at the top of the report's evidence section (setup values only on the runs that returned them); the name is given, never the value or its length. A masked fill field is still masked. Use test values of at least 4 characters. Discovered credential-named variables shorter than 8 characters are skipped without a warning. Patterns and secret values are never written to evidence; results record only their counts and, in `evidence.redactedEnv`, the names of the variables whose values were redacted (declared in `redactEnv` or discovered by their credential-like name), so a reviewer can see which environment values a run treated as secret.
+- **Screenshot masks** are applied before capture (Playwright `mask`): the configured `masks` targets, elements whose text matches a redaction pattern or secret value, input fields whose value matches, and selects whose chosen option's value or text matches (a closed select draws the option text, which is not page text) are covered with solid magenta while the image is rendered, so the written file and the image sent to the planner never contain them. Masks cannot reach text drawn into images or canvases, or content in cross-origin frames. macOS window captures cannot be masked: `masks` is refused for macOS suites, their screenshots are reported `not_sanitized`, and a macOS suite that declares `redact` or `redactEnv` does not send screenshots to the planner.
+- **Traces and videos** cannot be sanitized (a Playwright trace holds DOM snapshots, network traffic including cookies and bodies, and unmasked screenshots; a recording cannot be masked). With `auto` (the default), a suite that declares sensitive content (`redact`, `redactEnv` or `masks`, a fill `valueEnv`, a journey using a secret `dataLifecycle` setup value, or a run whose setup returned one) captures neither, even with `--video`, and an authenticated run (`--profile` or `--storage-state`) captures no trace. `off` never captures; `local` captures unsanitized and is refused for a suite that declares sensitive content. The macOS accessibility-tree `trace.json` is text and is redacted.
 
-Every result's `evidence` lists each format (`model_payloads`, `provider_screenshots`, `screenshots`, `trace`, `video`, `event_log`, `results`, `report`, `audit_files`) as enabled or disabled, with its protection (`redacted`, `masked`, `not_sanitized`), its destination (`provider` or `local`) and the reason; the report shows the same, and the run's first event is `evidence_policy`.
+Every result's `evidence` lists each format (`model_payloads`, `provider_screenshots`, `screenshots`, `trace`, `video`, `event_log`, `results`, `report`, `audit_files`) as enabled or disabled, with its protection (`redacted`, `masked`, `not_sanitized`), its destination (`provider` or `local`) and the reason; the report shows the same, and the run's first event is `evidence_policy`. **Limitation:** `evidence_policy` describes the suite as loaded and is logged once; when a run's setup returns a secret value and turns its trace and video off, only that run's result (`evidence.formats`) and report show it, not `events.jsonl`.
 
 **Redaction is not a guarantee.** It removes the patterns, values and elements it is given and well-known credential shapes; it cannot recognize arbitrary unknown sensitive content (names, addresses, free text, images). Declare what a suite's application shows, prefer test accounts and synthetic data, and keep run directories local.
 
-Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey or a failed data cleanup, **2** configuration/startup error. Exit codes follow the functional outcome (and data cleanup) only; the quality verdict is reported beside it and does not change the exit code.
+Missing auth, unauthorized responses or an unmet readiness check are `blocked`; repeated actions, no path forward or exhausted budgets are `failed`; model and infrastructure problems are `error`. A task can pass with visual or runtime findings still requiring review. Exit codes: **0** all asserted outcomes passed, **1** at least one non-passing journey or a failed data cleanup, **2** configuration/startup error. Exit codes follow the functional outcome (and data cleanup) only; the quality verdict is reported beside it and does not change the exit code. With `--compare BASE_RUN`, a failed comparison gate is also **1**, and **3** means the runs are incompatible (see [Comparing runs](#comparing-runs)).
 
 ### Outcome codes
 
@@ -564,7 +781,7 @@ Only `source: "assertion"` is evidence about the application: an independent out
 
 ### Quality verdict
 
-`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed, every executed check passed, and every configured audit ran and is supported; any failed check is `fail`; no executed check, an `inconclusive`/`errored` check without a failure, or a configured audit that was unsupported or never ran, is `not_evaluated`, which is not a pass. Each configured audit is one check (`source: "audit"`): `failed` with a violation at or above `failOn`, else `errored` with an error run, else `inconclusive` with an incomplete run, else `passed`. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
+`quality` is judged separately from the functional outcome and never changes it: a journey can be `passed` with quality `fail`. The verdict is `pass` only when at least one check executed, every executed check passed, and every configured audit ran and is supported; any failed check is `fail`; no executed check, an [environment](#environments) setting the engine did not emulate, an `inconclusive`/`errored` check without a failure, or a configured audit that was unsupported or never ran, is `not_evaluated`, which is not a pass. Each configured audit is one check (`source: "audit"`): `failed` with a violation at or above `failOn`, else `errored` with an error run, else `inconclusive` with an incomplete run, else `passed`. `executed` lists each check with its status, the number of observed states it measured and the findings it produced; `skipped` lists applicable checks that did not run (for example when no state was observed); `unsupported` lists checks this platform or engine version does not perform.
 
 Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoints)), a built-in check covers the whole web run:
 
@@ -573,6 +790,79 @@ Besides the configured audits (see [Audits and checkpoints](#audits-and-checkpoi
 The macOS driver supports neither the overflow audit nor this check, so native results are `not_evaluated`, with the audit listed as unsupported. Keyboard/focus checks are listed as unsupported unless the [`keyboard.focus`](#keyboard-only-journeys) audit is configured. `visual.baseline` is listed as unsupported unless the opt-in [visual baseline](#visual-baselines) audit is configured. `accessibility.audit` is listed as unsupported unless the opt-in [`accessibility.axe`](#accessibility-scan-axe-core) audit is configured; that scan is automated and partial, and its runs list what it does not cover. Model concerns (`hypothesis` findings), detours, loops and policy-block findings never affect the verdict.
 
 The journey deadline (`maxDurationMs`) is enforced between stages as well as inside them. Planner, selector and action dispatch never start after it has passed. A Playwright or model `TimeoutError` raised at or after the deadline is reported as `failed` with the stage it cut off (for example `Task budget exhausted before the outcome was observed (choose timed out at the deadline)`), not as `error`. Each journey passes one `AbortSignal` to every planner and selector call, aborted at the deadline with a `TimeoutError` reason, so a queued or in-flight model request stops there. A model call that ends at the deadline is `budget_deadline_abort`, whether the journey signal, the request's own timeout or the limiter's slot wait fired first; an abort before the deadline stays `error`. A `budget_exhausted` event records the step, stage, cause (`deadline_before_stage`, `timeout`, `deadline_abort`, or `rate_limit` when the model limiter refuses a request whose cooldown would end past the deadline), the first error line and the overrun. An action whose dispatch timed out at the deadline is not filed as an `action-error` finding. Timeouts before the deadline and non-timeout failures at any time remain `error`. Interactive planning time counts against the deadline, so a late answer ends the journey as a budget failure.
+
+## Comparing runs
+
+A comparison answers what changed between a **base** run (for example the last release) and a **candidate** run (the build under review) of the same suite: which findings are new, which persist, which are resolved and which the candidate could not assess, and whether the candidate passes a configurable gate.
+
+```sh
+npm run run -- --suite suite.json --build 4f1c2e9 --out runs/base
+npm run run -- --suite suite.json --url https://preview.example --build 9a7b3d1 --out runs/candidate
+npm run compare -- runs/base runs/candidate [--gate gate.json] [--out NEW_DIRECTORY]
+# or in one step, comparing the new run with an earlier one:
+npm run run -- --suite suite.json --build 9a7b3d1 --compare runs/base [--gate gate.json]
+```
+
+`npm run compare` writes `comparison.json` (contract: [schemas/comparison.schema.json](schemas/comparison.schema.json)) and `comparison.html` into `--out` (a new directory; default `comparison-<time>` inside the candidate run, so `--prune-runs` removes it with the run), and prints the counts, warnings and gate failures. `--compare` writes the same files into the new run's `comparison/` directory. Nothing is uploaded; evidence links point into the local run directories.
+
+| Exit code | `npm run compare` | `npm run run -- --compare` |
+| --- | --- | --- |
+| 0 | compatible runs, gate passed | every journey passed and the gate passed |
+| 1 | compatible runs, gate failed | a journey did not pass, a data cleanup failed, or the gate failed |
+| 2 | usage or input error: missing or corrupt `results.json`, invalid gate file, the same run twice, an existing `--out` | configuration or input error (the gate file and the base run are checked before the run starts) |
+| 3 | the runs are incompatible: the comparison is invalid | the same |
+
+**Run identity.** Every result records `identity`: the build (`--build ID`, else the `UIUX_BUILD` variable, else `null`; it is never guessed from Git or the deployment), the suite (its name, a SHA-256 of the normalized suite configuration after redaction, without `baseURL` and `evidence.retentionDays`, so secret values never feed it and a new preview host is the same suite; the tested `target` origin; and the selected journeys, viewports and repeat count, plus the `<environment>/<viewport>` combinations in a suite with environments), the engine (`package.json` version, result and audit contract versions), the environment (platform, driver, browser name, version, build and headless mode, OS platform, architecture and major release, Node.js) and the model configuration (planner and selector protocol, endpoint origin and path, and model name; never keys, headers, user info or query strings; `null` for a custom `Models` implementation such as the scripted demos). The identity goes through the run's redaction like the rest of the result.
+
+**Compatibility.** Two runs are compared only when they measured the same thing: the same identity and contract versions, engine version, suite hash, platform, driver, browser (name, build, version, headless), OS platform and architecture, and model configuration. Otherwise the comparison is invalid (exit 3): `compatible` is false, `incompatibilities` lists each differing field with both values and why it matters, and no finding is classified. A run without `identity`, or with another `resultVersion`, is incompatible too. A different engine version blocks the comparison rather than warning, because a newer engine can measure the same UI differently; compare runs of the same engine, or re-run the base with the new one. Unknown builds, the same build on both sides, a different OS release or Node.js version, another target origin and a different journey/viewport selection are `warnings`.
+
+**Finding identity.** Each finding gets a stable `id` that leaves out what changes between runs of the same UI: steps, timestamps, screenshots and evidence paths, the run's `{{marker}}`, URL origins, queries and fragments, candidate ids, and digits in descriptions (pixel sizes, counts, ports). An audit finding is identified by journey, viewport (and environment, in a suite with environments), audit, rule, its first checkpoint, the URL path it was measured on, its tags and **each sampled target** (the selector, or the description without digits when there is none), so one more element breaking a known rule is new while the known elements persist; `groupId` ties the targets of one finding together. A runner finding (detour, policy block, action error, browser error, loop, selector recovery, data cleanup, model hypothesis) is identified by journey, viewport, kind, category and its description without digits. Repeats of a journey/viewport are merged: a finding seen in any attempt counts.
+
+**Classification.**
+
+- `new`: only the candidate reports it.
+- `persisting`: both report it. `escalated` when it gates in the candidate but did not in the base (a higher severity, or `needs_review` that became a violation).
+- `resolved`: only the base reports it, **and** the candidate assessed the same audit at the same checkpoint (`clean` or `findings`), on the same page when the finding was measured at its checkpoint's page, and did not sample other elements of the same still-failing rule.
+- `unassessed`: only the base reports it and the candidate cannot show it is gone, with a `reason`: `run_missing` (the candidate did not run the journey/viewport), `not_run`, `not_reached` (checkpoint configured but never reached), `unsupported`, `error`, `incomplete` (for example a visual check with no approved baseline, `missing`), `path_not_assessed` (the checkpoint was reached on another page) or `sampled`. A missing check, baseline or errored audit is never an improvement.
+
+`performance` compares `performance.web` measurements per journey, viewport, [environment](#environments) (`environment` on each entry; measurements of different environments are never pooled), checkpoint, document path and metric: each side's median (with sample count, minimum and maximum across `--repeat` attempts) and the candidate-minus-base `delta`. An entry is `compared` only when both sides measured under the same conditions, browser and metric support; otherwise it is `incompatible` with the reason, and a metric only one side has is `not_measured`. There is no overall score, and deltas do not gate: budget breaches are findings and gate like any other.
+
+`checks` lists every audit checkpoint either run configured or recorded with its state on each side (`assessed`, `incomplete`, `error`, `unsupported`, `not_reached`, `not_run`); `coverageLost` marks the ones the base assessed and the candidate did not, so a check that stopped running cannot pass as "no new findings". `outcomes` compares the functional pass counts per journey/viewport.
+
+**Gates.** The gate is a JSON file ([schemas/gate.schema.json](schemas/gate.schema.json)), validated when it is loaded; every field is optional:
+
+```json
+{
+  "failOn": "serious",
+  "persisting": false,
+  "unassessed": "fail",
+  "outcomes": "regressions",
+  "needsReview": false,
+  "hypotheses": false,
+  "observed": false,
+  "rules": [
+    { "id": "accessibility.axe/color-contrast", "failOn": "moderate" },
+    { "id": "layout.responsive/*", "gate": "never" }
+  ]
+}
+```
+
+| Field | Default | Fails the gate on |
+| --- | --- | --- |
+| `failOn` | the suite's `audits.failOn` | new or escalated violations at or above this severity (`none`: no severity gates); a violation with no severity gates at every level except `none` |
+| `persisting` | `false` | also gating findings present in both runs |
+| `unassessed` | `fail` | gating base findings the candidate could not assess, checks that lost coverage and journeys/viewports the candidate did not run; `report` lists them without failing |
+| `outcomes` | `regressions` | a journey/viewport that passed in every base run and not in every candidate run; `any`: any non-passing candidate run; `ignore` |
+| `needsReview` | `false` | also `needs_review` items |
+| `hypotheses` | `false` | also model hypotheses (unreviewed model output) |
+| `observed` | `false` | also the runner's own findings (detours, policy blocks, action and browser errors …), which have no severity |
+| `rules` | none | per rule: `id` is `<audit id>/<rule id>`, `<audit id>/*`, `finding/<category>` or `finding/*` (an exact id wins); `gate: "never"`, `gate: "always"` or a `failOn` of its own. Unknown audit ids are rejected |
+
+Two defaults are deliberately strict: `unassessed` is `fail`, so a base finding the candidate could not assess (a missing baseline, an errored or unreached check, a journey that did not run) fails the gate instead of passing as an improvement, and an engine-version mismatch makes the comparison invalid (above). Set `unassessed: "report"` to list such findings without failing.
+
+Each failure in `gate.failures` has a `code` (`new_finding`, `escalated_finding`, `persisting_finding`, `unassessed_finding`, `coverage_lost`, `run_missing`, `outcome_regression`, `outcome_not_passed`), a message and the finding id. The gate is separate from each run's quality verdict and functional outcome, which it does not change: a candidate whose journeys all pass fails the gate on a new serious violation.
+
+Comparison output is redacted with the environment's credential values and both runs' declared `redact` patterns and `redactEnv` variables (read from their `suite.json`), on top of the redaction the runs already applied. Limits: identities rely on the analyzer's selectors, so generated ids or classes in selectors (for example framework-generated `:r1:` ids) make a finding look new; a finding whose page path contains a per-run value other than the `{{marker}}` (for example a `{{data.*}}` value) does too. Comparing two single runs of a model-driven journey compares one path each; use `--repeat` on both sides when paths vary.
 
 ## Development
 
@@ -583,8 +873,8 @@ npm test
 npm run demo
 ```
 
-Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. CI installs Chromium and runs these checks without model credentials. No run evidence is uploaded by CI.
+Tests use real Chromium against local synthetic pages with deterministic model HTTP responses; none need credentials or network access beyond localhost. `test/cross-browser.test.ts` also runs each [browser support](#browser-support) row on WebKit and Firefox when they are installed and launch, and skips them with the reason otherwise (install with `npx playwright install webkit firefox`). Run the demos on another engine with `npm run demo -- --browser webkit` and `npm run demo:states -- --browser webkit`. CI installs Chromium only and runs these checks without model credentials, so the WebKit and Firefox rows are skipped there. No run evidence is uploaded by CI.
 
-Current limits: redaction covers declared patterns, credential environment values and known credential shapes only (see [Evidence protection](#evidence-protection)); no Windows or mobile drivers, shared baseline storage (visual baselines are local only), complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or live model-quality benchmark. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
+Current limits: redaction covers declared patterns, credential environment values and known credential shapes only (see [Evidence protection](#evidence-protection)); no Windows or mobile drivers, shared baseline storage (visual baselines are local only), complete accessibility audit (the axe-core scan is automated and partial), price-based cost accounting (tokens are counted) or a live model-quality baseline (the opt-in [benchmark harness](docs/benchmark.md) exists; no live results or release thresholds yet; its usage reconciliation compares each target's totals with the runner's results, not each run's), or network/CPU throttling outside Chromium (`performance.web` reports such runs as unsupported). The CSS Typed OM row of the [browser support](#browser-support) table (`ENGINE_TYPED_OM` in `src/browser-support.ts`) is documentation only: no code reads it, and `design.tokens` decides per value at run time (radii from the computed style text, untyped lengths parsed with `CSSNumericValue.parse`), so changing the row changes no behaviour. Live pass rates depend on the models and the suite's scope; measure them per target. Browser behavior and application assumptions need validation on each target.
 
 API references: [TypeSafe](https://docs.typesafe.ai/api), [OpenRouter](https://openrouter.ai/docs/api_reference/overview), [Playwright](https://playwright.dev/docs/intro).

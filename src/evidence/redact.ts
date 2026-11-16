@@ -108,6 +108,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function literal(label: string, value: string): TextPattern {
+  return { label, source: escapeRegExp(value), flags: 'g' };
+}
+
 // Credential values from the environment: every variable listed by the suite
 // (MIN_DECLARED_LENGTH or longer) and every variable whose name marks it as a
 // credential (MIN_DISCOVERED_LENGTH or longer), plus model gateway header
@@ -143,33 +147,90 @@ export function credentialEnvValues(
     .sort((a, b) => b.value.length - a.value.length);
 }
 
+// Declared secrets (suite-listed variables and model gateway header values)
+// that are set but shorter than MIN_DECLARED_LENGTH, by name. They are not
+// redacted from text: a 1–3 character value occurs throughout ordinary
+// evidence (counts, ports, timestamps, selectors), so replacing it would
+// corrupt the evidence and the pattern of replacements would point at the
+// value. They are reported instead (shortSecretLimitation).
+export function shortDeclaredSecrets(
+  env: Record<string, string | undefined>,
+  declared: string[] = [],
+): string[] {
+  const short = (value: string | undefined) =>
+    !!value && value.length < MIN_DECLARED_LENGTH;
+  const names = declared.filter((name) => short(env[name]));
+  for (const name of CREDENTIAL_HEADER_ENV) {
+    const raw = env[name];
+    if (!raw) continue;
+    try {
+      const headers: unknown = JSON.parse(raw);
+      if (headers && typeof headers === 'object')
+        for (const [header, value] of Object.entries(headers))
+          if (typeof value === 'string' && short(value))
+            names.push(`${name}.${header}`);
+    } catch {
+      // config.ts reports malformed header JSON.
+    }
+  }
+  return [...new Set(names)];
+}
+
+// What a short secret leaves unprotected, naming the secret, never its value
+// or length.
+export function shortSecretLimitation(name: string): string {
+  return `${name}: its value is shorter than ${MIN_DECLARED_LENGTH} characters and is not redacted from text evidence (event log, results, report, model payloads, text files) or masked where it appears as page text; masks of a field it is typed into still apply. Use a test value of at least ${MIN_DECLARED_LENGTH} characters.`;
+}
+
 export class Redactor {
-  // Literal secret values (environment), as patterns, longest first.
-  readonly literals: readonly TextPattern[];
+  // Literal secret values (environment, then values a run learns), as
+  // patterns, longest first.
+  private literalPatterns: TextPattern[];
   // Suite-declared patterns.
   readonly declared: readonly TextPattern[];
   readonly builtIn: readonly TextPattern[] = BUILT_IN_PATTERNS;
-  private readonly compiled: { label: string; regex: RegExp }[];
+  private compiled: { label: string; regex: RegExp }[] = [];
+  // Declared secrets too short to redact, by name (shortDeclaredSecrets).
+  readonly tooShort: readonly string[];
   constructor(options: RedactorOptions = {}) {
     const env = options.env ?? {};
-    this.literals = credentialEnvValues(env, options.envNames ?? []).map(
-      ({ name, value }) => ({
-        label: `env:${name}`,
-        source: escapeRegExp(value),
-        flags: 'g',
-      }),
-    );
+    this.tooShort = shortDeclaredSecrets(env, options.envNames ?? []);
+    this.literalPatterns = credentialEnvValues(
+      env,
+      options.envNames ?? [],
+    ).map(({ name, value }) => literal(`env:${name}`, value));
     this.declared = (options.patterns ?? []).map((entry, index) => ({
       label: entry.label ?? `suite-${index + 1}`,
       source: entry.pattern,
       flags: entry.ignoreCase ? 'gi' : 'g',
     }));
-    this.compiled = [...this.literals, ...this.declared, ...this.builtIn].map(
+    this.compile();
+  }
+  get literals(): readonly TextPattern[] {
+    return this.literalPatterns;
+  }
+  private compile(): void {
+    this.compiled = [...this.literalPatterns, ...this.declared, ...this.builtIn].map(
       (pattern) => ({
         label: pattern.label,
         regex: new RegExp(pattern.source, pattern.flags),
       }),
     );
+  }
+  // A secret value known only while the suite runs (a dataLifecycle setup
+  // value), redacted as [REDACTED:<label>] from then on, in text and in
+  // screenshot masks. Values shorter than MIN_DECLARED_LENGTH are not added
+  // (returns false); an already known value keeps its first label.
+  addSecret(label: string, value: string): boolean {
+    if (value.length < MIN_DECLARED_LENGTH) return false;
+    const source = escapeRegExp(value);
+    if (this.literalPatterns.some((pattern) => pattern.source === source))
+      return true;
+    this.literalPatterns = [...this.literalPatterns, literal(label, value)].sort(
+      (a, b) => b.source.length - a.source.length,
+    );
+    this.compile();
+    return true;
   }
   // Every pattern a screenshot mask should look for in page text and values.
   get patterns(): readonly TextPattern[] {
@@ -240,4 +301,28 @@ export class Redactor {
     }
     return value;
   }
+}
+
+// The error a run rethrows: its message and stack redacted in place, so the
+// caller sees the same error class, never a secret the run learned (setup
+// values are known only to the run's redactor, not to the CLI's). Its cause,
+// which is not redacted, is dropped.
+export function redactError(caught: unknown, redactor: Redactor): Error {
+  if (!(caught instanceof Error))
+    return new Error(redactor.text(String(caught)));
+  const message = redactor.text(caught.message);
+  const stack =
+    caught.stack === undefined ? undefined : redactor.text(caught.stack);
+  for (const [field, value] of [
+    ['message', message],
+    ['stack', stack],
+  ] as const)
+    Object.defineProperty(caught, field, {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  delete (caught as { cause?: unknown }).cause;
+  return caught;
 }

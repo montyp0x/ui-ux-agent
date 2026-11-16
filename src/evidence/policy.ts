@@ -90,14 +90,26 @@ export const evidencePolicySchema = z
   });
 export type EvidencePolicy = z.infer<typeof evidencePolicySchema>;
 
+// The policy a run applies (see suiteEvidencePolicy in contracts.ts): the
+// suite's own, plus the keys of the secret dataLifecycle setup values its
+// journeys use. Those values are only known once setup answers, but that a
+// journey uses them is known at load, so they count as sensitive content.
+// Once a run's setup answers, every secret value it returned is added too
+// (EvidenceProtection.beginRun), referenced by a journey or not: the
+// redaction policy treats it as a secret, so the run is sensitive.
+export type RunEvidencePolicy = EvidencePolicy & {
+  secretData?: readonly string[];
+};
+
 // The suite declares content it wants protected.
 export function sensitive(
-  policy: Pick<EvidencePolicy, 'redact' | 'redactEnv' | 'masks'>,
+  policy: Pick<RunEvidencePolicy, 'redact' | 'redactEnv' | 'masks' | 'secretData'>,
 ): boolean {
   return (
     policy.redact.length > 0 ||
     policy.redactEnv.length > 0 ||
-    policy.masks.length > 0
+    policy.masks.length > 0 ||
+    (policy.secretData?.length ?? 0) > 0
   );
 }
 
@@ -133,6 +145,12 @@ export const evidenceReportSchema = z
     builtInPatterns: z.number().int().nonnegative(),
     // Environment variables whose values are redacted (names only).
     redactedEnv: z.array(z.string()),
+    // Keys of the run's dataLifecycle setup values that are redacted (the
+    // values are never recorded).
+    redactedData: z.array(z.string()).default([]),
+    // What the protection could not cover in this run, for example a secret
+    // too short to redact from text.
+    limitations: z.array(z.string()).default([]),
     masks: z.number().int().nonnegative(),
     formats: z.array(formatStatusSchema),
     // Text files in the journey directory rewritten by the final sweep
@@ -152,7 +170,7 @@ export type FormatContext = {
 
 // What each evidence format does for this suite and run.
 export function evidenceFormats(
-  policy: EvidencePolicy,
+  policy: RunEvidencePolicy,
   context: FormatContext,
 ): FormatStatus[] {
   const declared = sensitive(policy);
@@ -161,7 +179,7 @@ export function evidenceFormats(
   const maskable = !native;
   const providerScreenshots =
     policy.providerScreenshots && (maskable || !declared);
-  const trace =
+  const suiteTrace =
     policy.trace === 'off'
       ? { enabled: false, reason: "disabled by the suite (trace: 'off')" }
       : native
@@ -192,7 +210,7 @@ export function evidenceFormats(
                   reason:
                     'captured unsanitized: holds DOM snapshots, network traffic and unmasked screenshots — keep local',
                 };
-  const video = !context.videoRequested
+  const suiteVideo = !context.videoRequested
     ? { enabled: false, reason: 'not requested (--video)' }
     : native
       ? { enabled: false, reason: 'not supported by the macOS driver' }
@@ -208,6 +226,22 @@ export function evidenceFormats(
               enabled: true,
               reason: 'captured unmasked — keep local',
             };
+  // Secret setup values a 'local' capture would record unsanitized. Values
+  // the journeys use refuse 'local' at load; values setup returns that no
+  // journey uses are only known once the run begins, so the capture is
+  // turned off for the run instead.
+  const secretData = policy.secretData ?? [];
+  const unsanitizable = (format: 'trace' | 'video') =>
+    !native && policy[format] === 'local' && secretData.length > 0
+      ? {
+          enabled: false,
+          reason: `disabled: dataLifecycle setup returned secret values (${secretData.join(', ')}) that ${format}: 'local' cannot sanitize; list values that are not secret in dataLifecycle.publicValues`,
+        }
+      : null;
+  const trace = unsanitizable('trace') ?? suiteTrace;
+  const video = suiteVideo.enabled
+    ? (unsanitizable('video') ?? suiteVideo)
+    : suiteVideo;
   return [
     {
       format: 'model_payloads',

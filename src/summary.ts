@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { OutcomeCategory, Quality, Result, Usage } from './results.js';
+import type { Friction } from './friction/contract.js';
 
 export type { CallStats, Usage } from './results.js';
 export const emptyUsage = (): Usage => ({
@@ -43,6 +44,8 @@ export function addModelCall(usage: Usage, data: unknown): void {
 export type JourneySummary = {
   journey: string;
   viewport: string;
+  // The suite environment (src/environments.ts); null without environments.
+  environment: string | null;
   runs: number;
   passed: number;
   statuses: Record<Result['status'], number>;
@@ -55,7 +58,69 @@ export type JourneySummary = {
   medianDurationMs: number;
   tokens: { input: number; output: number };
   modelCalls: { planner: number; selector: number };
+  friction: FrictionAggregate;
 };
+
+type FrictionCount = keyof Friction['counts'];
+const FRICTION_COUNTS: readonly FrictionCount[] = [
+  'backtracks',
+  'repeats',
+  'recoveries',
+  'detours',
+  'failedAttempts',
+  'noEffect',
+];
+
+// Task friction across a journey/viewport's repeated runs: what the agent
+// runs' event streams show, never human usability and never a gate.
+export type FrictionAggregate = {
+  basis: 'agent_run';
+  // Runs whose result carries a friction summary.
+  runs: number;
+  // Runs recorded without one (before friction existed): not counted as
+  // zero friction.
+  withoutFriction: number;
+  // Per signal kind: items across the runs, and the runs with at least one.
+  counts: Record<FrictionCount, { total: number; runs: number }>;
+  // Runs compared with reviewed reference paths, and those whose closest
+  // path matched every waypoint. Null when no run was compared.
+  reference: { runs: number; followed: number } | null;
+};
+
+function aggregateFriction(runs: Result[]): FrictionAggregate {
+  const recorded = runs.flatMap((run) => (run.friction ? [run.friction] : []));
+  const counts = Object.fromEntries(
+    FRICTION_COUNTS.map((kind) => [
+      kind,
+      {
+        total: recorded.reduce(
+          (total, friction) => total + friction.counts[kind],
+          0,
+        ),
+        runs: recorded.filter((friction) => friction.counts[kind] > 0).length,
+      },
+    ]),
+  ) as FrictionAggregate['counts'];
+  const compared = recorded.flatMap((friction) =>
+    friction.reference ? [friction.reference] : [],
+  );
+  return {
+    basis: 'agent_run',
+    runs: recorded.length,
+    withoutFriction: runs.length - recorded.length,
+    counts,
+    reference: compared.length
+      ? {
+          runs: compared.length,
+          followed: compared.filter(
+            (reference) =>
+              reference.paths.find((path) => path.name === reference.closest)
+                ?.followed === true,
+          ).length,
+        }
+      : null,
+  };
+}
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -65,11 +130,12 @@ function median(values: number[]): number {
     : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
 }
 
-// Pass rate and distributions per journey/viewport across repeated runs.
+// Pass rate and distributions per journey/viewport (and environment) across
+// repeated runs.
 export function summarize(results: Result[]): JourneySummary[] {
   const groups = new Map<string, Result[]>();
   for (const result of results) {
-    const key = `${result.journey}\u0000${result.viewport}`;
+    const key = `${result.journey}\u0000${result.viewport}\u0000${result.environment?.name ?? ''}`;
     groups.set(key, [...(groups.get(key) ?? []), result]);
   }
   return [...groups.values()].map((runs) => {
@@ -91,6 +157,7 @@ export function summarize(results: Result[]): JourneySummary[] {
     return {
       journey: runs[0]!.journey,
       viewport: runs[0]!.viewport,
+      environment: runs[0]!.environment?.name ?? null,
       runs: runs.length,
       passed: statuses.passed,
       statuses,
@@ -111,6 +178,7 @@ export function summarize(results: Result[]): JourneySummary[] {
         planner: sum((usage) => usage.planner.calls),
         selector: sum((usage) => usage.selector.calls),
       },
+      friction: aggregateFriction(runs),
     };
   });
 }

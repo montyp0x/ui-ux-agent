@@ -26,15 +26,22 @@ export function providerModels(
   protection: EvidenceProtection,
 ): Models {
   const { redactor } = protection;
-  const screenshots = formatEnabled(protection.formats, 'provider_screenshots');
+  // Read per observation: a run's setup can change the formats (beginRun).
+  const screenshots = () =>
+    formatEnabled(protection.formats, 'provider_screenshots');
   // Adapters read the goal and persona; the rest of the journey (configured
-  // values, targets) is redacted too, for adapters that read more.
-  const journey = (value: Journey): Journey => redactor.deep(value);
+  // values, targets) is redacted too, for adapters that read more. Reviewed
+  // reference paths are withheld from every adapter, custom ones included:
+  // they are the answer the run is compared with, not a hint.
+  const journey = ({
+    referencePaths: _reference,
+    ...value
+  }: Journey): Journey => redactor.deep(value);
   const observation = (value: Observation): Observation => ({
     ...redactor.deep(value),
     // A local path the adapter reads (the image is masked before capture);
     // empty when the provider must not receive screenshots.
-    screenshot: screenshots ? value.screenshot : '',
+    screenshot: screenshots() ? value.screenshot : '',
   });
   const actions = (list: Action[]): Action[] =>
     list.map(

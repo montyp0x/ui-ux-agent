@@ -4,7 +4,10 @@
 // the underlying file.
 import type { Locator, Page, PageScreenshotOptions } from 'playwright';
 import { locate } from '../browser.js';
-import type { ScreenshotProtection } from '../evidence/protection.js';
+import type {
+  EvidenceProtection,
+  ScreenshotProtection,
+} from '../evidence/protection.js';
 import type { TextPattern } from '../evidence/redact.js';
 
 // Drop the global flag and name named groups away: getByText tests each
@@ -64,6 +67,40 @@ export async function screenshotMasks(
       )
       .catch(() => [] as number[]);
     masks.push(...matching.map((index) => fields.nth(index)));
+    // A closed select draws its chosen option's text, which is not page text
+    // getByText can cover: cover the select when the chosen option's value
+    // or text matches (the value can name a secret the label does not show).
+    // A list box (multiple, or size above 1) draws every option.
+    const selects = page.locator('select');
+    const chosen = await selects
+      .evaluateAll(
+        (elements, sources) => {
+          const tests = sources.map(
+            ([source, flags]) => new RegExp(source!, flags),
+          );
+          return elements.flatMap((element, index) => {
+            const select = element as HTMLSelectElement;
+            const options = Array.from(
+              select.multiple || select.size > 1
+                ? select.options
+                : select.selectedOptions,
+            );
+            const shown = options.flatMap((option) => [
+              option.value,
+              option.label,
+              option.text,
+            ]);
+            return shown.some(
+              (text) => text && tests.some((test) => test.test(text)),
+            )
+              ? [index]
+              : [];
+          });
+        },
+        regexes.map((regex) => [regex.source, regex.flags]),
+      )
+      .catch(() => [] as number[]);
+    masks.push(...chosen.map((index) => selects.nth(index)));
   }
   return masks;
 }
@@ -84,4 +121,25 @@ export async function protectedScreenshot(
     ],
     maskColor: protection.maskColor,
   });
+}
+
+// Reads the page's select options so the protection learns the labels of
+// options whose value is a secret (EvidenceProtection.learnOptionLabels).
+// Called before anything the driver returns or logs can show page text.
+// Top-level document only; never throws (the page may be navigating).
+export async function learnSecretOptions(
+  page: Page,
+  protection: Pick<EvidenceProtection, 'learnOptionLabels'> | undefined,
+): Promise<void> {
+  if (!protection) return;
+  const options = await page
+    .locator('select option')
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const option = element as HTMLOptionElement;
+        return { value: option.value, texts: [option.label, option.text] };
+      }),
+    )
+    .catch(() => [] as { value: string; texts: string[] }[]);
+  protection.learnOptionLabels(options);
 }

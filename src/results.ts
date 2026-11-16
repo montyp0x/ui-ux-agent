@@ -8,11 +8,19 @@
 // src/evidence/policy.ts) and makes `trace` null when no trace was captured;
 // it also adds `dataLifecycle` (the reset/setup/cleanup hooks of authorized
 // write flows, see src/lifecycle.ts), the data_setup_failed and run_cancelled
-// codes and the cancelled category.
+// codes and the cancelled category. The optional `friction` summary was added
+// within version 4 (readers of earlier version-4 results see it absent), as
+// was an optional `identity` (src/identity.ts), which records what the run
+// measured: readers of version 4 that ignore either are unaffected. So was
+// an optional `environment` (src/environments.ts): the suite environment the
+// run emulated, absent for suites without environments.
 import { z } from 'zod';
 import { auditsResultSchema } from './audits/contract.js';
 import { evidenceReportSchema } from './evidence/policy.js';
 import { dataLifecycleResultSchema } from './lifecycle.js';
+import { frictionSchema } from './friction/contract.js';
+import { runIdentitySchema } from './identity.js';
+import { resultEnvironmentSchema } from './environments.js';
 
 export const RESULT_VERSION = 4;
 
@@ -224,6 +232,10 @@ export const resultSchema = z
     resultVersion: z.literal(RESULT_VERSION),
     journey: z.string(),
     viewport: z.string(),
+    // The suite environment this run emulated (locale, colour scheme ...);
+    // absent for suites without environments. Optional: added within
+    // version 4.
+    environment: resultEnvironmentSchema.optional(),
     // 1-based repetition number when a journey/viewport is run several times.
     attempt: z.number().int().min(1),
     // Model calls, latency and tokens for this run, from model_call events.
@@ -250,6 +262,14 @@ export const resultSchema = z
     video: z.string().nullable(),
     // Evidence formats captured or disabled for this run, and their protection.
     evidence: evidenceReportSchema,
+    // Task friction of the agent run, computed from its events.jsonl events
+    // (src/friction). Optional: added within version 4, absent in results
+    // written before it. Descriptive only; never changes outcome or quality.
+    friction: frictionSchema.optional(),
+    // What the run measured (build, suite, engine, environment, models), for
+    // comparing runs (src/compare.ts). Optional: older runs lack it and
+    // cannot be compared.
+    identity: runIdentitySchema.optional(),
   })
   .strict()
   .superRefine((result, ctx) => {

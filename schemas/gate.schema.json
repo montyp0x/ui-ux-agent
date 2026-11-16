@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "failOn": {
+      "type": "string",
+      "enum": [
+        "minor",
+        "moderate",
+        "serious",
+        "critical",
+        "none"
+      ]
+    },
+    "needsReview": {
+      "default": false,
+      "type": "boolean"
+    },
+    "hypotheses": {
+      "default": false,
+      "type": "boolean"
+    },
+    "observed": {
+      "default": false,
+      "type": "boolean"
+    },
+    "persisting": {
+      "default": false,
+      "type": "boolean"
+    },
+    "unassessed": {
+      "default": "fail",
+      "type": "string",
+      "enum": [
+        "fail",
+        "report"
+      ]
+    },
+    "outcomes": {
+      "default": "regressions",
+      "type": "string",
+      "enum": [
+        "regressions",
+        "any",
+        "ignore"
+      ]
+    },
+    "rules": {
+      "default": [],
+      "maxItems": 200,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[^\\s/]+\\/\\S+$"
+          },
+          "gate": {
+            "type": "string",
+            "enum": [
+              "never",
+              "always"
+            ]
+          },
+          "failOn": {
+            "type": "string",
+            "enum": [
+              "minor",
+              "moderate",
+              "serious",
+              "critical",
+              "none"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

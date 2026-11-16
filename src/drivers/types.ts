@@ -5,15 +5,23 @@ import type {
   Observation,
   Suite,
 } from '../contracts.js';
-import type { AuditConfig } from '../audits/config.js';
+import type { AuditConfig, AuditId } from '../audits/config.js';
+import type { EngineGap } from '../browser-support.js';
 import type { AuditCheckpoint, DriverKind } from '../audits/contract.js';
 import type { EvidenceProtection } from '../evidence/protection.js';
+import type { DriverEnvironment } from '../identity.js';
+import type { Environment } from '../environments.js';
 
 export type EventLogger = (event: string, data: unknown) => Promise<void>;
 export type SessionOptions = {
   suite: Suite;
   journey: Journey;
   viewport: { width: number; height: number };
+  // The suite environment to emulate (src/environments.ts); null or omitted
+  // keeps the browser's defaults. A setting the driver applies but the page
+  // does not show fails the run; a setting the driver's engine does not
+  // emulate is withheld and reported in UISession.environmentGaps.
+  environment?: Environment | null;
   directory: string;
   storageState?: string;
   video?: boolean;
@@ -30,6 +38,10 @@ export type DriverAuditRequest = {
   checkpoint: AuditCheckpoint;
   // The session's configured viewport (suite viewport name and size).
   viewport: { name: string; width: number; height: number };
+  // The suite environment's name, or null/omitted without environments.
+  // Audits that store state per configuration (visual baselines) key it by
+  // the environment too.
+  environment?: string | null;
   // The run directory: evidence files the audit writes go here.
   directory: string;
   // The suite and journey being run, for audits that key stored state
@@ -40,6 +52,15 @@ export type DriverAuditRequest = {
   baselines: string | null;
   // The audit must finish within this; the runner also enforces it.
   timeoutMs: number;
+  // Harness time spent so far in the journey: wall clock since it started,
+  // model calls and earlier audit runs. Null or omitted when the runner does
+  // not track it.
+  harness?: {
+    elapsedMs: number;
+    modelCalls: number;
+    modelMs: number;
+    auditMs: number;
+  } | null;
 };
 
 export interface UISession {
@@ -51,6 +72,19 @@ export interface UISession {
   // blocked, as "METHOD origin/path".
   readonly policyBlocks?: string[];
   readonly unauthorized: boolean;
+  // What the session's browser engine is not verified to do
+  // (src/browser-support.ts): run-wide gaps listed in quality.unsupported,
+  // and the reason an audit is reported unsupported instead of run (null when
+  // the engine runs it). Omitted: no engine-specific gaps.
+  readonly engineGaps?: EngineGap[];
+  // Settings of the suite environment the engine does not emulate, withheld
+  // from the session (src/browser-support.ts environmentEmulation): listed
+  // on the result's environment and in quality.unsupported, and the quality
+  // verdict cannot pass. Omitted or empty: the whole environment applied.
+  readonly environmentGaps?: EngineGap[];
+  // Checked per configured audit, so an option the engine cannot apply
+  // (performance.web conditions outside Chromium) is unsupported too.
+  auditUnsupported?(config: AuditConfig): string | null;
   start(timeoutMs: number): Promise<void>;
   setTimeout(timeoutMs: number): void;
   location(): string;
@@ -80,5 +114,9 @@ export interface UISession {
 
 export interface UIDriver {
   openSession(options: SessionOptions): Promise<UISession>;
+  // The driver and browser build, for the run identity. Called after a
+  // session opened. Drivers without it are recorded as `custom` (or the
+  // suite platform's own driver) with no browser.
+  environment?(): Promise<DriverEnvironment> | DriverEnvironment;
   close(): Promise<void>;
 }

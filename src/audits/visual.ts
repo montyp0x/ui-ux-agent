@@ -160,7 +160,8 @@ export function environmentDifferences(
 
 // ---------------------------------------------------------------------------
 // The baseline store: <root>/<suite slug>/<journey>/<checkpoint slug>/
-// <viewport>/<environment id>.png with a .json beside it.
+// <viewport>/<environment id>.png with a .json beside it. In suites with
+// environments the viewport directory is <viewport>@<suite environment>.
 
 export const BASELINE_METADATA_VERSION = 1;
 
@@ -194,7 +195,7 @@ export function baselineDirectory(root: string, key: VisualKey): string {
     slug(key.suite),
     key.journey,
     key.checkpoint.replace(':', '-'),
-    key.viewport,
+    key.environment ? `${key.viewport}@${key.environment}` : key.viewport,
   );
 }
 
@@ -214,7 +215,8 @@ const sameKey = (a: VisualKey, b: VisualKey) =>
   a.suite === b.suite &&
   a.journey === b.journey &&
   a.checkpoint === b.checkpoint &&
-  a.viewport === b.viewport;
+  a.viewport === b.viewport &&
+  a.environment === b.environment;
 
 // Every approved baseline of a checkpoint and viewport, newest first. Throws
 // on metadata that does not parse or belongs to another key: a corrupt store
@@ -243,7 +245,7 @@ export async function readBaselines(
       `${parsed.data.environmentId}.json` !== name
     )
       throw new Error(
-        `Baseline metadata ${join(directory, name)} does not belong to ${key.suite}/${key.journey}/${key.checkpoint}/${key.viewport}`,
+        `Baseline metadata ${join(directory, name)} does not belong to ${key.suite}/${key.journey}/${key.checkpoint}/${key.viewport}${key.environment ? `@${key.environment}` : ''}`,
       );
     entries.push(parsed.data);
   }
@@ -453,10 +455,10 @@ const LIMITATIONS = [
 ];
 
 const keyText = (key: VisualKey) =>
-  `${key.suite} / ${key.journey} / ${key.checkpoint} / ${key.viewport}`;
+  `${key.suite} / ${key.journey} / ${key.checkpoint} / ${key.viewport}${key.environment ? ` / ${key.environment}` : ''}`;
 
 const approveHint = (key: VisualKey) =>
-  `review the current image, then run: npm run baseline -- approve --run <run directory> --baselines <directory> --journey ${key.journey} --viewport ${key.viewport} --checkpoint ${key.checkpoint}`;
+  `review the current image, then run: npm run baseline -- approve --run <run directory> --baselines <directory> --journey ${key.journey} --viewport ${key.viewport}${key.environment ? ` --environment ${key.environment}` : ''} --checkpoint ${key.checkpoint}`;
 
 export async function compareCheckpoint(
   input: VisualCompareInput,
