@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  currentUserSid,
   isPrivate,
   makePrivate,
   sddlIsPrivate,
+  windowsAcl,
 } from '../src/evidence/private.js';
 
 const USER = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
@@ -25,6 +27,14 @@ test('a Windows ACL is private only when every allow entry is the user, SYSTEM o
       USER,
     ),
   );
+  // The machine's built-in Administrator (RID 500, the admin account of
+  // Azure VMs and GitHub's Windows runners) is written as LA, and only it.
+  const ADMIN = 'S-1-5-21-1111111111-2222222222-3333333333-500';
+  assert.ok(
+    sddlIsPrivate('D:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)', ADMIN),
+  );
+  assert.ok(!sddlIsPrivate(`D:P(A;;FA;;;${USER})(A;;FA;;;LA)`, USER));
+  assert.ok(!sddlIsPrivate(`D:P(A;;FA;;;${ADMIN})(A;;FA;;;LG)`, ADMIN));
   // A deny entry never widens access.
   assert.ok(sddlIsPrivate(`D:P(D;;FA;;;WD)(A;;FA;;;${USER})`, USER));
   // Inherited read access for Users or Authenticated Users (C:\ and its new
@@ -47,26 +57,31 @@ test('a Windows ACL is private only when every allow entry is the user, SYSTEM o
 
 test('makePrivate makes a directory and everything later created in it private', async () => {
   const base = await mkdtemp(join(tmpdir(), 'ui-ux-private-'));
+  // On Windows a failure shows the ACL it read, and the user it checked for.
+  const why = async (path: string) =>
+    process.platform === 'win32'
+      ? `${path}: ${await windowsAcl(path)} (user ${await currentUserSid()})`
+      : path;
+  const assertPrivate = async (path: string, kind: 'file' | 'directory') =>
+    assert.ok(await isPrivate(path, kind), await why(path));
   try {
     const directory = join(base, 'run');
     await mkdir(directory);
     await makePrivate(directory, 'directory');
     await mkdir(join(directory, 'journey'));
     await writeFile(join(directory, 'journey', 'events.jsonl'), '{}\n');
-    assert.ok(await isPrivate(directory, 'directory'));
+    await assertPrivate(directory, 'directory');
     // On Windows what is created inside inherits the directory's ACL. On
     // POSIX new entries follow the umask; the runner creates its own with
     // explicit modes and the final permission pass covers the rest.
     if (process.platform === 'win32') {
-      assert.ok(await isPrivate(join(directory, 'journey'), 'directory'));
-      assert.ok(
-        await isPrivate(join(directory, 'journey', 'events.jsonl'), 'file'),
-      );
+      await assertPrivate(join(directory, 'journey'), 'directory');
+      await assertPrivate(join(directory, 'journey', 'events.jsonl'), 'file');
     }
     const file = join(base, 'session.json');
     await writeFile(file, '{}');
     await makePrivate(file, 'file');
-    assert.ok(await isPrivate(file, 'file'));
+    await assertPrivate(file, 'file');
   } finally {
     await rm(base, { recursive: true, force: true });
   }

@@ -10,7 +10,10 @@ import { suiteSchema } from '../src/contracts.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
 
-async function run(state: string, content = true, duration = 5000) {
+// Loaded states render their content 1.5 s after the page: later than the
+// first readiness check even on a slow CI machine (Windows runners took over
+// 900 ms), and well inside the 3 s readiness timeout.
+async function run(state: string, content = true, duration = 8000) {
   const server = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
     if (request.url === '/unauthorized') {
@@ -30,7 +33,7 @@ async function run(state: string, content = true, duration = 5000) {
           : `<script>setTimeout(() => {
         document.querySelector('main').innerHTML = ${JSON.stringify(state === 'error' ? '<p data-testid="error">Unavailable</p>' : state === 'empty' ? '<p data-testid="empty">No captured instruction available.</p>' : '<p data-testid="content">Captured instruction: inspect the changes.</p>')};
         ${state === 'shifted' ? `const spacer = document.createElement('div'); spacer.style.height = '1200px'; document.body.append(spacer, document.querySelector('[data-testid="tabs"]'));` : ''}
-      }, 900)</script>`
+      }, 1500)</script>`
       }`,
     );
   });
@@ -86,7 +89,7 @@ async function run(state: string, content = true, duration = 5000) {
           ...(content
             ? {
                 contentReady: {
-                  timeoutMs: 1800,
+                  timeoutMs: 3000,
                   checks: [
                     {
                       kind: 'anyRendered',

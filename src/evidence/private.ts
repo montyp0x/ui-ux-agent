@@ -23,11 +23,20 @@ const system32 = (tool: string) =>
 // LocalSystem and BUILTIN\Administrators, as SIDs (names are localized).
 const SYSTEM_SID = 'S-1-5-18';
 const ADMINISTRATORS_SID = 'S-1-5-32-544';
-// Their SDDL aliases, as icacls /save writes them.
-const SDDL_ALIASES: Record<string, string> = {
-  SY: SYSTEM_SID,
-  BA: ADMINISTRATORS_SID,
-};
+
+// The SID an SDDL trustee names. SDDL writes well-known SIDs as aliases;
+// the machine's built-in Administrator and Guest accounts (RID 500 and 501:
+// on Azure VMs, GitHub's Windows runners included, the admin account is the
+// renamed built-in Administrator) are aliased relative to the machine, whose
+// prefix the user's own SID gives.
+function trusteeSid(trustee: string, user: string): string {
+  if (trustee === 'SY') return SYSTEM_SID;
+  if (trustee === 'BA') return ADMINISTRATORS_SID;
+  const machine = /^(S-1-5-21-\d+-\d+-\d+)-\d+$/.exec(user)?.[1];
+  if (machine && trustee === 'LA') return `${machine}-500`;
+  if (machine && trustee === 'LG') return `${machine}-501`;
+  return trustee;
+}
 
 let userSid: Promise<string> | null = null;
 
@@ -87,9 +96,24 @@ export function sddlIsPrivate(sddl: string, user: string): boolean {
     const [type, , , , , trustee] = fields;
     // Deny entries never widen access.
     if (type === 'D') return true;
-    const sid = SDDL_ALIASES[trustee ?? ''] ?? trustee ?? '';
-    return allowed.has(sid);
+    return allowed.has(trusteeSid(trustee ?? '', user));
   });
+}
+
+// The security descriptor of `path` as SDDL (Windows only).
+export async function windowsAcl(path: string): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), 'ui-ux-acl-'));
+  try {
+    const out = join(folder, 'acl.txt');
+    await run(system32('icacls.exe'), [path, '/save', out, '/q'], {
+      timeout: 10000,
+      windowsHide: true,
+    });
+    // icacls writes UTF-16LE: the path's name, then its SDDL.
+    return (await readFile(out, 'utf16le')).split(/\r?\n/)[1] ?? '';
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 }
 
 // Whether only the current user (and, on Windows, SYSTEM and Administrators)
@@ -100,17 +124,5 @@ export async function isPrivate(
 ): Promise<boolean> {
   if (!WINDOWS)
     return ((await stat(path)).mode & 0o777) === (kind === 'directory' ? 0o700 : 0o600);
-  const folder = await mkdtemp(join(tmpdir(), 'ui-ux-acl-'));
-  try {
-    const out = join(folder, 'acl.txt');
-    await run(system32('icacls.exe'), [path, '/save', out, '/q'], {
-      timeout: 10000,
-      windowsHide: true,
-    });
-    // icacls writes UTF-16LE: the path's name, then its SDDL.
-    const sddl = (await readFile(out, 'utf16le')).split(/\r?\n/)[1] ?? '';
-    return sddlIsPrivate(sddl, await currentUserSid());
-  } finally {
-    await rm(folder, { recursive: true, force: true });
-  }
+  return sddlIsPrivate(await windowsAcl(path), await currentUserSid());
 }
