@@ -25,6 +25,7 @@ import {
   withoutPseudo,
 } from './environments.js';
 import type { EventLogger } from './drivers/types.js';
+import { protectedScreenshot } from './drivers/playwright-evidence.js';
 import {
   keyboardCandidates,
   keyboardExecute,
@@ -439,15 +440,25 @@ async function enabled(element: Element): Promise<boolean | null> {
 }
 
 // The accessible name from the first line of an aria snapshot. Playwright emits
-// `- role "name"` with JSON-style escapes, and wraps the whole line in YAML
+// `- role "name"` with JSON-style escapes, and wraps the role and name in YAML
 // single quotes (doubling inner ') when the name contains YAML-significant text
-// such as ': ' or ' #'. A trailing ':' marks child nodes.
+// such as ': ' or ' #'. After it, a ':' marks child nodes, and ': text' the
+// element's own text when it differs from the name
+// (- 'button "Column: Last contact"': Last contact).
 export function snapshotName(snapshot: string): string | null {
   let line = snapshot.split('\n')[0]!.trim().replace(/^- /, '');
   if (line.startsWith("'")) {
-    line = line.replace(/:$/, '');
-    if (!line.endsWith("'") || line.length < 2) return null;
-    line = line.slice(1, -1).replace(/''/g, "'");
+    // The quoted key ends at a quote that is not a doubled one.
+    let end = 1;
+    while (end < line.length) {
+      if (line[end] === "'") {
+        if (line[end + 1] !== "'") break;
+        end++;
+      }
+      end++;
+    }
+    if (end >= line.length) return null;
+    line = line.slice(1, end).replace(/''/g, "'");
   }
   const match = line.match(/^[a-z]+ "((?:\\.|[^"\\])*)"/);
   if (!match) return null;
@@ -646,6 +657,49 @@ export async function check(page: Page, condition: Check): Promise<boolean> {
   );
 }
 
+// How a target reads in an explanation.
+const targetText = (target: Target): string =>
+  target.by === 'role'
+    ? `${target.role} "${target.name}"`
+    : `${target.by} "${target.value}"`;
+
+// Why a condition does not hold on the page now, for a failure the user has
+// to fix in the suite or the app: the target matches nothing, matches several
+// elements, is hidden or outside the viewport, or the path differs. Null
+// when it holds, or when the reason is the condition itself (a text pattern
+// that does not match, focus elsewhere).
+export async function explainCheck(
+  page: Page,
+  condition: Check,
+): Promise<string | null> {
+  if (await check(page, condition)) return null;
+  if (condition.kind === 'path')
+    return `the page path is ${new URL(page.url()).pathname}, which ${condition.pattern} does not match`;
+  const target = locate(page, condition.target);
+  const named = targetText(condition.target);
+  const count = await target.count();
+  if (condition.kind === 'notVisible')
+    return `${named} is visible`;
+  if (!count) return `${named} matches no element on the page`;
+  const single = ['visible', 'text', 'focused'].includes(condition.kind);
+  if (single && count > 1)
+    return `${named} matches ${count} elements; it must match exactly one`;
+  const elements = await target.all();
+  const visible = (
+    await Promise.all(elements.map((element) => element.isVisible()))
+  ).filter(Boolean).length;
+  if (!visible)
+    return `${named} matches ${count === 1 ? 'an element' : `${count} elements`} that ${count === 1 ? 'is' : 'are'} not visible`;
+  if (condition.kind !== 'anyRendered' && condition.kind !== 'focused') {
+    const inView = (
+      await Promise.all(elements.map((element) => inViewport(page, element)))
+    ).filter(Boolean).length;
+    if (!inView)
+      return `${named} is outside the viewport or covered (anyRendered accepts it anywhere on the page)`;
+  }
+  return null;
+}
+
 export async function observe(
   page: Page,
   step: number,
@@ -653,7 +707,7 @@ export async function observe(
   // Writes the viewport screenshot to the path; drivers pass one that applies
   // the run's screenshot protection before capture.
   capture: (path: string) => Promise<unknown> = (path) =>
-    page.screenshot({ path, fullPage: false }),
+    protectedScreenshot(page, undefined, { path, fullPage: false }),
 ): Promise<Observation> {
   await capture(screenshotPath);
   const snapshot = await page.locator('body').ariaSnapshot();
@@ -889,8 +943,23 @@ export async function candidates(
         out.push(action);
       }
     }
-    for (const role of journey.discoverRoles) {
-      const all = page.getByRole(role);
+    // disclosure: only the buttons that show and hide something (a menu
+    // toggle, a dropdown; aria-expanded), which every button covers too.
+    const discover = journey.discoverRoles.flatMap((entry) =>
+      entry !== 'disclosure'
+        ? [{ role: entry, all: page.getByRole(entry) }]
+        : journey.discoverRoles.includes('button')
+          ? []
+          : [
+              {
+                role: 'button' as const,
+                all: page
+                  .getByRole('button')
+                  .and(page.locator('[aria-expanded]')),
+              },
+            ],
+    );
+    for (const { role, all } of discover) {
       const controls = (await all.elementHandles()) as Element[];
       discovered.push(...controls);
       for (const control of controls) {
@@ -934,7 +1003,10 @@ export async function candidates(
     // <details> disclosures (FAQ accordions, "more options"): the summary
     // toggles them like a button but has no button role to discover. Each
     // is targeted by its text, and offered only when that text is unique.
-    if (journey.discoverRoles.includes('button')) {
+    if (
+      journey.discoverRoles.includes('button') ||
+      journey.discoverRoles.includes('disclosure')
+    ) {
       const summaries = (await page
         .locator('details > summary')
         .elementHandles()) as Element[];

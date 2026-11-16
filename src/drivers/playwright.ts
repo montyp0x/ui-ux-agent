@@ -17,6 +17,7 @@ import {
   allowedURL,
   candidates,
   check,
+  explainCheck,
   execute,
   observe,
   offeredControls,
@@ -334,6 +335,11 @@ export async function playwrightDriver(
         // candidates: reading the options here would only widen that gap.
         check(condition) {
           return check(page, condition);
+        },
+        // Like check, only a boolean's worth of page text leaves: no page
+        // text is quoted, only the target and the page path.
+        explain(condition) {
+          return explainCheck(page, condition);
         },
         async observe(step, screenshot) {
           await learn();

@@ -89,6 +89,10 @@ export interface UISession {
   setTimeout(timeoutMs: number): void;
   location(): string;
   check(condition: Check): Promise<boolean>;
+  // Why a condition does not hold now (its target matches nothing, several
+  // elements, or a hidden one; the path differs), for a failure report.
+  // Null when it holds or there is nothing more to say. Optional.
+  explain?(condition: Check): Promise<string | null>;
   observe(step: number, screenshot: string): Promise<Observation>;
   candidates(): Promise<Action[]>;
   execute(action: Action, before: Observation): Promise<void>;

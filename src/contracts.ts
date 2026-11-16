@@ -200,7 +200,13 @@ export const journeySchema = z
     // Declared states where audits configured with at: 'states' run, once,
     // at the first observed state where `when` holds.
     states: z.array(journeyStateSchema(checkSchema)).max(10).optional(),
-    discoverRoles: z.array(z.enum(['button', 'tab', 'menuitem'])).default([]),
+    // Controls offered besides links. disclosure: only the controls that
+    // show and hide part of the page (buttons with aria-expanded, such as a
+    // narrow layout's menu toggle, and <details> summaries); button covers
+    // them too.
+    discoverRoles: z
+      .array(z.enum(['button', 'tab', 'menuitem', 'disclosure']))
+      .default([]),
     // keyboard: a keyboard-only journey on the web. Every action is a key
     // press on the focused element (KEYBOARD_KEYS), or a configured fill or
     // press on its target once keys have focused it; links, clicks, scrolling

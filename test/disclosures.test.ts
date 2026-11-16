@@ -73,3 +73,51 @@ test('a <details> summary is offered as a toggle with discovered buttons, and ex
     await browser.close();
   }
 });
+
+// A narrow layout: the navigation sits behind a menu toggle, next to buttons
+// that do something else.
+const NARROW = `<header><button aria-expanded="false" aria-controls="nav" onclick="document.getElementById('nav').hidden=!document.getElementById('nav').hidden;this.setAttribute('aria-expanded',String(!document.getElementById('nav').hidden))">Menu</button>
+<nav id="nav" hidden><a href="/docs">Docs</a></nav></header>
+<main><h1>Home</h1><button>Sort order</button><button aria-expanded="false">Delete options</button>
+<details><summary>Shipping times</summary><p>Two days.</p></details></main>`;
+
+test('disclosure discovery offers menu toggles and summaries, and no other button', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.route(`${baseURL}/**`, (route) =>
+      route.fulfill({ contentType: 'text/html', body: NARROW }),
+    );
+    await page.goto(`${baseURL}/`);
+    const narrow = journeySchema.parse({
+      ...journey(['disclosure']),
+      allowedPaths: ['/', '/docs'],
+    });
+    const offered = await candidates(page, narrow, baseURL);
+    // Not Sort order (no aria-expanded); not Delete options (blocked).
+    assert.deepEqual(toggles(offered), [
+      'Click button Menu',
+      'Expand Shipping times',
+    ]);
+    assert.ok(!offered.some((action) => action.kind === 'link'));
+    const before = await observe(
+      page,
+      0,
+      join(await mkdtemp(join(tmpdir(), 'ui-ux-details-')), 'narrow.png'),
+    );
+    await execute(page, offered[0]!, before, narrow, baseURL);
+    // The opened menu's links are offered next.
+    assert.ok(
+      (await candidates(page, narrow, baseURL)).some(
+        (action) => action.kind === 'link' && action.description === 'Open Docs',
+      ),
+    );
+    // The starter suite turns it on: its narrow viewport needs it.
+    assert.deepEqual(
+      starterSuite(baseURL, '/goal').journeys[0]!.discoverRoles,
+      ['disclosure'],
+    );
+  } finally {
+    await browser.close();
+  }
+});

@@ -36,9 +36,53 @@ type Guard = {
 // accident.
 const IDS_KEY = 'ui-ux-agent.keyboard.ids';
 const STYLES_KEY = 'ui-ux-agent.keyboard.styles';
-// Lets the app's focus handlers (a dialog focusing its first control after a
-// render) run before the result of a key press is measured.
+// After a key press, how long focus must stay on one element, with no
+// animation running, before the result is measured, and the most to wait
+// for that. A fixed pause is not enough: a dialog closing with an exit
+// animation hands focus back only once it is removed, so a measurement in
+// between sees focus on a control that is about to vanish, and the next key
+// is refused as stale when focus then moves.
 const SETTLE_MS = 120;
+const SETTLE_MAX_MS = 2000;
+const SETTLE_KEY = 'ui-ux-agent.keyboard.settle';
+
+// Waits until the page has settled after a key press (see SETTLE_MS). A page
+// that keeps moving focus or animating past SETTLE_MAX_MS, or that navigates
+// meanwhile, is measured as it is.
+async function settle(page: Page): Promise<void> {
+  const token = `${Date.now()}-${Math.random()}`;
+  await page
+    .waitForFunction(
+      ({ key, token, quiet }) => {
+        const store = window as unknown as Record<
+          symbol,
+          { token: string; active: globalThis.Element | null; since: number } | undefined
+        >;
+        const slot = Symbol.for(key);
+        let active = document.activeElement;
+        while (active?.shadowRoot?.activeElement)
+          active = active.shadowRoot.activeElement;
+        // Finite animations only: a spinner runs forever.
+        const animating = document
+          .getAnimations()
+          .some(
+            (animation) =>
+              animation.playState === 'running' &&
+              animation.effect?.getComputedTiming().iterations !== Infinity,
+          );
+        const now = performance.now();
+        const state = store[slot];
+        if (!state || state.token !== token || state.active !== active || animating) {
+          store[slot] = { token, active, since: now };
+          return false;
+        }
+        return now - state.since >= quiet;
+      },
+      { key: SETTLE_KEY, token, quiet: SETTLE_MS },
+      { polling: 40, timeout: SETTLE_MAX_MS },
+    )
+    .catch(() => undefined);
+}
 
 const guards = new WeakMap<Action, Guard>();
 const offered = new WeakMap<Page, { actions: Action[]; focused: Element | null }>();
@@ -589,7 +633,7 @@ export async function keyboardExecute(
     const value = fillValue(action);
     if (value) await page.keyboard.type(value);
   } else throw new Error(`Unexpected keyboard action ${action.kind}`);
-  await page.waitForTimeout(SETTLE_MS);
+  await settle(page);
   const url = page.url();
   // A key press that navigated measures the new document's focus.
   const end = await measure(page, 'after').catch(() => null);

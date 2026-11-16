@@ -105,15 +105,32 @@ export async function screenshotMasks(
   return masks;
 }
 
+// Chromium can fail a capture while it is busy compositing ("Unable to
+// capture screenshot", seen under load on Linux and Windows CI): that says
+// nothing about the page, so the capture is tried once more.
+async function screenshot(
+  page: Page,
+  options: PageScreenshotOptions,
+): Promise<Buffer> {
+  try {
+    return await page.screenshot(options);
+  } catch (caught) {
+    if (!/Unable to capture screenshot/.test(String(caught))) throw caught;
+    await page.waitForTimeout(100);
+    return page.screenshot(options);
+  }
+}
+
 // page.screenshot with the run's protections; without protection it is a
-// plain screenshot. Returns the image like page.screenshot.
+// plain screenshot. Returns the image like page.screenshot. Every page
+// screenshot the web driver takes goes through here.
 export async function protectedScreenshot(
   page: Page,
   protection: ScreenshotProtection | undefined,
   options: PageScreenshotOptions = {},
 ): Promise<Buffer> {
-  if (!protection) return page.screenshot(options);
-  return page.screenshot({
+  if (!protection) return screenshot(page, options);
+  return screenshot(page, {
     ...options,
     mask: [
       ...(options.mask ?? []),

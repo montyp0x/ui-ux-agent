@@ -19,18 +19,20 @@ async function server(
   respond: (count: number) => {
     status: number;
     headers?: Record<string, string>;
+    // The response body; a small JSON object by default.
+    body?: string;
   },
 ) {
   let count = 0;
   const starts: number[] = [];
   const http = createServer((_request, response) => {
     starts.push(Date.now());
-    const { status, headers = {} } = respond(++count);
+    const { status, headers = {}, body } = respond(++count);
     response.writeHead(status, {
       'Content-Type': 'application/json',
       ...headers,
     });
-    response.end(JSON.stringify({ ok: status === 200 }));
+    response.end(body ?? JSON.stringify({ ok: status === 200 }));
   });
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
   const address = http.address();
@@ -288,26 +290,37 @@ test('repeated 429s give up within the step budget with a clear error', async ()
   }
 });
 
-test('other HTTP errors are not retried', async () => {
-  const api = await server(() => ({ status: 400 }));
-  try {
-    await assert.rejects(
-      post(
-        api.url,
-        'key',
-        {},
-        5000,
-        {},
-        {
-          role: 'planner',
-          limiter: new EndpointLimiter({ rpm: 600, concurrency: 1 }),
-        },
-      ),
-      /Model HTTP 400/,
-    );
-    assert.equal(api.count(), 1);
-  } finally {
-    await api.close();
+test('other HTTP errors are not retried, and carry the provider message', async () => {
+  // Snowflake Cortex's shape; others send {"error": {"message"}} or text.
+  const bodies = [
+    ['{"message":"unknown model \\"claude-x\\"","request_id":"r1"}', 'Model HTTP 400: unknown model "claude-x"'],
+    ['{"error":{"message":"Invalid  schema","type":"invalid_request_error"}}', 'Model HTTP 400: Invalid schema'],
+    ['{"error":"bad request"}', 'Model HTTP 400: bad request'],
+    ['plain\ntext failure', 'Model HTTP 400: plain text failure'],
+    ['', 'Model HTTP 400'],
+  ];
+  for (const [body, message] of bodies) {
+    const api = await server(() => ({ status: 400, body }));
+    try {
+      await assert.rejects(
+        post(
+          api.url,
+          'key',
+          {},
+          5000,
+          {},
+          {
+            role: 'planner',
+            limiter: new EndpointLimiter({ rpm: 600, concurrency: 1 }),
+          },
+        ),
+        (error: Error) => error.message === message,
+        message,
+      );
+      assert.equal(api.count(), 1);
+    } finally {
+      await api.close();
+    }
   }
 });
 

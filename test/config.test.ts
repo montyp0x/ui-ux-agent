@@ -80,7 +80,9 @@ const actions: Action[] = [
   { kind: 'wait', id: 'a1', description: 'Wait briefly for loading to finish' },
 ];
 
-async function chatSelector(reply: unknown) {
+// Replies to each request in turn; a single reply answers every request.
+async function chatSelector(reply: unknown, ...more: unknown[]) {
+  const replies = [reply, ...more];
   const requests: { body: unknown; gateway: unknown }[] = [];
   const server = createServer(async (request, response) => {
     requests.push({
@@ -88,7 +90,9 @@ async function chatSelector(reply: unknown) {
       gateway: request.headers['x-gateway'],
     });
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify(reply));
+    response.end(
+      JSON.stringify(replies[Math.min(requests.length, replies.length) - 1]),
+    );
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -183,4 +187,35 @@ test('the chat selector rejects unknown choices, missing options and truncation'
     assert.ok(result instanceof Error);
     assert.match(result.message, pattern);
   }
+});
+
+test('the chat selector budget grows with the options, and a cut-off or malformed answer is handled', async () => {
+  const valid = reply({ choice: 'a0', probabilities: { a0: 0.9, a1: 0.05, no_match: 0.05 } });
+  // A probability per option: the budget grows with them.
+  const { requests } = await chatSelector(valid);
+  const budget = (requests[0]!.body as { max_completion_tokens: number })
+    .max_completion_tokens;
+  assert.equal(budget, Math.max(400, 200 + 16 * (actions.length + 1)));
+  // Snowflake Cortex leaves finish_reason empty: a completion that used the
+  // whole budget is a cut-off, not a JSON error.
+  const cut = await chatSelector({
+    choices: [{ message: { content: '{"choice": "a0"' }, finish_reason: '' }],
+    usage: { completion_tokens: budget },
+  });
+  assert.ok(cut.result instanceof Error);
+  assert.match(cut.result.message, /truncated at the token limit/);
+  // Malformed once: asked again, and the second answer is used.
+  const retried = await chatSelector(
+    { choices: [{ message: { content: '{"choice": "a0",' }, finish_reason: 'stop' }] },
+    valid,
+  );
+  assert.equal(retried.requests.length, 2);
+  assert.ok(!(retried.result instanceof Error), String(retried.result));
+  assert.equal((retried.result as { choice: string }).choice, 'a0');
+  // Malformed twice: reported.
+  const twice = await chatSelector({
+    choices: [{ message: { content: 'not json' }, finish_reason: 'stop' }],
+  });
+  assert.ok(twice.result instanceof Error);
+  assert.equal(twice.requests.length, 2);
 });
