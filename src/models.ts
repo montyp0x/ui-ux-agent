@@ -134,6 +134,21 @@ export function portableSchema(schema: unknown): unknown {
   );
 }
 
+// Whether a chat completion stopped at its token budget: finish_reason
+// "length", or, from gateways that leave finish_reason empty (Snowflake
+// Cortex), a completion that used the whole budget.
+function truncated(
+  choice: { finish_reason?: string | null },
+  payload: unknown,
+  budget: number,
+): boolean {
+  if (choice.finish_reason === 'length') return true;
+  if (choice.finish_reason) return false;
+  const used = (payload as { usage?: { completion_tokens?: unknown } } | null)
+    ?.usage?.completion_tokens;
+  return typeof used === 'number' && used >= budget;
+}
+
 // Some gateways do not enforce json_schema and wrap a valid object in one key
 // (for example {"json_schema": {...}}). Accept the inner object only when it
 // passes the same schema; otherwise report the original validation error.
@@ -337,6 +352,30 @@ const backoffMs = (attempt: number) =>
 // body is consumed or the attempt fails, and 429/503 replies are retried after
 // the endpoint's cooldown. Nothing is dispatched once `signal` aborts or the
 // deadline has passed; diagnostics never include the key or headers.
+// The message of a failed model response, short: the JSON error message
+// gateways send ({"message"}, {"error": {"message"}} or {"error": "..."}),
+// else the start of the body text. Empty when there is none.
+async function errorDetail(response: Response): Promise<string> {
+  let text: string;
+  try {
+    text = (await response.text()).slice(0, 4000);
+  } catch {
+    return '';
+  }
+  let message: unknown = text;
+  try {
+    const body = JSON.parse(text) as Record<string, unknown>;
+    const error = body.error as Record<string, unknown> | string | undefined;
+    message =
+      body.message ??
+      (typeof error === 'string' ? error : error?.message) ??
+      text;
+  } catch {
+    // Not JSON: the text itself.
+  }
+  return String(message).replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
 export async function post(
   url: string,
   key: string,
@@ -404,8 +443,13 @@ export async function post(
         retry = { wait, status: response.status };
         await response.body?.cancel().catch(() => undefined);
       } else if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new Error(`Model HTTP ${response.status}`);
+        // The provider's own reason ("unknown model ...") is what makes a
+        // configuration error fixable; the run's redactor covers it like
+        // every other error text.
+        const detail = await errorDetail(response);
+        throw new Error(
+          `Model HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+        );
       } else {
         const payload: unknown = await response.json();
         pacing?.limiter.succeeded();
@@ -591,7 +635,7 @@ export function models(options: ModelOptions): Models {
           })
           .parse(payload);
         const choice = response.choices[0]!;
-        if (choice.finish_reason === 'length')
+        if (truncated(choice, payload, request.max_completion_tokens))
           throw new Error('Planner output was truncated at the token limit');
         try {
           return parseStructured(choice.message.content, planSchema);
@@ -628,77 +672,95 @@ export function models(options: ModelOptions): Models {
       };
       if (options.selectorProtocol === 'chat') {
         const ids = Object.keys(criteria);
-        const payload = await post(
-          options.selectorURL,
-          options.selectorKey,
-          {
-            model: options.selectorModel,
-            messages: [
-              {
-                role: 'system',
-                content: `${SELECTOR_INSTRUCTIONS} Return only JSON: the chosen option id and a probability for every option id.`,
-              },
-              {
-                role: 'user',
-                content: JSON.stringify({ state, options: criteria }),
-              },
-            ],
-            max_completion_tokens: 400,
-            response_format: {
-              type: 'json_schema',
-              json_schema: {
-                name: 'choice',
-                schema: {
-                  type: 'object',
-                  properties: {
-                    choice: { type: 'string', enum: ids },
-                    probabilities: {
-                      type: 'object',
-                      properties: Object.fromEntries(
-                        ids.map((id) => [id, { type: 'number' }]),
-                      ),
-                      required: ids,
-                      additionalProperties: false,
-                    },
+        // A probability for every option: a page with dozens of controls
+        // needs more than a fixed budget (a cut-off object does not parse).
+        const maxTokens = Math.min(4096, Math.max(400, 200 + 16 * ids.length));
+        const request = {
+          model: options.selectorModel,
+          messages: [
+            {
+              role: 'system',
+              content: `${SELECTOR_INSTRUCTIONS} Return only JSON: the chosen option id and a probability for every option id.`,
+            },
+            {
+              role: 'user',
+              content: JSON.stringify({ state, options: criteria }),
+            },
+          ],
+          max_completion_tokens: maxTokens,
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'choice',
+              schema: {
+                type: 'object',
+                properties: {
+                  choice: { type: 'string', enum: ids },
+                  probabilities: {
+                    type: 'object',
+                    properties: Object.fromEntries(
+                      ids.map((id) => [id, { type: 'number' }]),
+                    ),
+                    required: ids,
+                    additionalProperties: false,
                   },
-                  required: ['choice', 'probabilities'],
-                  additionalProperties: false,
                 },
+                required: ['choice', 'probabilities'],
+                additionalProperties: false,
               },
             },
           },
-          timeoutMs,
-          options.selectorHeaders,
-          selector,
-          signal,
-        );
-        await options.onCall?.({
-          role: 'selector',
-          model: options.selectorModel,
-          durationMs: Date.now() - started,
-          response: payload,
-        });
-        const choice = z
-          .object({
-            choices: z
-              .array(
-                z.object({
-                  message: z.object({ content: z.string() }),
-                  finish_reason: z.string().nullish(),
-                }),
-              )
-              .min(1),
-          })
-          .parse(payload).choices[0]!;
-        if (choice.finish_reason === 'length')
-          throw new Error('Selector output was truncated at the token limit');
-        const answer = parseStructured(
-          choice.message.content,
-          z.object({
-            choice: z.string(),
-            probabilities: z.record(z.string(), z.number().min(0)),
-          }),
-        );
+        };
+        let answer!: { choice: string; probabilities: Record<string, number> };
+        // Gateways that do not enforce json_schema occasionally return
+        // malformed objects. Ask once more; a second failure is reported.
+        for (let attempt = 1; ; attempt++) {
+          const callStarted = Date.now();
+          const payload = await post(
+            options.selectorURL,
+            options.selectorKey,
+            request,
+            Math.max(1, timeoutMs - (callStarted - started)),
+            options.selectorHeaders,
+            selector,
+            signal,
+          );
+          await options.onCall?.({
+            role: 'selector',
+            model: options.selectorModel,
+            durationMs: Date.now() - callStarted,
+            response: payload,
+            attempt,
+          });
+          const choice = z
+            .object({
+              choices: z
+                .array(
+                  z.object({
+                    message: z.object({ content: z.string() }),
+                    finish_reason: z.string().nullish(),
+                  }),
+                )
+                .min(1),
+            })
+            .parse(payload).choices[0]!;
+          if (truncated(choice, payload, maxTokens))
+            throw new Error('Selector output was truncated at the token limit');
+          try {
+            answer = parseStructured(
+              choice.message.content,
+              z.object({
+                choice: z.string(),
+                probabilities: z.record(z.string(), z.number().min(0)),
+              }),
+            );
+            break;
+          } catch (caught) {
+            const invalid =
+              caught instanceof z.ZodError || caught instanceof SyntaxError;
+            if (!invalid || attempt >= 2) throw caught;
+          }
+        }
         // Chat models give approximate distributions; normalize at this boundary
         // and let validateChoice enforce coverage and range.
         const total = Object.values(answer.probabilities).reduce(
