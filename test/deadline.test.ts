@@ -49,6 +49,7 @@ async function run(build: (selectorURL: string) => Models, driver?: UIDriver) {
     baseURL: url,
     requiresAuth: false,
     viewports: [{ name: 'desktop', width: 1280, height: 800 }],
+    audits: { checks: [{ id: 'layout.horizontal-overflow' }] },
     journeys: [
       {
         id: 'deadline',
