@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { chromium } from 'playwright';
 import { check } from '../src/browser.js';
 import { suiteSchema } from '../src/contracts.js';
+import { playwrightDriver } from '../src/drivers/playwright.js';
 import type { Models } from '../src/models.js';
 import { runSuite } from '../src/runner.js';
 
@@ -14,10 +15,15 @@ import { runSuite } from '../src/runner.js';
 // first readiness check even on a slow CI machine (Windows runners took over
 // 900 ms), and well inside the 3 s readiness timeout.
 async function run(state: string, content = true, duration = 8000) {
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let releasedBy: string | null = null;
   const server = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
     if (request.url === '/unauthorized') {
-      response.writeHead(401).end('Unauthorized');
+      void released.then(() => response.writeHead(401).end('Unauthorized'));
       return;
     }
     response.end(
@@ -26,7 +32,7 @@ async function run(state: string, content = true, duration = 8000) {
         : `
       <h1>Detail</h1><div data-testid="tabs">Overview</div>
       <main><p data-testid="loading">Loading</p></main>
-      ${state === 'unauthorized' ? '<script>setTimeout(() => fetch("/unauthorized"), 400)</script>' : ''}
+      ${state === 'unauthorized' ? '<script>fetch("/unauthorized")</script>' : ''}
       ${
         state === 'loading' || state === 'unauthorized'
           ? ''
@@ -116,13 +122,34 @@ async function run(state: string, content = true, duration = 8000) {
         },
       ],
     });
-    const results = await runSuite(suite, models, { directory });
+    const driver =
+      state === 'unauthorized'
+        ? await playwrightDriver('chromium', true)
+        : undefined;
+    if (driver) {
+      const open = driver.openSession.bind(driver);
+      driver.openSession = async (options) => {
+        const session = await open(options);
+        const check = session.check.bind(session);
+        session.check = async (condition) => {
+          if (releasedBy === null && condition.kind === 'anyRendered') {
+            releasedBy = condition.kind;
+            release();
+          }
+          return check(condition);
+        };
+        return session;
+      };
+    }
+    const results = await runSuite(suite, models, { directory, driver });
     const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    return { result: results[0]!, events, choices };
+    return { result: results[0]!, events, choices, releasedBy };
   } finally {
+    release();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
@@ -253,10 +280,15 @@ test('unavailable content does not qualify as a loaded or accepted empty state',
 });
 
 test('an unauthorized response during content waiting blocks completion', async () => {
-  const { result, events } = await run('unauthorized');
+  const { result, events, releasedBy } = await run('unauthorized');
+  assert.equal(releasedBy, 'anyRendered');
   assert.equal(result.status, 'blocked');
   assert.match(result.reason, /401/);
   assert.equal(result.outcome.code, 'unauthorized_response');
+  assert.deepEqual(result.outcome.evidence.events, [
+    'observation',
+    'content_readiness',
+  ]);
   assert.ok(
     events.some(
       (event) =>
