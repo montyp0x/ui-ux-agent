@@ -1,6 +1,7 @@
 // Suite configuration for audits: which audits run, at which checkpoints, and
 // which finding severity fails the quality verdict. Audits run only at the
 // checkpoints listed here, never after every action.
+import axe from 'axe-core';
 import { z } from 'zod';
 import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
@@ -52,6 +53,14 @@ export const DEFAULT_AXE_TAGS = [
   'best-practice',
 ];
 const cssScope = z.array(z.string().min(1).max(200)).max(20).default([]);
+const AXE_RULE_IDS = new Set(axe.getRules().map((rule) => rule.ruleId));
+const axeRuleId = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,59}$/)
+  .refine((id) => AXE_RULE_IDS.has(id), {
+    error: (issue) =>
+      `Unknown axe-core rule id ${String(issue.input)}; disableRules takes rule ids of axe-core ${axe.version}`,
+  });
 // An automated axe-core scan of the page in the web driver. Partial by nature:
 // it never establishes WCAG conformance (see src/audits/accessibility.ts).
 const axeConfig = z
@@ -68,8 +77,12 @@ const axeConfig = z
     // The axe rule tags to run.
     tags: z.array(axeTag).min(1).max(20).default(DEFAULT_AXE_TAGS),
     disableRules: z
-      .array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/))
+      .array(axeRuleId)
       .max(50)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        'disableRules ids must be unique',
+      )
       .optional(),
   })
   .strict();
