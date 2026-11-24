@@ -7,7 +7,11 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AuditConfig, AuditId } from '../src/audits/config.js';
+import {
+  configuredChecks,
+  type AuditConfig,
+  type AuditId,
+} from '../src/audits/config.js';
 import {
   auditOutputSchema,
   auditsResultSchema,
@@ -170,13 +174,17 @@ const finding = (
   ...overrides,
 });
 
-test('suites get the overflow audit at completion and fail on serious by default', () => {
+test('suites without audits.checks get the default audits and fail on serious by default', () => {
   const suite = suiteWith();
-  assert.deepEqual(suite.audits, {
-    checks: [{ id: 'layout.horizontal-overflow', at: ['completion'] }],
-    failOn: 'serious',
-    timeoutMs: 15000,
-  });
+  assert.deepEqual(suite.audits, { failOn: 'serious', timeoutMs: 15000 });
+  assert.deepEqual(
+    configuredChecks(suite.audits).map((check) => [check.id, check.at]),
+    [
+      ['layout.horizontal-overflow', ['completion']],
+      ['accessibility.axe', ['ready', 'completion']],
+      ['layout.responsive', ['ready', 'completion']],
+    ],
+  );
   assert.deepEqual(
     suiteWith({ audits: { checks: [] } }).audits.checks,
     [],
@@ -644,12 +652,13 @@ test('the runner records audit runs in results.json and the report', async () =>
   assert.match(report, /document-wider-than-viewport/);
 });
 
-test('a macOS run reports the overflow audit as unsupported, not clean', async () => {
+test('a macOS run reports an explicitly listed overflow audit as unsupported, not clean', async () => {
   const directory = join(await mkdtemp(join(tmpdir(), 'ui-ux-audits-')), 'run');
   const suite = suiteSchema.parse({
     name: 'native',
     platform: 'macos',
     app: { bundleId: 'dev.example.app' },
+    audits: { checks: [{ id: 'layout.horizontal-overflow' }] },
     journeys: [
       {
         id: 'find',
@@ -856,7 +865,7 @@ test('driver audits get the session viewport, a per-audit timeout and report exe
       audits: {
         checks: [{ id: 'layout.horizontal-overflow', timeoutMs: 60000 }],
       },
-    }).audits.checks[0]!.timeoutMs,
+    }).audits.checks![0]!.timeoutMs,
     60000,
   );
 });

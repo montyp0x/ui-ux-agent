@@ -55,14 +55,23 @@ export const PLAYWRIGHT_AUDITS: Partial<Record<AuditId, PlaywrightAudit>> = {
       throw new Error(
         `Expected the accessibility.axe config, got ${config.id}`,
       );
-    return axeAuditOutput(
+    const output = axeAuditOutput(
       await scanAccessibility(page, {
         include: config.include,
         exclude: config.exclude,
         tags: config.tags,
+        disableRules: config.disableRules,
         timeoutMs: Math.max(1, timeoutMs - SCAN_DEADLINE_MARGIN_MS),
       }),
     );
+    if (!config.disableRules?.length) return output;
+    return {
+      ...output,
+      limitations: [
+        ...(output.limitations ?? []),
+        `axe rules not run: ${config.disableRules.join(', ')}`,
+      ],
+    };
   },
   'layout.responsive': layoutResponsivePlaywrightAudit,
   async 'visual.baseline'(page, request, context) {

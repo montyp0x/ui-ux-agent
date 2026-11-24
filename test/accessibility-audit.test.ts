@@ -228,7 +228,7 @@ test('the axe audit config parses with WCAG A/AA and best-practice defaults', ()
     });
   const parsed = parse({ checks: [{ id: 'accessibility.axe' }] });
   assert.ok(parsed.success);
-  assert.deepEqual(parsed.data.audits.checks[0], {
+  assert.deepEqual(parsed.data.audits.checks![0], {
     id: 'accessibility.axe',
     at: ['ready', 'completion'],
     include: [],
@@ -372,7 +372,7 @@ test('the accessibility example suite parses', async () => {
   const suite = suiteSchema.parse(
     JSON.parse(await readFile('examples/website-accessibility.json', 'utf8')),
   );
-  const axe = suite.audits.checks.find((check) => check.id === 'accessibility.axe');
+  const axe = suite.audits.checks!.find((check) => check.id === 'accessibility.axe');
   assert.deepEqual(axe?.at, ['ready', 'states', 'completion']);
   assert.equal(suite.journeys[0]!.states?.[0]?.name, 'docs-index');
 });
@@ -428,7 +428,7 @@ test('a per-check timeoutMs overrides audits.timeoutMs for the scan', async () =
   try {
     const page = await browser.newPage();
     await page.goto(app.url);
-    const config = suite.audits.checks[0]!;
+    const config = suite.audits.checks![0]!;
     await assert.rejects(
       PLAYWRIGHT_AUDITS['accessibility.axe']!(page, {
         config,

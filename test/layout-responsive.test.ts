@@ -109,13 +109,13 @@ test('layout.responsive is configured per suite with checkpoints, breakpoints an
       },
     ],
   });
-  assert.equal(suite.audits.checks[0]!.id, 'layout.responsive');
+  assert.equal(suite.audits.checks![0]!.id, 'layout.responsive');
   // The documented example suite stays valid.
   const example = suiteSchema.parse(
     JSON.parse(readFileSync('examples/responsive-layout.json', 'utf8')),
   );
   assert.deepEqual(
-    example.audits.checks.map((check) => check.id),
+    example.audits.checks!.map((check) => check.id),
     ['layout.horizontal-overflow', 'layout.responsive'],
   );
   // A driver audit, unsupported on macOS rather than silently clean.

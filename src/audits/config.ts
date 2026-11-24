@@ -1,6 +1,7 @@
 // Suite configuration for audits: which audits run, at which checkpoints, and
 // which finding severity fails the quality verdict. Audits run only at the
 // checkpoints listed here, never after every action.
+import axe from 'axe-core';
 import { z } from 'zod';
 import { failOnSchema, severitySchema } from './contract.js';
 import { layoutAuditConfigSchema, layoutMatrixSchema } from './layout.js';
@@ -52,6 +53,14 @@ export const DEFAULT_AXE_TAGS = [
   'best-practice',
 ];
 const cssScope = z.array(z.string().min(1).max(200)).max(20).default([]);
+const AXE_RULE_IDS = new Set(axe.getRules().map((rule) => rule.ruleId));
+const axeRuleId = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,59}$/)
+  .refine((id) => AXE_RULE_IDS.has(id), {
+    error: (issue) =>
+      `Unknown axe-core rule id ${String(issue.input)}; disableRules takes rule ids of axe-core ${axe.version}`,
+  });
 // An automated axe-core scan of the page in the web driver. Partial by nature:
 // it never establishes WCAG conformance (see src/audits/accessibility.ts).
 const axeConfig = z
@@ -67,6 +76,14 @@ const axeConfig = z
     exclude: cssScope,
     // The axe rule tags to run.
     tags: z.array(axeTag).min(1).max(20).default(DEFAULT_AXE_TAGS),
+    disableRules: z
+      .array(axeRuleId)
+      .max(50)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        'disableRules ids must be unique',
+      )
+      .optional(),
   })
   .strict();
 
@@ -170,20 +187,22 @@ export const AUDIT_IDS = auditConfigSchema.options.map(
 ) as AuditId[];
 
 export const DEFAULT_AUDITS: AuditConfig[] = [
-  { id: 'layout.horizontal-overflow', at: ['completion'] },
-];
+  { id: 'layout.horizontal-overflow' },
+  { id: 'accessibility.axe', disableRules: ['target-size'] },
+  { id: 'layout.responsive' },
+].map((entry) => auditConfigSchema.parse(entry));
 
 export const auditsConfigSchema = z
   .object({
     checks: z
       .array(auditConfigSchema)
       .max(20)
-      .default(DEFAULT_AUDITS)
       .refine(
         (checks) =>
           new Set(checks.map((check) => check.id)).size === checks.length,
         'Each audit can be configured once',
-      ),
+      )
+      .optional(),
     // Violations at or above this severity fail quality; needs_review
     // results never do. none reports findings without failing quality.
     failOn: failOnSchema.default('serious'),
@@ -193,6 +212,9 @@ export const auditsConfigSchema = z
   })
   .strict();
 export type AuditsConfig = z.infer<typeof auditsConfigSchema>;
+
+export const configuredChecks = (audits: AuditsConfig): AuditConfig[] =>
+  audits.checks ?? DEFAULT_AUDITS;
 
 // A journey state to audit: the first observed state where `when` holds.
 // `expect` lists checks that must also hold in that state, independently of

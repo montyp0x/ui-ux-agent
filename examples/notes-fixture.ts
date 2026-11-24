@@ -98,8 +98,8 @@ export async function notesFixture(faults: NotesFaults = {}) {
         .map((note) => `<li>${note.replace(/[<&]/g, '')}</li>`)
         .join('');
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
-      response.end(`<!doctype html><html lang="en"><title>Notes</title><h1>Notes</h1>
-<main><p>Signed in as <span data-testid="owner"></span></p><label>Note <input id="note" autocomplete="off"></label>
+      response.end(`<!doctype html><html lang="en"><title>Notes</title>
+<main><h1>Notes</h1><p>Signed in as <span data-testid="owner"></span></p><label>Note <input id="note" autocomplete="off"></label>
 <button type="button" id="save">Save note</button><ul data-testid="notes">${list}</ul></main>
 <script>
 const owner = new URLSearchParams(location.search).get('owner');

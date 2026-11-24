@@ -405,8 +405,9 @@ test('zero executed quality checks is not evaluated, never a pass', async () => 
   const native = await run({ platform: 'macos', successAfter: 1 });
   assert.equal(native.result.status, 'passed');
   assert.equal(native.result.quality.verdict, 'not_evaluated');
+  assert.deepEqual(native.result.quality.executed, []);
   assert.ok(
-    native.result.quality.unsupported.some(
+    !native.result.quality.unsupported.some(
       (gap) => gap.id === 'layout.horizontal-overflow',
     ),
   );

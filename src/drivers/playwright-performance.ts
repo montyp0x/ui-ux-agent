@@ -148,7 +148,7 @@ export class PerformanceRecorder {
 }
 
 const performanceConfig = (suite: Suite): PerformanceAuditConfig | null => {
-  const check = suite.audits.checks.find(
+  const check = suite.audits.checks?.find(
     (entry) => entry.id === 'performance.web',
   );
   return check?.id === 'performance.web' ? check : null;

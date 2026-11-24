@@ -427,6 +427,7 @@ export async function loadDesignTokens(
     typeof tokens === 'string'
       ? readTokenFile(resolve(dirname(resolve(suitePath)), tokens), tokens)
       : tokens;
+  if (!suite.audits.checks) return suite;
   const checks = await Promise.all(
     suite.audits.checks.map(async (check) =>
       check.id === 'design.tokens'
@@ -457,7 +458,7 @@ export async function loadDesignTokens(
 // sorted and unique. Inline sets reference no file.
 export function referencedTokenFiles(suite: Suite): string[] {
   const files = new Set<string>();
-  for (const check of suite.audits.checks) {
+  for (const check of suite.audits.checks ?? []) {
     if (check.id !== 'design.tokens') continue;
     for (const tokens of [check.tokens, ...Object.values(check.environments ?? {})])
       if (typeof tokens === 'string') files.add(tokens);

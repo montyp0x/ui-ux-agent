@@ -8,4 +8,6 @@ Parse configuration and model output at their boundaries. Actions must come from
 
 Run `npm run typecheck`, `npm run schema`, and `npm test` after behavior changes. Exercise the local `npm run demo` when driver or runner behavior changes, and `npm run demo:macos` on macOS when the native driver changes. CI runs on Linux and Windows and skips the native tests, so before pushing any change that touches `src/drivers/macos*`, `native/` or the runner, run `npm run test:native` locally and push only when it passes. Browser tests require the matching Playwright Chromium runtime. Add meaningful regressions for changed selection, execution, scope and outcome behavior.
 
+Docs ship in the same pull request as the code they describe; a docs-only pull request is a rare exception.
+
 Do not commit credentials, storage state, model keys, screenshots, traces, videos or other run evidence. Do not write pull request comments. Do not merge pull requests.

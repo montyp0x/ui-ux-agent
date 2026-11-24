@@ -71,6 +71,7 @@ async function run(state: string, content = true, duration = 8000) {
       name: 'Content fixture',
       baseURL: `http://127.0.0.1:${address.port}`,
       viewports: [{ name: 'narrow', width: 390, height: 844 }],
+      audits: { checks: [{ id: 'layout.horizontal-overflow' }] },
       journeys: [
         {
           id: 'detail',
