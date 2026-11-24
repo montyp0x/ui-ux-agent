@@ -67,6 +67,10 @@ const axeConfig = z
     exclude: cssScope,
     // The axe rule tags to run.
     tags: z.array(axeTag).min(1).max(20).default(DEFAULT_AXE_TAGS),
+    disableRules: z
+      .array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/))
+      .max(50)
+      .optional(),
   })
   .strict();
 
@@ -170,20 +174,22 @@ export const AUDIT_IDS = auditConfigSchema.options.map(
 ) as AuditId[];
 
 export const DEFAULT_AUDITS: AuditConfig[] = [
-  { id: 'layout.horizontal-overflow', at: ['completion'] },
-];
+  { id: 'layout.horizontal-overflow' },
+  { id: 'accessibility.axe', disableRules: ['target-size'] },
+  { id: 'layout.responsive' },
+].map((entry) => auditConfigSchema.parse(entry));
 
 export const auditsConfigSchema = z
   .object({
     checks: z
       .array(auditConfigSchema)
       .max(20)
-      .default(DEFAULT_AUDITS)
       .refine(
         (checks) =>
           new Set(checks.map((check) => check.id)).size === checks.length,
         'Each audit can be configured once',
-      ),
+      )
+      .optional(),
     // Violations at or above this severity fail quality; needs_review
     // results never do. none reports findings without failing quality.
     failOn: failOnSchema.default('serious'),
@@ -193,6 +199,9 @@ export const auditsConfigSchema = z
   })
   .strict();
 export type AuditsConfig = z.infer<typeof auditsConfigSchema>;
+
+export const configuredChecks = (audits: AuditsConfig): AuditConfig[] =>
+  audits.checks ?? DEFAULT_AUDITS;
 
 // A journey state to audit: the first observed state where `when` holds.
 // `expect` lists checks that must also hold in that state, independently of

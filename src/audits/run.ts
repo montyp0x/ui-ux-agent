@@ -7,7 +7,7 @@ import type {
   EventLogger,
   UISession,
 } from '../drivers/types.js';
-import type { AuditConfig, AuditId } from './config.js';
+import { DEFAULT_AUDITS, type AuditConfig, type AuditId } from './config.js';
 import {
   AUDIT_CONTRACT_VERSION,
   auditOutputSchema,
@@ -82,7 +82,9 @@ export class JourneyAudits {
     const { suite, session } = options;
     this.driver =
       session.driver ?? (suite.platform === 'macos' ? 'macos' : 'playwright');
-    this.checks = suite.audits.checks;
+    this.checks =
+      suite.audits.checks ??
+      DEFAULT_AUDITS.filter((config) => this.runsByDefault(config));
     this.result = {
       contractVersion: AUDIT_CONTRACT_VERSION,
       failOn: suite.audits.failOn,
@@ -92,6 +94,14 @@ export class JourneyAudits {
       notReached: [],
     };
     for (const check of this.checks) this.pending.set(check.id, []);
+  }
+
+  private runsByDefault(config: AuditConfig): boolean {
+    const { session } = this.options;
+    const definition = (this.options.definitions ?? auditDefinition)(config.id);
+    if (!definition.drivers.includes(this.driver)) return false;
+    if (session.auditUnsupported?.(config)) return false;
+    return !!(definition.evaluate || definition.inspect || session.runAudit);
   }
 
   // Every observed state, so core audits can read the states between their

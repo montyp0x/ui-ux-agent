@@ -119,10 +119,11 @@ test(
     assert.equal(stored!.quality.verdict, 'not_evaluated');
     assert.deepEqual(stored!.quality.executed, []);
     assert.ok(
-      stored!.quality.unsupported.some(
+      !stored!.quality.unsupported.some(
         (gap) => gap.id === 'layout.horizontal-overflow',
       ),
     );
+    assert.deepEqual(stored!.audits.runs, []);
     const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
       .trim()
       .split('\n')

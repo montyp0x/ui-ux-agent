@@ -17,6 +17,7 @@ export type AxeScanOptions = {
   // axe rule tags to limit the scan to (e.g. "wcag2a", "best-practice");
   // empty runs axe's default rule set.
   tags?: string[];
+  disableRules?: string[];
   timeoutMs?: number;
 };
 
@@ -59,6 +60,8 @@ export async function scanAccessibility(
       for (const selector of scope.include) builder.include(selector);
       for (const selector of scope.exclude) builder.exclude(selector);
       if (tags.length) builder.withTags(tags);
+      if (options.disableRules?.length)
+        builder.disableRules(options.disableRules);
       return { raw: (await builder.analyze()) as unknown } as const;
     };
     const running = scan();

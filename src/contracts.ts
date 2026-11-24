@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { auditsConfigSchema, journeyStateSchema } from './audits/config.js';
+import {
+  auditsConfigSchema,
+  configuredChecks,
+  journeyStateSchema,
+} from './audits/config.js';
 import {
   evidencePolicySchema,
   type RunEvidencePolicy,
@@ -387,7 +391,6 @@ const suiteObject = z
       .default([]),
     journeys: z.array(journeySchema).min(1),
     // Objective audits run at configured checkpoints (see src/audits/).
-    // Default: the horizontal overflow audit at completion, fail on serious.
     audits: auditsConfigSchema.prefault({}),
     // Provider-visible versus local-only data, redaction, screenshot masks,
     // trace/video capture and retention (see src/evidence/policy.ts).
@@ -409,7 +412,7 @@ const suiteObject = z
     const environmentNames = (suite.environments ?? []).map(
       (environment) => environment.name,
     );
-    suite.audits.checks.forEach((check, index) => {
+    (suite.audits.checks ?? []).forEach((check, index) => {
       if (check.id !== 'design.tokens') return;
       for (const name of unknownTokenEnvironments(check, environmentNames))
         ctx.addIssue({
@@ -605,7 +608,7 @@ const suiteObject = z
       suite.journeys.some((journey) => journey.input === 'keyboard')
     )
       ctx.addIssue({ code: 'custom', message: keyboardRefused });
-    const auditsAtStates = suite.audits.checks.some((check) =>
+    const auditsAtStates = configuredChecks(suite.audits).some((check) =>
       (check.at as string[]).includes('states'),
     );
     for (const journey of suite.journeys) {
@@ -651,7 +654,7 @@ const suiteObject = z
         });
       if (
         (journey.states ?? []).some((state) => state.expect?.length) &&
-        !suite.audits.checks.some(
+        !configuredChecks(suite.audits).some(
           (check) => check.id === 'journey.state-checks',
         )
       )

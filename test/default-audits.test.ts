@@ -179,13 +179,21 @@ test('a suite without an audits key gets overflow, axe and responsive layout wit
     DEFAULT_AUDITS.map((check) => check.id),
     DEFAULT_IDS,
   );
-  assert.deepEqual(
-    DEFAULT_AUDITS,
-    DEFAULT_IDS.map((id) => auditConfigSchema.parse({ id })),
-  );
+  assert.deepEqual(DEFAULT_AUDITS, [
+    auditConfigSchema.parse({ id: 'layout.horizontal-overflow' }),
+    auditConfigSchema.parse({
+      id: 'accessibility.axe',
+      disableRules: ['target-size'],
+    }),
+    auditConfigSchema.parse({ id: 'layout.responsive' }),
+  ]);
   const axe = DEFAULT_AUDITS.find((check) => check.id === 'accessibility.axe');
   assert.ok(axe && axe.id === 'accessibility.axe');
   assert.deepEqual(axe.tags, DEFAULT_AXE_TAGS);
+  assert.deepEqual(axe.disableRules, ['target-size']);
+  const listed = auditConfigSchema.parse({ id: 'accessibility.axe' });
+  assert.ok(listed.id === 'accessibility.axe');
+  assert.equal(listed.disableRules, undefined);
   assert.deepEqual(axe.at, ['ready', 'completion']);
   assert.deepEqual(axe.include, []);
   assert.deepEqual(axe.exclude, []);
@@ -378,7 +386,7 @@ test('a native suite that passes with an explicit state-checks audit still passe
   assert.equal(result!.quality.verdict, 'pass', result!.quality.reason);
 });
 
-const SMALL_TARGETS = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor</title><style>body{font:16px sans-serif;margin:16px;color:#111;background:#fff}.toolbar{display:flex;gap:8px;margin:12px 0}.toolbar button{width:18px;height:18px;padding:0;border:1px solid #333;background:#fff;color:#111;font-size:10px}a{color:#0645ad}</style></head><body><main><h1>Home</h1><div class="toolbar" role="toolbar" aria-label="Formatting"><button aria-label="Bold">B</button><button aria-label="Italic">I</button><button aria-label="Underline">U</button></div><p><a href="/done">Continue</a></p></main></body></html>`;
+const SMALL_TARGETS = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor</title><style>body{font:16px sans-serif;margin:16px;color:#111;background:#fff}.toolbar{display:flex;gap:2px;margin:12px 0}.toolbar button{width:18px;height:18px;padding:0;border:1px solid #333;background:#fff;color:#111;font-size:10px}a{color:#0645ad}</style></head><body><main><h1>Home</h1><div class="toolbar" role="toolbar" aria-label="Formatting"><button aria-label="Bold">B</button><button aria-label="Italic">I</button><button aria-label="Underline">U</button></div><p><a href="/done">Continue</a></p></main></body></html>`;
 const DONE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Done</title></head><body><main><h1>Done</h1><p>Saved</p></main></body></html>`;
 
 async function smallTargetSite() {
@@ -461,6 +469,15 @@ for (const engine of ['chromium', 'webkit'] as const)
         (finding) => finding.ruleId === 'target-size',
       );
       assert.ok(sizes.length, 'the 18px toolbar buttons are found');
+      assert.ok(
+        sizes.every((finding) => finding.auditId === 'layout.responsive'),
+      );
+      for (const run of result!.audits.runs)
+        if (run.auditId === 'accessibility.axe')
+          assert.ok(
+            run.limitations.includes('axe rules not run: target-size'),
+            JSON.stringify(run.limitations),
+          );
       for (const finding of sizes) {
         assert.equal(finding.severity, 'moderate');
         assert.equal(finding.gating, false);
@@ -470,7 +487,7 @@ for (const engine of ['chromium', 'webkit'] as const)
         [],
       );
       assert.equal(result!.audits.failOn, 'serious');
-      assert.notEqual(result!.quality.verdict, 'fail', result!.quality.reason);
+      assert.equal(result!.quality.verdict, 'pass', result!.quality.reason);
       const executed = result!.quality.executed.map((check) => check.id);
       for (const id of DEFAULT_IDS) assert.ok(executed.includes(id), id);
       assert.ok(
@@ -482,3 +499,36 @@ for (const engine of ['chromium', 'webkit'] as const)
       await site.close();
     }
   });
+
+test('an explicitly listed axe scan keeps its own serious target-size rule', async () => {
+  const site = await smallTargetSite();
+  try {
+    const suite = suiteSchema.parse({
+      name: 'small-targets-axe',
+      baseURL: site.url,
+      viewports: [{ name: 'mobile', width: 390, height: 844 }],
+      audits: { checks: [{ id: 'accessibility.axe' }] },
+      journeys: [
+        { ...webJourney, id: 'continue', maxSteps: 3, maxDurationMs: 60000 },
+      ],
+    });
+    const directory = join(
+      await mkdtemp(join(tmpdir(), 'ui-ux-default-audits-')),
+      'run',
+    );
+    const [result] = await runSuite(suite, linkFirst, { directory });
+    assert.equal(result!.status, 'passed', result!.reason);
+    const sizes = result!.audits.findings.filter(
+      (finding) => finding.ruleId === 'target-size',
+    );
+    assert.ok(sizes.length);
+    for (const finding of sizes) {
+      assert.equal(finding.auditId, 'accessibility.axe');
+      assert.equal(finding.severity, 'serious');
+      assert.equal(finding.gating, true);
+    }
+    assert.equal(result!.quality.verdict, 'fail');
+  } finally {
+    await site.close();
+  }
+});

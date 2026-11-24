@@ -591,7 +591,7 @@ test('keyboard.focus does not call a pointer journey clean', () => {
 
 test('keyboard.focus runs at completion by default, may run at states, and never at ready', () => {
   const at = (checks: unknown[]) =>
-    suiteFor('http://127.0.0.1:1', { audits: { checks } }).audits.checks.find(
+    suiteFor('http://127.0.0.1:1', { audits: { checks } }).audits.checks!.find(
       (check) => check.id === 'keyboard.focus',
     )?.at;
   assert.deepEqual(at([{ id: 'keyboard.focus' }]), ['completion']);

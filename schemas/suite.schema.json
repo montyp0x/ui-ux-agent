@@ -6099,14 +6099,6 @@
       "type": "object",
       "properties": {
         "checks": {
-          "default": [
-            {
-              "id": "layout.horizontal-overflow",
-              "at": [
-                "completion"
-              ]
-            }
-          ],
           "maxItems": 20,
           "type": "array",
           "items": {
@@ -6210,6 +6202,14 @@
                     "items": {
                       "type": "string",
                       "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$"
+                    }
+                  },
+                  "disableRules": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
                     }
                   }
                 },
@@ -7361,7 +7361,6 @@
         }
       },
       "required": [
-        "checks",
         "failOn",
         "timeoutMs"
       ],

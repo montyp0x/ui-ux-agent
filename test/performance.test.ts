@@ -28,6 +28,7 @@ import type { PerformanceMeasurement } from '../src/audits/performance-contract.
 import { comparePerformance, compareRuns, loadRun } from '../src/compare.js';
 import { gateSchema } from '../src/gate.js';
 import { JourneyAudits } from '../src/audits/run.js';
+import { configuredChecks } from '../src/audits/config.js';
 import { auditOutputSchema } from '../src/audits/contract.js';
 import {
   performanceWebPlaywrightAudit,
@@ -123,8 +124,8 @@ test('performance.web is opt-in, runs at ready and completion, and budgets need 
     viewports: [{ name: 'desktop', width: 800, height: 600 }],
     journeys: [journeyConfig],
   });
-  assert.ok(!plain.audits.checks.some((check) => check.id === 'performance.web'));
-  const check = suiteFor('http://127.0.0.1:1').audits.checks[0]!;
+  assert.ok(!configuredChecks(plain.audits).some((check) => check.id === 'performance.web'));
+  const check = suiteFor('http://127.0.0.1:1').audits.checks![0]!;
   assert.equal(check.id, 'performance.web');
   if (check.id !== 'performance.web') return;
   assert.deepEqual(check.at, ['ready', 'completion']);
@@ -148,13 +149,13 @@ test('performance.web is opt-in, runs at ready and completion, and budgets need 
   assert.throws(() => suiteFor('http://127.0.0.1:1', { score: true }));
   const custom = suiteFor('http://127.0.0.1:1', {
     conditions: { network: { latencyMs: 300, downloadKbps: 1000, uploadKbps: 500 }, cpuSlowdown: 4 },
-  }).audits.checks[0]!;
+  }).audits.checks![0]!;
   assert.equal(custom.id === 'performance.web' && custom.conditions?.cpuSlowdown, 4);
 });
 
 test('the performance example suite parses with its conditions and budgets', async () => {
   const suite = suiteSchema.parse(JSON.parse(await readFile('examples/performance.json', 'utf8')));
-  const check = suite.audits.checks.find((entry) => entry.id === 'performance.web');
+  const check = suite.audits.checks!.find((entry) => entry.id === 'performance.web');
   assert.ok(check && check.id === 'performance.web');
   assert.equal(check.conditions?.cpuSlowdown, 2);
   assert.deepEqual(check.budgets.map((budget) => budget.metric), ['lcpMs', 'cls', 'inpMs']);
@@ -210,7 +211,7 @@ const raw = (overrides: Partial<RawPerformance> = {}): RawPerformance =>
     ...overrides,
   });
 const context = (check: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
-  const config = suiteFor('http://127.0.0.1:1', check).audits.checks[0]!;
+  const config = suiteFor('http://127.0.0.1:1', check).audits.checks![0]!;
   if (config.id !== 'performance.web') throw new Error('not performance.web');
   return {
     config,
@@ -532,7 +533,7 @@ test('a page whose load event never fires is measured within the audit timeout, 
       await performanceWebPlaywrightAudit(
         page,
         {
-          config: suite.audits.checks[0]!,
+          config: suite.audits.checks![0]!,
           checkpoint: { id: 'ready', kind: 'ready', name: null, step: 0, url: page.url(), screenshot: null },
           viewport: { name: 'desktop', width: 1280, height: 800 },
           directory: '/tmp/unused',

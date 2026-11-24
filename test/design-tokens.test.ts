@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { chromium, type Browser, type Page } from 'playwright';
-import { auditConfigSchema, type AuditConfig } from '../src/audits/config.js';
+import {
+  auditConfigSchema,
+  configuredChecks,
+  type AuditConfig,
+} from '../src/audits/config.js';
 import {
   auditOutputSchema,
   type ParsedAuditOutput,
@@ -209,7 +213,7 @@ test('a token file is resolved relative to the suite file', async () => {
     ],
   });
   const loaded = await loadDesignTokens(suite, suitePath);
-  const check = loaded.audits.checks[0]!;
+  const check = loaded.audits.checks![0]!;
   assert.equal(check.id, 'design.tokens');
   if (check.id !== 'design.tokens') return;
   assert.equal(typeof check.tokens, 'object');
@@ -219,7 +223,7 @@ test('a token file is resolved relative to the suite file', async () => {
   );
   // The parsed suite itself is not changed.
   assert.equal(
-    (suite.audits.checks[0] as { tokens: unknown }).tokens,
+    (suite.audits.checks![0] as { tokens: unknown }).tokens,
     'design/tokens.json',
   );
   // A missing or invalid file names the file it read.
@@ -456,7 +460,7 @@ test('the audit is opt-in, web-only and documented by its example suite', async 
       },
     ],
   });
-  assert.ok(!suite.audits.checks.some((check) => check.id === 'design.tokens'));
+  assert.ok(!configuredChecks(suite.audits).some((check) => check.id === 'design.tokens'));
   assert.deepEqual(AUDITS['design.tokens'].drivers, ['playwright']);
   assert.equal(AUDITS['design.tokens'].evaluate, undefined);
   const examplePath = 'examples/design-tokens.json';
@@ -464,7 +468,7 @@ test('the audit is opt-in, web-only and documented by its example suite', async 
     suiteSchema.parse(JSON.parse(readFileSync(examplePath, 'utf8'))),
     examplePath,
   );
-  const check = example.audits.checks.find(
+  const check = example.audits.checks!.find(
     (entry) => entry.id === 'design.tokens',
   );
   assert.ok(
@@ -745,7 +749,7 @@ test('a token set is selected per suite environment, the default set elsewhere',
     ),
     join(root, 'suite.json'),
   );
-  const loadedCheck = loaded.audits.checks[0]!;
+  const loadedCheck = loaded.audits.checks![0]!;
   assert.ok(loadedCheck.id === 'design.tokens');
   assert.equal(
     loadedCheck.id === 'design.tokens' &&
