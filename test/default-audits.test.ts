@@ -386,7 +386,7 @@ test('a native suite that passes with an explicit state-checks audit still passe
   assert.equal(result!.quality.verdict, 'pass', result!.quality.reason);
 });
 
-const SMALL_TARGETS = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor</title><style>body{font:16px sans-serif;margin:16px;color:#111;background:#fff}.toolbar{display:flex;gap:2px;margin:12px 0}.toolbar button{width:18px;height:18px;padding:0;border:1px solid #333;background:#fff;color:#111;font-size:10px}a{color:#0645ad}</style></head><body><main><h1>Home</h1><div class="toolbar" role="toolbar" aria-label="Formatting"><button aria-label="Bold">B</button><button aria-label="Italic">I</button><button aria-label="Underline">U</button></div><p><a href="/done">Continue</a></p></main></body></html>`;
+const SMALL_TARGETS = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor</title><style>body{font:16px sans-serif;margin:16px;color:#111;background:#fff}.toolbar{display:flex;gap:2px;margin:12px 0}.toolbar button{width:20px;height:20px;padding:0;border:1px solid #333;background:#fff}a{color:#0645ad}</style></head><body><main><h1>Home</h1><div class="toolbar" role="toolbar" aria-label="Formatting"><button aria-label="Bold"></button><button aria-label="Italic"></button><button aria-label="Underline"></button></div><p><a href="/done">Continue</a></p></main></body></html>`;
 const DONE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Done</title></head><body><main><h1>Done</h1><p>Saved</p></main></body></html>`;
 
 async function smallTargetSite() {
@@ -419,7 +419,7 @@ const linkFirst: Models = {
 };
 
 for (const engine of ['chromium', 'webkit'] as const)
-  test(`default audits run on a real ${engine} page, and targets under 24px are moderate findings that do not fail quality`, async (t) => {
+  test(`default audits run on a real ${engine} page whose only defect is 20px targets: moderate layout findings, no axe target-size, quality passes`, async (t) => {
     const skip = await engineSkip(engine);
     if (skip) {
       t.skip(skip);
@@ -468,7 +468,14 @@ for (const engine of ['chromium', 'webkit'] as const)
       const sizes = result!.audits.findings.filter(
         (finding) => finding.ruleId === 'target-size',
       );
-      assert.ok(sizes.length, 'the 18px toolbar buttons are found');
+      assert.ok(sizes.length, 'the 20px toolbar buttons are found');
+      assert.deepEqual(
+        result!.audits.findings
+          .filter((finding) => finding.ruleId !== 'target-size')
+          .map((finding) => [finding.auditId, finding.ruleId]),
+        [],
+        'the 20px targets are the page\'s only finding',
+      );
       assert.ok(
         sizes.every((finding) => finding.auditId === 'layout.responsive'),
       );
@@ -500,7 +507,7 @@ for (const engine of ['chromium', 'webkit'] as const)
     }
   });
 
-test('an explicitly listed axe scan keeps its own serious target-size rule', async () => {
+test('an explicitly listed axe scan keeps its serious, gating target-size rule on the same 20px page', async () => {
   const site = await smallTargetSite();
   try {
     const suite = suiteSchema.parse({
@@ -531,4 +538,29 @@ test('an explicitly listed axe scan keeps its own serious target-size rule', asy
   } finally {
     await site.close();
   }
+});
+
+test('disableRules accepts only axe-core rule ids, rejecting unknown and empty ids at load', () => {
+  const axe = (disableRules: unknown) =>
+    auditConfigSchema.safeParse({ id: 'accessibility.axe', disableRules });
+  assert.ok(axe(['target-size']).success);
+  assert.ok(axe(['target-size', 'region']).success);
+  assert.ok(axe([]).success);
+  for (const bad of [[''], ['not-a-rule'], ['Target-Size'], ['target-size', 'target-size']]) {
+    const parsed = axe(bad);
+    assert.equal(parsed.success, false, JSON.stringify(bad));
+  }
+  assert.match(
+    JSON.stringify(axe(['not-a-rule']).error?.issues),
+    /not-a-rule.*axe-core/,
+  );
+  assert.throws(
+    () =>
+      webSuite({
+        audits: {
+          checks: [{ id: 'accessibility.axe', disableRules: ['not-a-rule'] }],
+        },
+      }),
+    /not-a-rule/,
+  );
 });
